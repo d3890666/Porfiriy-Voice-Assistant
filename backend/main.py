@@ -220,7 +220,7 @@ async def handle_client(websocket):
                                         search_data["media_type"] = [search_data["media_type"]]
                                         
                                     result = await ha_api.call_service_ws(
-                                        domain="mass",
+                                        domain="music_assistant",
                                         service="search",
                                         service_data=search_data,
                                         return_response=True
