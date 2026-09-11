@@ -48,7 +48,8 @@ def get_options():
         "voice_name": "Zephyr",
         "debug_mode": False,
         "enable_google_search": True,
-        "vad_silence_duration_ms": 600
+        "vad_silence_duration_ms": 600,
+        "enable_barge_in": True
     }
 
 async def handle_client(websocket):
@@ -80,11 +81,17 @@ async def handle_client(websocket):
     try:
         async with gemini_client.connect() as session, asyncio.TaskGroup() as tg:
             
+            session_state = {"is_gemini_speaking": False}
+            
             async def receive_from_client():
                 """Слушает входящие аудио-чанки (PCM) от WebSocket клиента (ПК/ESP32) и шлет их в Gemini."""
                 try:
                     async for message in websocket:
                         if isinstance(message, bytes):
+                            if not options.get("enable_barge_in", True) and session_state.get("is_gemini_speaking"):
+                                # Игнорируем микрофон пока говорит ассистент, если перебивание выключено
+                                continue
+                                
                             logger.debug(f"Received {len(message)} bytes audio chunk from WS Client, sending to Gemini")
                             await session.send_realtime_input(
                                 audio=types.Blob(
@@ -117,15 +124,19 @@ async def handle_client(websocket):
                         
                         # Обработка аудио потока от модели
                         if response.server_content and response.server_content.model_turn:
+                            session_state["is_gemini_speaking"] = True
                             for part in response.server_content.model_turn.parts:
                                 if part.inline_data and part.inline_data.data:
                                     logger.debug(f"Sending {len(part.inline_data.data)} bytes audio chunk from Gemini to WS Client")
                                     # Пересылаем сырой PCM аудио-чанк обратно клиенту
                                     await websocket.send(part.inline_data.data)
                                     
-                        # Обработка транскрипции
+                        # Обработка транскрипции и состояния
                         content = response.server_content
                         if content:
+                            if getattr(content, "turn_complete", False):
+                                session_state["is_gemini_speaking"] = False
+                                
                             # Обработка прерывания
                             if getattr(content, "interrupted", False):
                                 logger.info("Gemini Interrupted by User (Barge-in)!")
