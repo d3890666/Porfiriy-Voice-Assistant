@@ -98,38 +98,68 @@ class HomeAssistantAPI:
             logger.error(f"Error calling HA service WS {domain}.{service}: {e}")
             return {"error": str(e)}
 
-    async def get_exposed_entity_ids(self) -> set:
-        """Получает список entity_id, которым разрешен доступ к Assist (conversation)."""
+    async def get_exposed_entities_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Получает метаданные (синонимы, комнаты) для сущностей, доступных Assist."""
         try:
             async with websockets.connect(self.ws_url) as ws:
-                auth_msg = await ws.recv()
+                await ws.recv() # auth required
                 
                 token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
                 await ws.send(json.dumps({"type": "auth", "access_token": token}))
-                auth_ok = await ws.recv()
+                await ws.recv() # auth ok
                 
+                # Запрашиваем устройства
                 await ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
+                # Запрашиваем комнаты (area)
+                await ws.send(json.dumps({"id": 2, "type": "config/area_registry/list"}))
                 
-                # Читаем ответы, пока не получим результат нашего запроса (id: 1)
-                while True:
+                entities_resp = None
+                areas_resp = None
+                
+                # Ждем оба ответа
+                while not entities_resp or not areas_resp:
                     resp = json.loads(await ws.recv())
                     if resp.get("id") == 1 and resp.get("type") == "result":
-                        break
+                        entities_resp = resp
+                    elif resp.get("id") == 2 and resp.get("type") == "result":
+                        areas_resp = resp
                         
-                if not resp.get("success"):
-                    return set()
-                    
-                exposed_ids = set()
-                for entity in resp["result"]:
-                    options = entity.get("options", {})
-                    # Проверяем доступность для conversation (Assist)
-                    if options.get("conversation", {}).get("should_expose"):
-                        exposed_ids.add(entity["entity_id"])
+                area_mapping = {}
+                if areas_resp and areas_resp.get("success"):
+                    for area in areas_resp["result"]:
+                        area_mapping[area.get("area_id")] = area.get("name")
                         
-                return exposed_ids
+                exposed_entities = {}
+                if entities_resp and entities_resp.get("success"):
+                    for entity in entities_resp["result"]:
+                        options = entity.get("options", {})
+                        if options.get("conversation", {}).get("should_expose"):
+                            eid = entity["entity_id"]
+                            
+                            # Извлекаем синонимы (aliases)
+                            aliases = entity.get("aliases", [])
+                            if not isinstance(aliases, list):
+                                aliases = []
+                            aliases_v2 = entity.get("aliases_v2", [])
+                            if not isinstance(aliases_v2, list):
+                                aliases_v2 = []
+                                
+                            combined_aliases = list(set(aliases + aliases_v2))
+                            combined_aliases = [a for a in combined_aliases if a]
+                            
+                            # Извлекаем комнату
+                            area_id = entity.get("area_id")
+                            room_name = area_mapping.get(area_id) if area_id else None
+                            
+                            exposed_entities[eid] = {
+                                "aliases": combined_aliases,
+                                "room": room_name
+                            }
+                            
+                return exposed_entities
         except Exception as e:
-            logger.error(f"Error fetching exposed entities via WS: {e}")
-            return set()
+            logger.error(f"Error fetching entities metadata via WS: {e}")
+            return {}
 
     async def get_filtered_entities(self, allowed_domains: List[str] = None) -> str:
         """
@@ -140,20 +170,28 @@ class HomeAssistantAPI:
             allowed_domains = ["light", "switch", "script", "scene", "media_player", "climate"]
             
         states = await self.get_states()
-        exposed_ids = await self.get_exposed_entity_ids()
+        exposed_metadata = await self.get_exposed_entities_metadata()
         
         entities_text = []
         for state in states:
             entity_id = state.get("entity_id", "")
             
             # Пропускаем сущности, которые не добавлены в ассистента
-            if entity_id not in exposed_ids:
+            if entity_id not in exposed_metadata:
                 continue
                 
             domain = entity_id.split(".")[0]
             
             if domain in allowed_domains:
                 friendly_name = state.get("attributes", {}).get("friendly_name", entity_id)
-                entities_text.append(f"- {friendly_name} (ID: {entity_id})")
+                meta = exposed_metadata[entity_id]
+                
+                parts = [f"- {friendly_name} (ID: {entity_id})"]
+                if meta["room"]:
+                    parts.append(f"[Комната: {meta['room']}]")
+                if meta["aliases"]:
+                    parts.append(f"[Синонимы: {', '.join(meta['aliases'])}]")
+                    
+                entities_text.append(" ".join(parts))
                 
         return "\n".join(entities_text)
