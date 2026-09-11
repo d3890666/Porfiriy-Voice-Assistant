@@ -223,6 +223,11 @@ async def handle_client(websocket):
                                     if "media_type" in search_data:
                                         search_data["media_type"] = [search_data["media_type"]]
                                         
+                                    # Music Assistant Core requires config_entry_id for search
+                                    ma_entry_id = await ha_api.get_music_assistant_entry_id()
+                                    if ma_entry_id:
+                                        search_data["config_entry_id"] = ma_entry_id
+                                        
                                     result = await ha_api.call_service_ws(
                                         domain="music_assistant",
                                         service="search",
@@ -289,6 +294,7 @@ async def handle_client(websocket):
                                 async with gemini_send_lock:
                                     await session.send_tool_response(function_responses=function_responses)
                                 session_state["is_tool_pending"] = False
+                                session_state["is_gemini_speaking"] = True  # Block mic until turn completes to prevent 1008 Policy Violation
                                     
                 except ConnectionClosed:
                     logger.info("Client disconnected (Gemini read)")

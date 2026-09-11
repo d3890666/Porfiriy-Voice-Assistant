@@ -32,6 +32,8 @@ class HomeAssistantAPI:
                 "Content-Type": "application/json"
             }
             logger.info("HA API initialized in standalone mode (using fallback token)")
+            
+        self._ma_config_entry_id = None
 
     async def get_states(self) -> List[Dict[str, Any]]:
         """Получить все текущие состояния (сущности) из HA."""
@@ -67,6 +69,45 @@ class HomeAssistantAPI:
         """
         Вызвать сервис через WebSocket API. Позволяет получить возвращаемые данные (return_response).
         """
+        payload = {
+            "type": "call_service",
+            "domain": domain,
+            "service": service,
+            "service_data": service_data or {}
+        }
+        if return_response:
+            payload["return_response"] = True
+            
+        result = await self._ws_send_and_receive(payload)
+        
+        if return_response:
+            if result.get("success"):
+                return result.get("result") or {"status": "success"}
+            else:
+                error = result.get("error", {})
+                return {"error": error.get("message", "Unknown WS error")}
+        return {"status": "success"}
+
+    async def get_music_assistant_entry_id(self) -> str:
+        if self._ma_config_entry_id:
+            return self._ma_config_entry_id
+            
+        payload = {
+            "type": "config_entries/get",
+            "domain": "music_assistant"
+        }
+        result = await self._ws_send_and_receive(payload)
+        
+        if result.get("success"):
+            entries = result.get("result", [])
+            if entries:
+                # Return the entry_id of the first music_assistant instance
+                self._ma_config_entry_id = entries[0].get("entry_id")
+                return self._ma_config_entry_id
+                
+        return None
+
+    async def _ws_send_and_receive(self, payload: dict) -> dict:
         try:
             async with websockets.connect(self.ws_url) as ws:
                 await ws.recv() # auth_required
@@ -75,28 +116,19 @@ class HomeAssistantAPI:
                 await ws.send(json.dumps({"type": "auth", "access_token": token}))
                 await ws.recv() # auth_ok
                 
-                req = {
-                    "id": 2,
-                    "type": "call_service",
-                    "domain": domain,
-                    "service": service,
-                    "service_data": service_data or {},
-                    "return_response": return_response
-                }
-                await ws.send(json.dumps(req))
+                if "id" not in payload:
+                    payload["id"] = 2
+                    
+                await ws.send(json.dumps(payload))
                 
                 while True:
                     resp_str = await ws.recv()
                     resp = json.loads(resp_str)
-                    if resp.get("id") == 2 and resp.get("type") == "result":
-                        if resp.get("success"):
-                            return resp.get("result") or {"status": "success"}
-                        else:
-                            error = resp.get("error", {})
-                            return {"error": error.get("message", "Unknown error")}
+                    if resp.get("id") == payload.get("id") and resp.get("type") == "result":
+                        return resp
         except Exception as e:
-            logger.error(f"Error calling HA service WS {domain}.{service}: {e}")
-            return {"error": str(e)}
+            logger.error(f"Error in WS communication: {e}")
+            return {"success": False, "error": {"message": str(e)}}
 
     async def get_exposed_entities_metadata(self) -> Dict[str, Dict[str, Any]]:
         """Получает метаданные (синонимы, комнаты) для сущностей, доступных Assist."""
