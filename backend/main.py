@@ -208,11 +208,21 @@ async def handle_client(websocket):
                                         await websocket.send(ERROR_CHIME)
                                     else:
                                         await websocket.send(SUCCESS_CHIME)
-                                    
+                                        
+                                    # Формируем безопасный словарь для ответа, чтобы Gemini не ругался на пустые списки
+                                    safe_result = {"status": "success"}
+                                    if result:
+                                        if isinstance(result, list):
+                                            safe_result["data"] = result
+                                        elif isinstance(result, dict):
+                                            safe_result = result
+                                        else:
+                                            safe_result["data"] = str(result)
+                                            
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
                                         id=fc.id,
-                                        response={"result": result}
+                                        response=safe_result
                                     ))
                                     
                                 elif name == "search_music_assistant":
@@ -248,10 +258,19 @@ async def handle_client(websocket):
                                         result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
                                         
                                     tool_logger.info(f"MA Search Result: {result}")
+                                    safe_result = {"status": "success"}
+                                    if result:
+                                        if isinstance(result, list):
+                                            safe_result["data"] = result
+                                        elif isinstance(result, dict):
+                                            safe_result = result
+                                        else:
+                                            safe_result["data"] = str(result)
+
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
                                         id=fc.id,
-                                        response={"result": result}
+                                        response=safe_result
                                     ))
                                     
                                 elif name == "play_music_assistant":
@@ -276,10 +295,19 @@ async def handle_client(websocket):
                                     else:
                                         await websocket.send(SUCCESS_CHIME)
                                         
+                                    safe_result = {"status": "success"}
+                                    if result:
+                                        if isinstance(result, list):
+                                            safe_result["data"] = result
+                                        elif isinstance(result, dict):
+                                            safe_result = result
+                                        else:
+                                            safe_result["data"] = str(result)
+
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
                                         id=fc.id,
-                                        response={"result": result}
+                                        response=safe_result
                                     ))
                                 else:
                                     tool_logger.warning(f"Unknown tool called: {name}")
