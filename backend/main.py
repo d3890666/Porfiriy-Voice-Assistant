@@ -247,14 +247,17 @@ async def handle_client(websocket):
                                     
                                     simplified_result = []
                                     if isinstance(result, dict) and not "error" in result:
-                                        for cat, items in result.items():
-                                            if isinstance(items, list):
-                                                for item in items[:5]: # top 5 per category
-                                                    simplified_result.append({
-                                                        "name": item.get("name"),
-                                                        "uri": item.get("uri"),
-                                                        "type": cat
-                                                    })
+                                        # HA 'call_service' with return_response=True usually wraps the output in a 'response' dict
+                                        actual_response = result.get("response", result)
+                                        if isinstance(actual_response, dict):
+                                            for cat, items in actual_response.items():
+                                                if isinstance(items, list):
+                                                    for item in items[:5]: # top 5 per category
+                                                        simplified_result.append({
+                                                            "name": item.get("name"),
+                                                            "uri": item.get("uri"),
+                                                            "type": cat
+                                                        })
                                         result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
                                         
                                     tool_logger.info(f"MA Search Result: {result}")
