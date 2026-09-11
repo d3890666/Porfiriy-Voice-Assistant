@@ -73,8 +73,9 @@ async def handle_client(websocket):
     # 1. Формируем контекст устройств
     devices_text = await ha_api.get_filtered_entities()
     system_prompt = options.get('system_prompt', '')
-    full_prompt = f"{system_prompt}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
-    logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt:\n{devices_text}")
+    anti_hallucination = "ВАЖНО: НИКОГДА не фантазируй и не говори, что выполнил действие, если ты не вызвал соответствующий инструмент. Устройства типа switch могут управлять светом, используй их."
+    full_prompt = f"{system_prompt}\n\n{anti_hallucination}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
+    logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
     gemini_client = GeminiProxyClient(
         api_key=options.get("gemini_api_key"),
@@ -95,6 +96,7 @@ async def handle_client(websocket):
                 "first_audio_sent": False,
                 "is_tool_pending": False
             }
+            gemini_send_lock = asyncio.Lock()
             
             async def receive_from_client():
                 """Слушает входящие аудио-чанки (PCM) от WebSocket клиента (ПК/ESP32) и шлет их в Gemini."""
@@ -114,22 +116,24 @@ async def handle_client(websocket):
                                 session_state["first_audio_received"] = True
                                 
                             audio_logger.debug(f"Received {len(message)} bytes audio chunk from WS Client, sending to Gemini")
-                            await session.send_realtime_input(
-                                audio=types.Blob(
-                                    data=message,
-                                    mime_type="audio/pcm;rate=16000"
+                            async with gemini_send_lock:
+                                await session.send_realtime_input(
+                                    audio=types.Blob(
+                                        data=message,
+                                        mime_type="audio/pcm;rate=16000"
+                                    )
                                 )
-                            )
                         elif isinstance(message, str):
                             # Обработка текстовых сообщений
                             try:
                                 data = json.loads(message)
                                 if "text" in data:
                                     logger.info(f"Received text input from WS Client: {data['text']}")
-                                    await session.send_client_content(
-                                        turns=[types.Content(parts=[types.Part.from_text(text=data['text'])])],
-                                        turn_complete=True
-                                    )
+                                    async with gemini_send_lock:
+                                        await session.send_client_content(
+                                            turns=[types.Content(parts=[types.Part.from_text(text=data['text'])])],
+                                            turn_complete=True
+                                        )
                             except Exception as e:
                                 logger.error(f"Error parsing text message: {e}")
                 except ConnectionClosed:
@@ -282,7 +286,8 @@ async def handle_client(websocket):
                             
                             if function_responses:
                                 tool_logger.info(f"Sending Tool Responses: {function_responses}")
-                                await session.send_tool_response(function_responses=function_responses)
+                                async with gemini_send_lock:
+                                    await session.send_tool_response(function_responses=function_responses)
                                 session_state["is_tool_pending"] = False
                                     
                 except ConnectionClosed:
