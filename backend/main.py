@@ -20,7 +20,8 @@ def get_options():
             return json.load(f)
     return {
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
-        "system_prompt": "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом."
+        "system_prompt": "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом.",
+        "voice_name": "Zephyr"
     }
 
 async def handle_client(websocket):
@@ -37,7 +38,8 @@ async def handle_client(websocket):
     gemini_client = GeminiProxyClient(
         api_key=options.get("gemini_api_key"),
         system_prompt=full_prompt,
-        ha_api=ha_api
+        ha_api=ha_api,
+        voice_name=options.get("voice_name", "Zephyr")
     )
     
     try:
