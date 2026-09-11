@@ -126,6 +126,11 @@ async def handle_client(websocket):
                         # Обработка транскрипции
                         content = response.server_content
                         if content:
+                            # Обработка прерывания
+                            if getattr(content, "interrupted", False):
+                                logger.info("Gemini Interrupted by User (Barge-in)!")
+                                await websocket.send(json.dumps({"type": "interrupted"}))
+                                
                             if getattr(content, "input_transcription", None):
                                 logger.info(f"User Speech Recognized: {content.input_transcription.text}")
                             if getattr(content, "output_transcription", None):

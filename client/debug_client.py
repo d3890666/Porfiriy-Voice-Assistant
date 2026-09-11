@@ -33,13 +33,27 @@ class DebugClient:
         )
         logger.info("Microphone capturing started (16kHz).")
         
+        silence_chunk = b'\x00' * CHUNK
+        frames_since_speech = 100 # start muted
+        
         while True:
             try:
                 # Читаем чанк с микрофона
                 data = await asyncio.to_thread(stream.read, CHUNK, exception_on_overflow=False)
                 
-                # Отправляем сырой PCM на сервер
-                await ws.send(data)
+                # Noise gate: сбрасываем счетчик если есть речь
+                if self.vad.is_speech(data, SEND_RATE):
+                    frames_since_speech = 0
+                else:
+                    frames_since_speech += 1
+                
+                # Отправляем сырой PCM на сервер (или тишину, если долго нет речи)
+                # 25 фреймов = 500мс "хвост" (hangover)
+                if frames_since_speech < 25:
+                    await ws.send(data)
+                else:
+                    await ws.send(silence_chunk)
+                    
                 await asyncio.sleep(0.001)
             except Exception as e:
                 logger.error(f"Mic reading error: {e}")
@@ -75,6 +89,18 @@ class DebugClient:
                     self.play_queue.put(message)
                 else:
                     logger.info(f"Server sent text: {message}")
+                    try:
+                        import json
+                        msg_data = json.loads(message)
+                        if msg_data.get("type") == "interrupted":
+                            logger.info("Server reported interruption. Clearing play queue.")
+                            while not self.play_queue.empty():
+                                try:
+                                    self.play_queue.get_nowait()
+                                except queue.Empty:
+                                    break
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"WS receive error: {e}")
                 break
