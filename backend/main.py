@@ -92,7 +92,8 @@ async def handle_client(websocket):
             session_state = {
                 "is_gemini_speaking": False,
                 "first_audio_received": False,
-                "first_audio_sent": False
+                "first_audio_sent": False,
+                "is_tool_pending": False
             }
             
             async def receive_from_client():
@@ -100,6 +101,10 @@ async def handle_client(websocket):
                 try:
                     async for message in websocket:
                         if isinstance(message, bytes):
+                            if session_state.get("is_tool_pending"):
+                                # КРИТИЧНО: Нельзя отправлять аудио, пока выполняется Tool Call, иначе сервер Gemini закроет соединение с ошибкой 1008
+                                continue
+                                
                             if not options.get("enable_barge_in", True) and session_state.get("is_gemini_speaking"):
                                 # Игнорируем микрофон пока говорит ассистент, если перебивание выключено
                                 continue
@@ -172,6 +177,7 @@ async def handle_client(websocket):
                         
                         # Обработка вызовов функций (Home Assistant)
                         if response.tool_call:
+                            session_state["is_tool_pending"] = True
                             tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
                             function_responses = []
                             for fc in response.tool_call.function_calls:
@@ -275,6 +281,7 @@ async def handle_client(websocket):
                             if function_responses:
                                 tool_logger.info(f"Sending Tool Responses: {function_responses}")
                                 await session.send_tool_response(function_responses=function_responses)
+                                session_state["is_tool_pending"] = False
                                     
                 except ConnectionClosed:
                     logger.info("Client disconnected (Gemini read)")

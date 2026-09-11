@@ -34,11 +34,11 @@ class GeminiProxyClient:
             name="call_ha_service",
             description="Call a Home Assistant service to control a smart home device or execute a script.",
             parameters=types.Schema(
-                type="OBJECT",
+                type=types.Type.OBJECT,
                 properties={
-                    "domain": types.Schema(type="STRING", description="The domain of the service, e.g. light, switch, script, scene, climate"),
-                    "service": types.Schema(type="STRING", description="The service to call, e.g. turn_on, turn_off, toggle"),
-                    "entity_id": types.Schema(type="STRING", description="The exact entity_id of the device from the provided context, e.g. light.kitchen"),
+                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service, e.g. light, switch, script, scene, climate"),
+                    "service": types.Schema(type=types.Type.STRING, description="The service to call, e.g. turn_on, turn_off, toggle"),
+                    "entity_id": types.Schema(type=types.Type.STRING, description="The exact entity_id of the device from the provided context, e.g. light.kitchen"),
                 },
                 required=["domain", "service", "entity_id"]
             )
@@ -47,10 +47,10 @@ class GeminiProxyClient:
             name="search_music_assistant",
             description="Search for music (artists, albums, tracks, playlists) in Music Assistant. Returns a list of results with URIs. Use this to find the exact URI before playing.",
             parameters=types.Schema(
-                type="OBJECT",
+                type=types.Type.OBJECT,
                 properties={
-                    "name": types.Schema(type="STRING", description="Search query (e.g. 'Madonna')"),
-                    "media_type": types.Schema(type="STRING", description="Optional. Type to search: 'artist', 'album', 'track', 'playlist', 'radio'"),
+                    "name": types.Schema(type=types.Type.STRING, description="Search query (e.g. 'Madonna')"),
+                    "media_type": types.Schema(type=types.Type.STRING, description="Optional. Type to search: 'artist', 'album', 'track', 'playlist', 'radio'"),
                 },
                 required=["name"]
             )
@@ -60,10 +60,10 @@ class GeminiProxyClient:
             name="play_music_assistant",
             description="Play a music URI (obtained from search_music_assistant) on the smart speaker.",
             parameters=types.Schema(
-                type="OBJECT",
+                type=types.Type.OBJECT,
                 properties={
-                    "uri": types.Schema(type="STRING", description="The URI of the media to play"),
-                    "player": types.Schema(type="STRING", description="Optional. The media player entity_id. Leave empty to use default."),
+                    "uri": types.Schema(type=types.Type.STRING, description="The URI of the media to play"),
+                    "player": types.Schema(type=types.Type.STRING, description="Optional. The media player entity_id. Leave empty to use default."),
                 },
                 required=["uri"]
             )
