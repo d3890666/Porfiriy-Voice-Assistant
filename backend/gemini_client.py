@@ -42,7 +42,7 @@ class GeminiProxyClient:
         
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            system_instruction=types.Content(parts=[types.Part.from_text(self.system_prompt)]),
+            system_instruction=types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
             tools=[tool],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
