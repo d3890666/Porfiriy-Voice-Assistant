@@ -22,12 +22,17 @@ def get_options():
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": "gemini-2.0-flash-exp",
         "system_prompt": "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом.",
-        "voice_name": "Zephyr"
+        "voice_name": "Zephyr",
+        "debug_mode": False
     }
 
 async def handle_client(websocket):
-    logger.info(f"Client connected from {websocket.remote_address}")
     options = get_options()
+    if options.get("debug_mode"):
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("Debug mode enabled. Maximum logging activated.")
+        
+    logger.info(f"Client connected from {websocket.remote_address}")
     
     ha_api = HomeAssistantAPI()
     
@@ -52,6 +57,7 @@ async def handle_client(websocket):
                 try:
                     async for message in websocket:
                         if isinstance(message, bytes):
+                            logger.debug(f"Received {len(message)} bytes audio chunk from WS Client, sending to Gemini")
                             await session.send_realtime_input(
                                 audio=types.Blob(
                                     data=message,
@@ -67,12 +73,23 @@ async def handle_client(websocket):
                 """Слушает ответы от Gemini, пересылает аудио клиенту и исполняет Tool Calls (HA)."""
                 try:
                     async for response in session.receive():
+                        logger.debug("Received event from Gemini")
+                        
                         # Обработка аудио потока от модели
                         if response.server_content and response.server_content.model_turn:
                             for part in response.server_content.model_turn.parts:
                                 if part.inline_data and part.inline_data.data:
+                                    logger.debug(f"Sending {len(part.inline_data.data)} bytes audio chunk from Gemini to WS Client")
                                     # Пересылаем сырой PCM аудио-чанк обратно клиенту
                                     await websocket.send(part.inline_data.data)
+                                    
+                        # Обработка транскрипции
+                        content = response.server_content
+                        if content:
+                            if getattr(content, "input_transcription", None):
+                                logger.info(f"User Speech Recognized: {content.input_transcription.text}")
+                            if getattr(content, "output_transcription", None):
+                                logger.info(f"Gemini Speech: {content.output_transcription.text}")
                         
                         # Обработка вызовов функций (Home Assistant)
                         if response.tool_call:
