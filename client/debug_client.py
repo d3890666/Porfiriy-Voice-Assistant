@@ -38,17 +38,19 @@ class DebugClient:
                 # Читаем чанк с микрофона
                 data = await asyncio.to_thread(stream.read, CHUNK, exception_on_overflow=False)
                 
-                # Проверяем на наличие голоса (Barge-in logic)
+                # Проверяем на наличие голоса
                 is_speech = self.vad.is_speech(data, SEND_RATE)
-                if is_speech:
-                    if self.is_playing:
-                        logger.info("Barge-in detected! User is speaking. Interrupting playback...")
-                        # Очищаем очередь воспроизведения
-                        while not self.play_queue.empty():
-                            try:
-                                self.play_queue.get_nowait()
-                            except queue.Empty:
-                                break
+                
+                # ПРОБЛЕМА ЭХА (Acoustic Echo):
+                # Если динамик сейчас воспроизводит звук, микрофон это слышит.
+                # Из-за этого срабатывает Barge-in и обрывает воспроизведение.
+                # Так как у нас в Python нет алгоритма подавления эха (AEC), 
+                # самый простой способ исправить это — программно "глушить" микрофон, пока говорит ассистент.
+                if self.is_playing:
+                    data = b'\x00' * len(data) # Отправляем тишину
+                elif is_speech:
+                    # Опционально: можно добавить логику локального VAD
+                    pass
                 
                 # Отправляем сырой PCM на сервер
                 await ws.send(data)

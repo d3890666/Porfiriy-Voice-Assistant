@@ -63,7 +63,25 @@ async def handle_client(websocket):
     
     # 1. Формируем контекст устройств
     devices_text = await ha_api.get_filtered_entities()
-    full_prompt = f"{options.get('system_prompt', '')}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
+    
+    # Пытаемся прочитать многострочный промпт из файла
+    system_prompt = options.get('system_prompt', '')
+    prompt_file_path = "/config/porfiriy_prompt.txt"
+    # Для отладки локально (вне аддона) ищем файл в текущей папке
+    if not os.path.exists(prompt_file_path) and os.path.exists("porfiriy_prompt.txt"):
+        prompt_file_path = "porfiriy_prompt.txt"
+        
+    if os.path.exists(prompt_file_path):
+        try:
+            with open(prompt_file_path, "r", encoding="utf-8") as f:
+                file_prompt = f.read().strip()
+                if file_prompt:
+                    system_prompt = file_prompt
+                    logger.info(f"Loaded multiline system prompt from {prompt_file_path}")
+        except Exception as e:
+            logger.error(f"Failed to read prompt file: {e}")
+            
+    full_prompt = f"{system_prompt}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
     gemini_client = GeminiProxyClient(
