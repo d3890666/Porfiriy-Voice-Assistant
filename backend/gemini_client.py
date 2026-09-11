@@ -7,7 +7,7 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 class GeminiProxyClient:
-    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr"):
+    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr", model: str = "gemini-2.0-flash-exp"):
         """
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
@@ -19,7 +19,10 @@ class GeminiProxyClient:
             api_key=api_key
         )
         self.ha_api = ha_api
-        self.model = "models/gemini-2.0-flash-exp" # Используем актуальную модель для Live API
+        
+        # Если пользователь не указал префикс models/, добавляем его
+        self.model = model if model.startswith("models/") else f"models/{model}"
+        
         self.system_prompt = system_prompt
         self.voice_name = voice_name
 
