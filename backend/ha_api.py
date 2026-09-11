@@ -54,11 +54,14 @@ class HomeAssistantAPI:
         async with aiohttp.ClientSession(headers=self.headers) as session:
             try:
                 async with session.post(url, json=payload) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        text = await response.text()
+                        logger.error(f"HA service error {response.status}: {text}")
+                        return {"error": f"Home Assistant API Error {response.status}: {text}"}
                     return await response.json()
             except Exception as e:
                 logger.error(f"Error calling HA service {domain}.{service}: {e}")
-                return {"error": str(e)}
+                return {"error": f"Network or internal error: {str(e)}"}
 
     async def get_exposed_entity_ids(self) -> set:
         """Получает список entity_id, которым разрешен доступ к Assist (conversation)."""

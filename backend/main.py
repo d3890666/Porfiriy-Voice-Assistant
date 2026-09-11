@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import logging
+import math
+import struct
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -11,6 +13,27 @@ from google.genai import types
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume: float = 0.5) -> bytes:
+    """Генерация сырого 16-bit PCM аудио сигнала (синусоиды)."""
+    num_samples = int(sample_rate * (duration_ms / 1000.0))
+    audio = bytearray()
+    for i in range(num_samples):
+        sample = math.sin(2 * math.pi * freq * i / sample_rate)
+        # Простое сглаживание для предотвращения щелчков (fade in/out)
+        fade_len = min(100, num_samples // 4)
+        if i < fade_len:
+            sample *= (i / fade_len)
+        elif i > num_samples - fade_len:
+            sample *= ((num_samples - i) / fade_len)
+            
+        val = int(sample * volume * 32767)
+        audio.extend(struct.pack('<h', val))
+    return bytes(audio)
+
+# Предварительно сгенерированные звуки (Earcons)
+SUCCESS_CHIME = generate_beep(600, 100) + generate_beep(800, 150)
+ERROR_CHIME = generate_beep(300, 150) + generate_beep(200, 200)
 
 options_path = "/data/options.json"
 
@@ -23,7 +46,9 @@ def get_options():
         "gemini_model": "gemini-2.0-flash-exp",
         "system_prompt": "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом.",
         "voice_name": "Zephyr",
-        "debug_mode": False
+        "debug_mode": False,
+        "enable_google_search": True,
+        "vad_silence_duration_ms": 600
     }
 
 async def handle_client(websocket):
@@ -46,7 +71,9 @@ async def handle_client(websocket):
         system_prompt=full_prompt,
         ha_api=ha_api,
         voice_name=options.get("voice_name", "Zephyr"),
-        model=options.get("gemini_model", "gemini-2.0-flash-exp")
+        model=options.get("gemini_model", "gemini-2.0-flash-exp"),
+        enable_google_search=options.get("enable_google_search", True),
+        vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600)
     )
     
     try:
@@ -112,6 +139,12 @@ async def handle_client(websocket):
                                     )
                                     
                                     logger.info(f"HA Action Result: {result}")
+                                    
+                                    # Отправляем звуковой отклик (Earcon) клиенту напрямую
+                                    if "error" in result:
+                                        await websocket.send(ERROR_CHIME)
+                                    else:
+                                        await websocket.send(SUCCESS_CHIME)
                                     
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,

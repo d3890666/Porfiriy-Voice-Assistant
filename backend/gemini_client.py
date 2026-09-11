@@ -7,7 +7,7 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 class GeminiProxyClient:
-    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr", model: str = "gemini-2.0-flash-exp"):
+    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr", model: str = "gemini-2.0-flash-exp", enable_google_search: bool = True, vad_silence_duration_ms: int = 600):
         """
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
@@ -25,6 +25,8 @@ class GeminiProxyClient:
         
         self.system_prompt = system_prompt
         self.voice_name = voice_name
+        self.enable_google_search = enable_google_search
+        self.vad_silence_duration_ms = vad_silence_duration_ms
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
@@ -43,15 +45,28 @@ class GeminiProxyClient:
         )
         tool = types.Tool(function_declarations=[ha_tool])
         
+        tools = [tool]
+        if self.enable_google_search:
+            tools.append({"google_search": {}})
+            
+        realtime_input_config = None
+        if self.vad_silence_duration_ms:
+            realtime_input_config = types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    silence_duration_ms=self.vad_silence_duration_ms
+                )
+            )
+
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
-            tools=[tool],
+            tools=tools,
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.voice_name)
                 )
             ),
+            realtime_input_config=realtime_input_config
         )
 
     def connect(self):
