@@ -43,11 +43,12 @@ class GeminiProxyClient:
                 required=["domain", "service", "entity_id"]
             )
         )
-        tool = types.Tool(function_declarations=[ha_tool])
-        
-        tools = [tool]
+        tool_args = {"function_declarations": [ha_tool]}
         if self.enable_google_search:
-            tools.append({"google_search": {}})
+            tool_args["google_search"] = types.GoogleSearch()
+            
+        tool = types.Tool(**tool_args)
+        tools = [tool]
             
         realtime_input_config = None
         if self.vad_silence_duration_ms:

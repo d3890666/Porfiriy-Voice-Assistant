@@ -12,7 +12,9 @@ from gemini_client import GeminiProxyClient
 from google.genai import types
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("server")
+audio_logger = logging.getLogger("audio")
+tool_logger = logging.getLogger("tools")
 
 def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume: float = 0.5) -> bytes:
     """Генерация сырого 16-bit PCM аудио сигнала (синусоиды)."""
@@ -92,7 +94,7 @@ async def handle_client(websocket):
                                 # Игнорируем микрофон пока говорит ассистент, если перебивание выключено
                                 continue
                                 
-                            logger.debug(f"Received {len(message)} bytes audio chunk from WS Client, sending to Gemini")
+                            audio_logger.debug(f"Received {len(message)} bytes audio chunk from WS Client, sending to Gemini")
                             await session.send_realtime_input(
                                 audio=types.Blob(
                                     data=message,
@@ -120,14 +122,14 @@ async def handle_client(websocket):
                 """Слушает ответы от Gemini, пересылает аудио клиенту и исполняет Tool Calls (HA)."""
                 try:
                     async for response in session.receive():
-                        logger.debug("Received event from Gemini")
+                        audio_logger.debug("Received event from Gemini")
                         
                         # Обработка аудио потока от модели
                         if response.server_content and response.server_content.model_turn:
                             session_state["is_gemini_speaking"] = True
                             for part in response.server_content.model_turn.parts:
                                 if part.inline_data and part.inline_data.data:
-                                    logger.debug(f"Sending {len(part.inline_data.data)} bytes audio chunk from Gemini to WS Client")
+                                    audio_logger.debug(f"Sending {len(part.inline_data.data)} bytes audio chunk from Gemini to WS Client")
                                     # Пересылаем сырой PCM аудио-чанк обратно клиенту
                                     await websocket.send(part.inline_data.data)
                                     
@@ -158,7 +160,7 @@ async def handle_client(websocket):
                                     service = args.get("service")
                                     entity_id = args.get("entity_id")
                                     
-                                    logger.info(f"Gemini Calling Tool: {domain}.{service} on {entity_id}")
+                                    tool_logger.info(f"Gemini Calling Tool: {domain}.{service} on {entity_id}")
                                     
                                     # Выполняем действие в Home Assistant
                                     result = await ha_api.call_service(
@@ -167,7 +169,7 @@ async def handle_client(websocket):
                                         service_data={"entity_id": entity_id}
                                     )
                                     
-                                    logger.info(f"HA Action Result: {result}")
+                                    tool_logger.info(f"HA Action Result: {result}")
                                     
                                     # Отправляем звуковой отклик (Earcon) клиенту напрямую
                                     if "error" in result:
