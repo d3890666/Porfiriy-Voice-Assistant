@@ -1,0 +1,26 @@
+name: "Porfiriy Voice Assistant"
+description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
+version: "0.0.1"
+slug: "porfiriy_voice_assistant"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+  - i386
+startup: application
+boot: auto
+map:
+  - share:rw
+  - config:rw
+options:
+  gemini_api_key: ""
+  system_prompt: "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом. Если тебя просят выполнить команду по умному дому, используй доступные функции."
+schema:
+  gemini_api_key: str
+  system_prompt: str
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: "WebSocket Audio Server"
