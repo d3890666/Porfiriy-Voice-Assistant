@@ -182,6 +182,66 @@ async def handle_client(websocket):
                                         id=fc.id,
                                         response={"result": result}
                                     ))
+                                    
+                                elif name == "search_music_assistant":
+                                    tool_logger.info(f"Gemini Calling MA Search: {args}")
+                                    search_data = dict(args)
+                                    # HA API expects media_type to be a list if provided
+                                    if "media_type" in search_data:
+                                        search_data["media_type"] = [search_data["media_type"]]
+                                        
+                                    result = await ha_api.call_service_ws(
+                                        domain="mass",
+                                        service="search",
+                                        service_data=search_data,
+                                        return_response=True
+                                    )
+                                    
+                                    simplified_result = []
+                                    if isinstance(result, dict) and not "error" in result:
+                                        for cat, items in result.items():
+                                            if isinstance(items, list):
+                                                for item in items[:5]: # top 5 per category
+                                                    simplified_result.append({
+                                                        "name": item.get("name"),
+                                                        "uri": item.get("uri"),
+                                                        "type": cat
+                                                    })
+                                        result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
+                                        
+                                    tool_logger.info(f"MA Search Result: {result}")
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response={"result": result}
+                                    ))
+                                    
+                                elif name == "play_music_assistant":
+                                    uri = args.get("uri")
+                                    player = args.get("player") or options.get("default_media_player", "media_player.living_room")
+                                    tool_logger.info(f"Gemini Playing MA URI: {uri} on {player}")
+                                    
+                                    result = await ha_api.call_service(
+                                        domain="media_player",
+                                        service="play_media",
+                                        service_data={
+                                            "entity_id": player,
+                                            "media_content_id": uri,
+                                            "media_content_type": "music"
+                                        }
+                                    )
+                                    
+                                    tool_logger.info(f"MA Play Result: {result}")
+                                    if "error" in result:
+                                        await websocket.send(ERROR_CHIME)
+                                    else:
+                                        await websocket.send(SUCCESS_CHIME)
+                                        
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response={"result": result}
+                                    ))
                             
                             if function_responses:
                                 await session.send_tool_response(function_responses=function_responses)

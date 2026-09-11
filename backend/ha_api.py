@@ -63,6 +63,41 @@ class HomeAssistantAPI:
                 logger.error(f"Error calling HA service {domain}.{service}: {e}")
                 return {"error": f"Network or internal error: {str(e)}"}
 
+    async def call_service_ws(self, domain: str, service: str, service_data: Dict[str, Any] = None, return_response: bool = False) -> Any:
+        """
+        Вызвать сервис через WebSocket API. Позволяет получить возвращаемые данные (return_response).
+        """
+        try:
+            async with websockets.connect(self.ws_url) as ws:
+                await ws.recv() # auth_required
+                
+                token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
+                await ws.send(json.dumps({"type": "auth", "access_token": token}))
+                await ws.recv() # auth_ok
+                
+                req = {
+                    "id": 2,
+                    "type": "call_service",
+                    "domain": domain,
+                    "service": service,
+                    "service_data": service_data or {},
+                    "return_response": return_response
+                }
+                await ws.send(json.dumps(req))
+                
+                while True:
+                    resp_str = await ws.recv()
+                    resp = json.loads(resp_str)
+                    if resp.get("id") == 2 and resp.get("type") == "result":
+                        if resp.get("success"):
+                            return resp.get("result") or {"status": "success"}
+                        else:
+                            error = resp.get("error", {})
+                            return {"error": error.get("message", "Unknown error")}
+        except Exception as e:
+            logger.error(f"Error calling HA service WS {domain}.{service}: {e}")
+            return {"error": str(e)}
+
     async def get_exposed_entity_ids(self) -> set:
         """Получает список entity_id, которым разрешен доступ к Assist (conversation)."""
         try:

@@ -43,7 +43,33 @@ class GeminiProxyClient:
                 required=["domain", "service", "entity_id"]
             )
         )
-        tool_args = {"function_declarations": [ha_tool]}
+        search_music_tool = types.FunctionDeclaration(
+            name="search_music_assistant",
+            description="Search for music (artists, albums, tracks, playlists) in Music Assistant. Returns a list of results with URIs. Use this to find the exact URI before playing.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "name": types.Schema(type="STRING", description="Search query (e.g. 'Madonna')"),
+                    "media_type": types.Schema(type="STRING", description="Optional. Type to search: 'artist', 'album', 'track', 'playlist', 'radio'"),
+                },
+                required=["name"]
+            )
+        )
+        
+        play_music_tool = types.FunctionDeclaration(
+            name="play_music_assistant",
+            description="Play a music URI (obtained from search_music_assistant) on the smart speaker.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "uri": types.Schema(type="STRING", description="The URI of the media to play"),
+                    "player": types.Schema(type="STRING", description="Optional. The media player entity_id. Leave empty to use default."),
+                },
+                required=["uri"]
+            )
+        )
+
+        tool_args = {"function_declarations": [ha_tool, search_music_tool, play_music_tool]}
         if self.enable_google_search:
             tool_args["google_search"] = types.GoogleSearch()
             
