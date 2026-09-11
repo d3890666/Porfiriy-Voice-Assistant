@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.16"
+version: "0.0.17"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -22,6 +22,7 @@ options:
   system_prompt: "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом. Если тебя просят выполнить команду по умному дому, используй доступные функции."
   voice_name: "Zephyr"
   debug_mode: false
+  debug_audio: false
   enable_google_search: true
   vad_silence_duration_ms: 600
   enable_barge_in: false
@@ -33,6 +34,7 @@ schema:
   system_prompt: str
   voice_name: "list(Puck|Charon|Kore|Fenrir|Aoede|Zephyr)"
   debug_mode: bool
+  debug_audio: bool
   enable_google_search: bool
   vad_silence_duration_ms: int
   enable_barge_in: bool

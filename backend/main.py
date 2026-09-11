@@ -57,8 +57,14 @@ def get_options():
 async def handle_client(websocket):
     options = get_options()
     if options.get("debug_mode"):
-        logging.getLogger().setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
+        tool_logger.setLevel(logging.DEBUG)
         logger.debug("Debug mode enabled. Maximum logging activated.")
+        
+    if options.get("debug_audio", False):
+        audio_logger.setLevel(logging.DEBUG)
+    else:
+        audio_logger.setLevel(logging.INFO)
         
     logger.info(f"Client connected from {websocket.remote_address}")
     
@@ -68,7 +74,7 @@ async def handle_client(websocket):
     devices_text = await ha_api.get_filtered_entities()
     system_prompt = options.get('system_prompt', '')
     full_prompt = f"{system_prompt}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
-    logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
+    logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt:\n{devices_text}")
     
     gemini_client = GeminiProxyClient(
         api_key=options.get("gemini_api_key"),
@@ -151,6 +157,7 @@ async def handle_client(websocket):
                         
                         # Обработка вызовов функций (Home Assistant)
                         if response.tool_call:
+                            tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
                             function_responses = []
                             for fc in response.tool_call.function_calls:
                                 name = fc.name
@@ -242,8 +249,16 @@ async def handle_client(websocket):
                                         id=fc.id,
                                         response={"result": result}
                                     ))
+                                else:
+                                    tool_logger.warning(f"Unknown tool called: {name}")
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response={"error": "Unknown tool"}
+                                    ))
                             
                             if function_responses:
+                                tool_logger.info(f"Sending Tool Responses: {function_responses}")
                                 await session.send_tool_response(function_responses=function_responses)
                                     
                 except ConnectionClosed:
