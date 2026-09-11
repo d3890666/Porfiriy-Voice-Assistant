@@ -52,7 +52,12 @@ async def handle_client(websocket):
                 try:
                     async for message in websocket:
                         if isinstance(message, bytes):
-                            await session.send(input={"data": message, "mime_type": "audio/pcm"})
+                            await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=message,
+                                    mime_type="audio/pcm;rate=16000"
+                                )
+                            )
                 except ConnectionClosed:
                     logger.info("Client disconnected (WS read)")
                 except Exception as e:
@@ -70,11 +75,12 @@ async def handle_client(websocket):
                                     await websocket.send(part.inline_data.data)
                         
                         # Обработка вызовов функций (Home Assistant)
-                        if response.tool_calls:
-                            for tool_call in response.tool_calls:
-                                name = tool_call.function_call.name
+                        if response.tool_call:
+                            function_responses = []
+                            for fc in response.tool_call.function_calls:
+                                name = fc.name
                                 if name == "call_ha_service":
-                                    args = tool_call.function_call.args
+                                    args = fc.args
                                     domain = args.get("domain")
                                     service = args.get("service")
                                     entity_id = args.get("entity_id")
@@ -90,23 +96,14 @@ async def handle_client(websocket):
                                     
                                     logger.info(f"HA Action Result: {result}")
                                     
-                                    # Формируем и отправляем ответ обратно в Gemini
-                                    tool_response = types.LiveClientContent(
-                                        turn_complete=True,
-                                        client_content=types.ClientContent(
-                                            turns=[
-                                                types.Content(
-                                                    parts=[
-                                                        types.Part.from_function_response(
-                                                            name=name,
-                                                            response={"result": result}
-                                                        )
-                                                    ]
-                                                )
-                                            ]
-                                        )
-                                    )
-                                    await session.send(input=tool_response)
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response={"result": result}
+                                    ))
+                            
+                            if function_responses:
+                                await session.send_tool_response(function_responses=function_responses)
                                     
                 except ConnectionClosed:
                     logger.info("Client disconnected (Gemini read)")
