@@ -63,24 +63,7 @@ async def handle_client(websocket):
     
     # 1. Формируем контекст устройств
     devices_text = await ha_api.get_filtered_entities()
-    
-    # Пытаемся прочитать многострочный промпт из файла
     system_prompt = options.get('system_prompt', '')
-    prompt_file_path = "/config/porfiriy_prompt.txt"
-    # Для отладки локально (вне аддона) ищем файл в текущей папке
-    if not os.path.exists(prompt_file_path) and os.path.exists("porfiriy_prompt.txt"):
-        prompt_file_path = "porfiriy_prompt.txt"
-        
-    if os.path.exists(prompt_file_path):
-        try:
-            with open(prompt_file_path, "r", encoding="utf-8") as f:
-                file_prompt = f.read().strip()
-                if file_prompt:
-                    system_prompt = file_prompt
-                    logger.info(f"Loaded multiline system prompt from {prompt_file_path}")
-        except Exception as e:
-            logger.error(f"Failed to read prompt file: {e}")
-            
     full_prompt = f"{system_prompt}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
@@ -109,6 +92,18 @@ async def handle_client(websocket):
                                     mime_type="audio/pcm;rate=16000"
                                 )
                             )
+                        elif isinstance(message, str):
+                            # Обработка текстовых сообщений
+                            try:
+                                data = json.loads(message)
+                                if "text" in data:
+                                    logger.info(f"Received text input from WS Client: {data['text']}")
+                                    await session.send_client_content(
+                                        turns=[types.Content(parts=[types.Part.from_text(text=data['text'])])],
+                                        turn_complete=True
+                                    )
+                            except Exception as e:
+                                logger.error(f"Error parsing text message: {e}")
                 except ConnectionClosed:
                     logger.info("Client disconnected (WS read)")
                 except Exception as e:

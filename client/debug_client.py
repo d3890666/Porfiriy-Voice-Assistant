@@ -38,20 +38,6 @@ class DebugClient:
                 # Читаем чанк с микрофона
                 data = await asyncio.to_thread(stream.read, CHUNK, exception_on_overflow=False)
                 
-                # Проверяем на наличие голоса
-                is_speech = self.vad.is_speech(data, SEND_RATE)
-                
-                # ПРОБЛЕМА ЭХА (Acoustic Echo):
-                # Если динамик сейчас воспроизводит звук, микрофон это слышит.
-                # Из-за этого срабатывает Barge-in и обрывает воспроизведение.
-                # Так как у нас в Python нет алгоритма подавления эха (AEC), 
-                # самый простой способ исправить это — программно "глушить" микрофон, пока говорит ассистент.
-                if self.is_playing:
-                    data = b'\x00' * len(data) # Отправляем тишину
-                elif is_speech:
-                    # Опционально: можно добавить логику локального VAD
-                    pass
-                
                 # Отправляем сырой PCM на сервер
                 await ws.send(data)
                 await asyncio.sleep(0.001)
@@ -93,17 +79,33 @@ class DebugClient:
                 logger.error(f"WS receive error: {e}")
                 break
 
+    async def _read_console_and_send(self, ws):
+        import json
+        import sys
+        loop = asyncio.get_running_loop()
+        while True:
+            # Читаем строку из консоли асинхронно
+            line = await loop.run_in_executor(None, sys.stdin.readline)
+            if not line:
+                break
+            text = line.strip()
+            if text:
+                logger.info(f"Sending text: {text}")
+                await ws.send(json.dumps({"text": text}))
+
     async def run(self):
         logger.info(f"Connecting to Backend Server at {self.ws_url} ...")
         async with websockets.connect(self.ws_url) as ws:
             logger.info("Successfully connected to Backend!")
+            logger.info("You can type text and press Enter at any time.")
             
             task1 = asyncio.create_task(self._read_mic_and_send(ws))
             task2 = asyncio.create_task(self._receive_and_play(ws))
+            task3 = asyncio.create_task(self._read_console_and_send(ws))
             
             # Ждем завершения любой из задач (при ошибке или разрыве соединения)
             done, pending = await asyncio.wait(
-                [task1, task2],
+                [task1, task2, task3],
                 return_when=asyncio.FIRST_COMPLETED
             )
             for p in pending:
