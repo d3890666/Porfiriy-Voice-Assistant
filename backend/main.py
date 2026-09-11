@@ -212,6 +212,7 @@ async def handle_client(websocket):
                                     ))
                                     
                                 elif name == "search_music_assistant":
+                                    args = fc.args
                                     tool_logger.info(f"Gemini Calling MA Search: {args}")
                                     search_data = dict(args)
                                     # HA API expects media_type to be a list if provided
@@ -245,6 +246,7 @@ async def handle_client(websocket):
                                     ))
                                     
                                 elif name == "play_music_assistant":
+                                    args = fc.args
                                     uri = args.get("uri")
                                     player = args.get("player") or options.get("default_media_player", "media_player.living_room")
                                     tool_logger.info(f"Gemini Playing MA URI: {uri} on {player}")
