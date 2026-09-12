@@ -130,8 +130,11 @@ class PhraseManager:
                 pass
 
         model = options.get("gemini_model", "models/gemini-3.1-flash-live-preview")
-        async with self._generating_lock:
-            await self.generate_phrases(api_key, persona, voice_name, model)
+        try:
+            async with self._generating_lock:
+                await self.generate_phrases(api_key, persona, voice_name, model)
+        except Exception as e:
+            logger.error(f"Error in phrase generation task: {e}", exc_info=True)
 
     async def generate_phrases(self, api_key: str, persona: str, voice_name: str, model_name: str):
         """Двухшаговая генерация: 1) Текст от Porfiriy LLM ➔ 2) Аудио через Live WebSocket."""
@@ -170,7 +173,7 @@ class PhraseManager:
         live_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
 
         live_config = types.LiveConnectConfig(
-            response_modalities=[types.LiveServerContentModality.AUDIO],
+            response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
@@ -202,7 +205,7 @@ class PhraseManager:
                                 turns=[
                                     types.Content(
                                         role="user",
-                                        parts=[types.Part.from_text(f"Произнеси строго следующий текст: {text}")]
+                                        parts=[types.Part.from_text(text=f"Произнеси строго следующий текст: {text}")]
                                     )
                                 ],
                                 turn_complete=True

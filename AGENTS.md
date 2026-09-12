@@ -18,6 +18,9 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.49 (Исправление LiveConnectConfig для WebSocket-синтеза)
+*   **LiveConnectConfig Fix**: Исправлен вызов `LiveConnectConfig` (передача `response_modalities=["AUDIO"]`) и именованный аргумент `Part.from_text(text=...)` в `phrase_manager.py`.
+
 ### Версия 0.0.48 (Синтез системных реплик через Live WebSocket)
 *   **Live WebSocket Audio Synthesis in PhraseManager**: Синтез реплик переведён с не поддерживаемого REST API на нативный `client.aio.live.connect` (`bidiGenerateContent`), что полностью устранило ошибки 400 и квоты 429.
 
