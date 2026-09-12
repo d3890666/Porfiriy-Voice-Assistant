@@ -507,6 +507,7 @@ void onMessageCallback(WebsocketsMessage message) {
             Serial.println("Server commanded SLEEP. Returning to wake word mode.");
             is_listening = false;
             is_speaking = false;
+            memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
         }
         else if (message.data().indexOf("\"type\":\"speaking\"") >= 0) {
             is_speaking = true;
@@ -526,6 +527,7 @@ void onEventsCallback(WebsocketsEvent event, String data) {
         is_connected = false;
         is_listening = false;
         is_speaking = false;
+        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
     }
 }
 
@@ -635,6 +637,7 @@ void loop() {
         Serial.println("Microphone timeout (15s)! Forcing sleep mode.");
         is_listening = false;
         is_speaking = false;
+        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
     }
 
     client.poll();
