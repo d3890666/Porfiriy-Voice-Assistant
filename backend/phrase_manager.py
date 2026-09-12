@@ -4,8 +4,6 @@ import logging
 import random
 import hashlib
 import asyncio
-import io
-import wave
 from typing import Dict, List, Optional
 from google import genai
 from google.genai import types
@@ -131,25 +129,22 @@ class PhraseManager:
             except Exception:
                 pass
 
+        model = options.get("gemini_model", "models/gemini-3.1-flash-live-preview")
         async with self._generating_lock:
-            await self.generate_phrases(api_key, persona, voice_name, options.get("gemini_model", "gemini-2.0-flash-exp"))
+            await self.generate_phrases(api_key, persona, voice_name, model)
 
     async def generate_phrases(self, api_key: str, persona: str, voice_name: str, model_name: str):
-        """Двухшаговая генерация: 1) Текст от Porfiriy LLM ➔ 2) Аудио TTS."""
+        """Двухшаговая генерация: 1) Текст от Porfiriy LLM ➔ 2) Аудио через Live WebSocket."""
         logger.info("Brainstorming dynamic system phrases using Porfiriy persona...")
         client = genai.Client(api_key=api_key)
         
-        # Берем модель напрямую из настроек пользователя
-        model = model_name if model_name.startswith("models/") else f"models/{model_name}"
-        logger.info(f"Using model {model} and voice {voice_name} for system phrases...")
-        
-        # 1. Запрос к Gemini для создания текстов
+        # 1. Запрос к Gemini для создания текстов (быстрый JSON через flash модель)
         prompt = build_generation_prompt(persona)
         
         phrases_dict = None
-        for candidate_model in [model, "models/gemini-2.5-flash", "models/gemini-1.5-flash"]:
+        for candidate_model in ["models/gemini-2.5-flash", "models/gemini-1.5-flash"]:
             try:
-                logger.info(f"Requesting phrase texts from {candidate_model}...")
+                logger.info(f"Requesting phrase catalog from {candidate_model}...")
                 resp = await client.aio.models.generate_content(
                     model=candidate_model,
                     contents=prompt,
@@ -168,68 +163,79 @@ class PhraseManager:
             logger.error("Could not generate phrase texts with available models.")
             return
 
-        # 2. Синтез аудио для каждой фразы
+        # 2. Синтез аудио через Live WebSocket (единая сессия bidiGenerateContent)
         manifest_files = {}
         manifest_texts = {}
         curr_hash = self._hash_persona(persona, voice_name)
-        tts_model = model
+        live_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+
+        live_config = types.LiveConnectConfig(
+            response_modalities=[types.LiveServerContentModality.AUDIO],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                )
+            ),
+            system_instruction=types.Content(
+                parts=[types.Part.from_text(
+                    "Ты движок озвучки коротких системных реплик. Когда пользователь присылает фразу, "
+                    "произнеси СТРОГО и ТОЧНО только эти слова своим фирменным голосом, "
+                    "без каких-либо вводных слов, приветствий или пояснений."
+                )]
+            )
+        )
 
         categories = ["thinking", "network_error", "device_error", "empty_noise"]
-        for cat in categories:
-            texts = phrases_dict.get(cat, [])
-            manifest_files[cat] = []
-            manifest_texts[cat] = texts
-            self.phrases[cat] = []
-            
-            for idx, text in enumerate(texts):
-                try:
-                    logger.info(f"Synthesizing [{cat} #{idx+1}]: '{text}' with voice {voice_name}...")
-                    tts_resp = None
-                    for t_mod in [tts_model, "models/gemini-2.5-flash-native-audio-latest", "models/gemini-2.5-flash"]:
-                        try:
-                            tts_resp = await client.aio.models.generate_content(
-                                model=t_mod,
-                                contents=f"Say strictly: {text}",
-                                config=types.GenerateContentConfig(
-                                    response_modalities=["AUDIO"],
-                                    speech_config=types.SpeechConfig(
-                                        voice_config=types.VoiceConfig(
-                                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
-                                        )
-                                    )
-                                )
-                            )
-                            if tts_resp and tts_resp.candidates:
-                                break
-                        except Exception as e_mod:
-                            logger.warning(f"Audio synthesis failed with {t_mod}: {e_mod}")
-                    
-                    audio_data = None
-                    if tts_resp.candidates and tts_resp.candidates[0].content:
-                        for part in tts_resp.candidates[0].content.parts:
-                            if part.inline_data and part.inline_data.data:
-                                audio_data = part.inline_data.data
-                                break
-                            
-                    if audio_data:
-                        # Если формат WAV, извлекаем PCM данные
-                        if audio_data.startswith(b"RIFF"):
-                            with wave.open(io.BytesIO(audio_data), "rb") as wf:
-                                pcm_bytes = wf.readframes(wf.getnframes())
-                        else:
-                            pcm_bytes = audio_data
-                            
-                        filename = f"{cat}_{idx}.pcm"
-                        filepath = os.path.join(self.cache_dir, filename)
-                        with open(filepath, "wb") as pf:
-                            pf.write(pcm_bytes)
-                            
-                        manifest_files[cat].append(filename)
-                        self.phrases[cat].append(pcm_bytes)
-                except Exception as e:
-                    logger.error(f"Failed to synthesize '{text}': {e}")
+        try:
+            logger.info(f"Opening Live WebSocket session to {live_model} with voice {voice_name} for audio synthesis...")
+            async with client.aio.live.connect(model=live_model, config=live_config) as session:
+                for cat in categories:
+                    texts = phrases_dict.get(cat, [])
+                    manifest_files[cat] = []
+                    manifest_texts[cat] = texts
+                    self.phrases[cat] = []
 
-        # Сохраняем manifest
+                    for idx, text in enumerate(texts):
+                        try:
+                            logger.info(f"Synthesizing [{cat} #{idx+1}]: '{text}' via Live WebSocket...")
+                            await session.send_client_content(
+                                turns=[
+                                    types.Content(
+                                        role="user",
+                                        parts=[types.Part.from_text(f"Произнеси строго следующий текст: {text}")]
+                                    )
+                                ],
+                                turn_complete=True
+                            )
+
+                            pcm_chunks = bytearray()
+                            async for live_msg in session.receive():
+                                if live_msg.server_content:
+                                    if live_msg.server_content.model_turn:
+                                        for part in live_msg.server_content.model_turn.parts:
+                                            if part.inline_data and part.inline_data.data:
+                                                pcm_chunks.extend(part.inline_data.data)
+                                    if getattr(live_msg.server_content, "turn_complete", False):
+                                        break
+
+                            if len(pcm_chunks) > 0:
+                                filename = f"{cat}_{idx}.pcm"
+                                filepath = os.path.join(self.cache_dir, filename)
+                                with open(filepath, "wb") as pf:
+                                    pf.write(pcm_chunks)
+
+                                manifest_files[cat].append(filename)
+                                self.phrases[cat].append(bytes(pcm_chunks))
+                                logger.info(f"Successfully saved {len(pcm_chunks)} bytes to {filename}")
+                            else:
+                                logger.warning(f"No audio chunks received for '{text}'")
+                        except Exception as e_phrase:
+                            logger.error(f"Error synthesizing phrase '{text}': {e_phrase}")
+
+        except Exception as e_ws:
+            logger.error(f"Live WebSocket audio synthesis error: {e_ws}")
+
+        # 3. Сохраняем manifest на диск
         manifest_data = {
             "persona_hash": curr_hash,
             "voice_name": voice_name,
@@ -241,7 +247,7 @@ class PhraseManager:
 
         self.texts = manifest_texts
         self.is_ready = True
-        logger.info("Porfiriy dynamic phrase cache successfully generated and active!")
+        logger.info("Porfiriy dynamic phrase cache successfully generated via Live WebSocket!")
 
     def get_phrase(self, category: str) -> Optional[bytes]:
         """Возвращает случайный PCM буфер фразы указанной категории."""

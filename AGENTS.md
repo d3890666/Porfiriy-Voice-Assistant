@@ -18,6 +18,9 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.48 (Синтез системных реплик через Live WebSocket)
+*   **Live WebSocket Audio Synthesis in PhraseManager**: Синтез реплик переведён с не поддерживаемого REST API на нативный `client.aio.live.connect` (`bidiGenerateContent`), что полностью устранило ошибки 400 и квоты 429.
+
 ### Версия 0.0.47 (Таймаут размышлений 7 секунд)
 *   **Thinking Timeout 7s**: Задержка срабатывания фразы ожидания увеличена с 2.5 до 7.0 секунд и вынесена в `thinking_timeout_s`.
 

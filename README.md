@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.47-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.48-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -167,6 +167,9 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.48 (Синтез системных реплик через Live WebSocket)
+* 🎙️ **Live WebSocket Audio Synthesis**: Озвучка системных реплик переведена на нативную сессию Gemini Live WebSocket (`bidiGenerateContent`). Все 12 реплик синтезируются в рамках одной сессии напрямую в 24 кГц PCM голосом `Charon` без ограничений HTTP REST.
 
 ### Версия 0.0.47 (Таймаут размышлений 7 секунд)
 * ⏱️ **7s Thinking Timeout**: Таймаут ожидания перед воспроизведением фразы-заполнителя увеличен до 7 секунд (настраивается через параметр `thinking_timeout_s`).
