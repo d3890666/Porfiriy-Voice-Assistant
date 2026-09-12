@@ -18,6 +18,9 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.50 (Замена Part.from_text на types.Part)
+*   **Part Constructor Fix**: В `phrase_manager.py` все части контента создаются через `types.Part(text=...)`.
+
 ### Версия 0.0.49 (Исправление LiveConnectConfig для WebSocket-синтеза)
 *   **LiveConnectConfig Fix**: Исправлен вызов `LiveConnectConfig` (передача `response_modalities=["AUDIO"]`) и именованный аргумент `Part.from_text(text=...)` в `phrase_manager.py`.
 
