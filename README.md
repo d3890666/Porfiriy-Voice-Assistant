@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.41-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.42-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -167,6 +167,9 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.42 (Исправление совместимости с websockets v13+)
+* 🐛 **Fix ServerConnection State**: Замена websocket.closed на while True во избежание AttributeError в библиотеке websockets, из-за которого корутина чтения Gemini падала сразу при подключении клиента.
 
 ### Версия 0.0.41 (Полноценный Multi-turn в сессиях Gemini Live)
 * 🔄 **Persistent Multi-Turn Listener**: Устранена критическая проблема, из-за которой генератор `session.receive()` завершал корутину после первого хода. Добавлен непрерывный цикл `while not websocket.closed:`, позволяющий ассистенту стабильно работать на 2-м, 3-м, 4-м и последующих вызовах без обрыва сессии.

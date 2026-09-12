@@ -49,3 +49,6 @@
 
 ### Версия 0.0.41 (Полноценный Multi-turn в сессиях Gemini Live)
 *   **Persistent Multi-Turn Listener**: В SDK `google-genai` метод `session.receive()` прерывается по `break` при `turn_complete=True`. В `receive_from_gemini()` добавлен внешний цикл `while not websocket.closed:`, чтобы сокет чтения Gemini переоткрывался на каждый последующий ход. Это полностью решило проблему зависания ассистента на 2-м и последующих запросах.
+
+### Версия 0.0.42 (Исправление совместимости с websockets v13+)
+*   **Fix ServerConnection State**: В новых версиях `websockets` у объекта `ServerConnection` нет атрибута `.closed`. Заменено на `while True:`, что устранило падение задачи чтения ответов Gemini Live при старте.

@@ -174,7 +174,7 @@ async def handle_client(websocket):
             async def receive_from_gemini():
                 """Слушает ответы от Gemini, пересылает аудио клиенту и исполняет Tool Calls (HA)."""
                 try:
-                    while not websocket.closed:
+                    while True:
                         async for response in session.receive():
                             audio_logger.debug("Received event from Gemini")
                         
