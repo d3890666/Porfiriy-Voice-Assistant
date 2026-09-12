@@ -135,11 +135,12 @@ async def handle_client(websocket):
 
                 async def _watchdog():
                     try:
-                        await asyncio.sleep(2.5)
+                        thinking_delay = float(options.get("thinking_timeout_s", 7.0))
+                        await asyncio.sleep(thinking_delay)
                         if session_state.get("is_thinking") and not session_state.get("first_audio_sent") and not session_state.get("is_tool_pending"):
                             phrase = phrase_manager.get_phrase("thinking")
                             if phrase:
-                                logger.info("Thinking timeout > 2.5s: playing dynamic Porfiriy filler phrase...")
+                                logger.info(f"Thinking timeout > {thinking_delay}s: playing dynamic Porfiriy filler phrase...")
                                 await phrase_manager.play_phrase(websocket, phrase)
                     except asyncio.CancelledError:
                         pass
