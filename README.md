@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.45-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.46-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -167,6 +167,9 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.46 (Фикс модели генерации реплик и бамп версии)
+* 🩹 **Direct User Model Resolution**: Устранена подстановка устаревшей `gemini-2.0-flash-exp`, генератор фраз использует ровно ту модель, которая задана в `gemini_model`.
 
 ### Версия 0.0.45 (Динамический генератор системных реплик Порфирия)
 * 🧠 **Dynamic Persona-Driven Audio Cache**: Вместо статичных констант Порфирий теперь **сам придумывает и озвучивает** свои технические реплики на основе живого поля `prompt_persona`.
