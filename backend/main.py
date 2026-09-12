@@ -142,6 +142,7 @@ async def handle_client(websocket):
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
+                                    session_state["first_audio_received"] = False
                                 elif msg_type == "end_of_speech":
                                     vad_ms = options.get("vad_silence_duration_ms", 600)
                                     needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)
@@ -161,6 +162,7 @@ async def handle_client(websocket):
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
+                                    session_state["first_audio_received"] = False
                                     await websocket.send(json.dumps({"type": "sleep"}))
                             except Exception as e:
                                 logger.error(f"Error parsing text message: {e}")
@@ -172,206 +174,209 @@ async def handle_client(websocket):
             async def receive_from_gemini():
                 """Слушает ответы от Gemini, пересылает аудио клиенту и исполняет Tool Calls (HA)."""
                 try:
-                    async for response in session.receive():
-                        audio_logger.debug("Received event from Gemini")
+                    while not websocket.closed:
+                        async for response in session.receive():
+                            audio_logger.debug("Received event from Gemini")
                         
-                        # Обработка аудио потока от модели
-                        if response.server_content and response.server_content.model_turn:
-                            session_state["is_gemini_speaking"] = True
-                            for part in response.server_content.model_turn.parts:
-                                if part.inline_data and part.inline_data.data:
-                                    if not session_state.get("first_audio_sent"):
-                                        logger.info("Started receiving audio stream from Gemini (Speaker active)...")
-                                        session_state["first_audio_sent"] = True
-                                        await websocket.send(json.dumps({"type": "speaking"}))
-                                        
-                                    pcm_audio = part.inline_data.data
-                                    audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (chunked)")
-                                    
-                                    # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
-                                    CHUNK_SIZE = 2048
-                                    for i in range(0, len(pcm_audio), CHUNK_SIZE):
-                                        chunk = pcm_audio[i:i+CHUNK_SIZE]
-                                        await websocket.send(chunk)
-                                    
-                        # Обработка транскрипции и состояния
-                        content = response.server_content
-                        if content:
-                            if getattr(content, "turn_complete", False):
-                                logger.info("Gemini finished turn. Sending SLEEP command to client.")
-                                session_state["is_gemini_speaking"] = False
-                                # Сбрасываем флаг отправки аудио для следующего ответа
-                                session_state["first_audio_sent"] = False
-                                # Отправляем команду на засыпание (чтобы колонка снова ждала вейкворд)
-                                await websocket.send(json.dumps({"type": "sleep"}))
-                                
-                            # Обработка прерывания
-                            if getattr(content, "interrupted", False):
-                                logger.info("Gemini Interrupted by User (Barge-in)!")
-                                await websocket.send(json.dumps({"type": "interrupted"}))
-                                
-                            if getattr(content, "input_transcription", None):
-                                logger.info(f"User Speech Recognized: {content.input_transcription.text}")
-                                if not session_state.get("is_gemini_speaking"):
-                                    await websocket.send(json.dumps({"type": "thinking"}))
-                            if getattr(content, "output_transcription", None):
-                                logger.info(f"Gemini Speech: {content.output_transcription.text}")
-                                    
-                            # Логируем текст ответа Gemini напрямую
-                            if getattr(response.server_content.model_turn, "parts", None):
+                            # Обработка аудио потока от модели
+                            if response.server_content and response.server_content.model_turn:
+                                session_state["is_gemini_speaking"] = True
                                 for part in response.server_content.model_turn.parts:
-                                    if getattr(part, "text", None):
-                                        logger.info(f"Gemini says: {part.text}")
+                                    if part.inline_data and part.inline_data.data:
+                                        if not session_state.get("first_audio_sent"):
+                                            logger.info("Started receiving audio stream from Gemini (Speaker active)...")
+                                            session_state["first_audio_sent"] = True
+                                            await websocket.send(json.dumps({"type": "speaking"}))
+                                        
+                                        pcm_audio = part.inline_data.data
+                                        audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (chunked)")
+                                    
+                                        # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
+                                        CHUNK_SIZE = 2048
+                                        for i in range(0, len(pcm_audio), CHUNK_SIZE):
+                                            chunk = pcm_audio[i:i+CHUNK_SIZE]
+                                            await websocket.send(chunk)
+                                    
+                            # Обработка транскрипции и состояния
+                            content = response.server_content
+                            if content:
+                                if getattr(content, "turn_complete", False):
+                                    logger.info("Gemini finished turn. Sending SLEEP command to client.")
+                                    session_state["is_gemini_speaking"] = False
+                                    # Сбрасываем флаг отправки аудио для следующего ответа
+                                    session_state["first_audio_sent"] = False
+                                    # Отправляем команду на засыпание (чтобы колонка снова ждала вейкворд)
+                                    await websocket.send(json.dumps({"type": "sleep"}))
+                                
+                                # Обработка прерывания
+                                if getattr(content, "interrupted", False):
+                                    logger.info("Gemini Interrupted by User (Barge-in)!")
+                                    await websocket.send(json.dumps({"type": "interrupted"}))
+                                
+                                if getattr(content, "input_transcription", None):
+                                    logger.info(f"User Speech Recognized: {content.input_transcription.text}")
+                                    if not session_state.get("is_gemini_speaking"):
+                                        await websocket.send(json.dumps({"type": "thinking"}))
+                                if getattr(content, "output_transcription", None):
+                                    logger.info(f"Gemini Speech: {content.output_transcription.text}")
+                                    
+                                # Логируем текст ответа Gemini напрямую
+                                if getattr(response.server_content.model_turn, "parts", None):
+                                    for part in response.server_content.model_turn.parts:
+                                        if getattr(part, "text", None):
+                                            logger.info(f"Gemini says: {part.text}")
                         
-                        # Обработка вызовов функций (Home Assistant)
-                        if response.tool_call:
-                            session_state["is_tool_pending"] = True
-                            await websocket.send(json.dumps({"type": "thinking"}))
-                            tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
-                            function_responses = []
-                            for fc in response.tool_call.function_calls:
-                                name = fc.name
-                                if name == "call_ha_service":
-                                    args = fc.args
-                                    domain = args.get("domain")
-                                    service = args.get("service")
-                                    entity_id = args.get("entity_id")
+                            # Обработка вызовов функций (Home Assistant)
+                            if response.tool_call:
+                                session_state["is_tool_pending"] = True
+                                await websocket.send(json.dumps({"type": "thinking"}))
+                                tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
+                                function_responses = []
+                                for fc in response.tool_call.function_calls:
+                                    name = fc.name
+                                    if name == "call_ha_service":
+                                        args = fc.args
+                                        domain = args.get("domain")
+                                        service = args.get("service")
+                                        entity_id = args.get("entity_id")
                                     
-                                    tool_logger.info(f"Gemini Calling Tool: {domain}.{service} on {entity_id}")
+                                        tool_logger.info(f"Gemini Calling Tool: {domain}.{service} on {entity_id}")
                                     
-                                    # Выполняем действие в Home Assistant
-                                    result = await ha_api.call_service(
-                                        domain=domain,
-                                        service=service,
-                                        service_data={"entity_id": entity_id}
-                                    )
+                                        # Выполняем действие в Home Assistant
+                                        result = await ha_api.call_service(
+                                            domain=domain,
+                                            service=service,
+                                            service_data={"entity_id": entity_id}
+                                        )
                                     
-                                    tool_logger.info(f"HA Action Result: {result}")
+                                        tool_logger.info(f"HA Action Result: {result}")
                                     
-                                    # Отправляем звуковой отклик (Earcon) клиенту напрямую
-                                    if "error" in result:
-                                        await websocket.send(ERROR_CHIME)
-                                    else:
-                                        await websocket.send(SUCCESS_CHIME)
-                                        
-                                    # Формируем безопасный словарь для ответа, чтобы Gemini не ругался на пустые списки
-                                    safe_result = {"status": "success"}
-                                    if result:
-                                        if isinstance(result, list):
-                                            safe_result["data"] = result
-                                        elif isinstance(result, dict):
-                                            safe_result = result
+                                        # Отправляем звуковой отклик (Earcon) клиенту напрямую
+                                        if "error" in result:
+                                            await websocket.send(ERROR_CHIME)
                                         else:
-                                            safe_result["data"] = str(result)
+                                            await websocket.send(SUCCESS_CHIME)
+                                        
+                                        # Формируем безопасный словарь для ответа, чтобы Gemini не ругался на пустые списки
+                                        safe_result = {"status": "success"}
+                                        if result:
+                                            if isinstance(result, list):
+                                                safe_result["data"] = result
+                                            elif isinstance(result, dict):
+                                                safe_result = result
+                                            else:
+                                                safe_result["data"] = str(result)
                                             
-                                    function_responses.append(types.FunctionResponse(
-                                        name=fc.name,
-                                        id=fc.id,
-                                        response=safe_result
-                                    ))
+                                        function_responses.append(types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response=safe_result
+                                        ))
                                     
-                                elif name == "search_music_assistant":
-                                    args = fc.args
-                                    tool_logger.info(f"Gemini Calling MA Search: {args}")
-                                    search_data = dict(args)
-                                    # HA API expects media_type to be a list if provided
-                                    if "media_type" in search_data:
-                                        search_data["media_type"] = [search_data["media_type"]]
+                                    elif name == "search_music_assistant":
+                                        args = fc.args
+                                        tool_logger.info(f"Gemini Calling MA Search: {args}")
+                                        search_data = dict(args)
+                                        # HA API expects media_type to be a list if provided
+                                        if "media_type" in search_data:
+                                            search_data["media_type"] = [search_data["media_type"]]
                                         
-                                    # Music Assistant Core requires config_entry_id for search
-                                    ma_entry_id = await ha_api.get_music_assistant_entry_id()
-                                    if ma_entry_id:
-                                        search_data["config_entry_id"] = ma_entry_id
+                                        # Music Assistant Core requires config_entry_id for search
+                                        ma_entry_id = await ha_api.get_music_assistant_entry_id()
+                                        if ma_entry_id:
+                                            search_data["config_entry_id"] = ma_entry_id
                                         
-                                    result = await ha_api.call_service_ws(
-                                        domain="music_assistant",
-                                        service="search",
-                                        service_data=search_data,
-                                        return_response=True
-                                    )
+                                        result = await ha_api.call_service_ws(
+                                            domain="music_assistant",
+                                            service="search",
+                                            service_data=search_data,
+                                            return_response=True
+                                        )
                                     
-                                    simplified_result = []
-                                    if isinstance(result, dict) and not "error" in result:
-                                        # HA 'call_service' with return_response=True usually wraps the output in a 'response' dict
-                                        actual_response = result.get("response", result)
-                                        if isinstance(actual_response, dict):
-                                            for cat, items in actual_response.items():
-                                                if isinstance(items, list):
-                                                    for item in items[:5]: # top 5 per category
-                                                        simplified_result.append({
-                                                            "name": item.get("name"),
-                                                            "uri": item.get("uri"),
-                                                            "type": cat
-                                                        })
-                                        result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
+                                        simplified_result = []
+                                        if isinstance(result, dict) and not "error" in result:
+                                            # HA 'call_service' with return_response=True usually wraps the output in a 'response' dict
+                                            actual_response = result.get("response", result)
+                                            if isinstance(actual_response, dict):
+                                                for cat, items in actual_response.items():
+                                                    if isinstance(items, list):
+                                                        for item in items[:5]: # top 5 per category
+                                                            simplified_result.append({
+                                                                "name": item.get("name"),
+                                                                "uri": item.get("uri"),
+                                                                "type": cat
+                                                            })
+                                            result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
                                         
-                                    tool_logger.info(f"MA Search Result: {result}")
-                                    safe_result = {"status": "success"}
-                                    if result:
-                                        if isinstance(result, list):
-                                            safe_result["data"] = result
-                                        elif isinstance(result, dict):
-                                            safe_result = result
-                                        else:
-                                            safe_result["data"] = str(result)
+                                        tool_logger.info(f"MA Search Result: {result}")
+                                        safe_result = {"status": "success"}
+                                        if result:
+                                            if isinstance(result, list):
+                                                safe_result["data"] = result
+                                            elif isinstance(result, dict):
+                                                safe_result = result
+                                            else:
+                                                safe_result["data"] = str(result)
 
-                                    function_responses.append(types.FunctionResponse(
-                                        name=fc.name,
-                                        id=fc.id,
-                                        response=safe_result
-                                    ))
+                                        function_responses.append(types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response=safe_result
+                                        ))
                                     
-                                elif name == "play_music_assistant":
-                                    args = fc.args
-                                    uri = args.get("uri")
-                                    player = args.get("player") or options.get("default_media_player", "media_player.living_room")
-                                    tool_logger.info(f"Gemini Playing MA URI: {uri} on {player}")
+                                    elif name == "play_music_assistant":
+                                        args = fc.args
+                                        uri = args.get("uri")
+                                        player = args.get("player") or options.get("default_media_player", "media_player.living_room")
+                                        tool_logger.info(f"Gemini Playing MA URI: {uri} on {player}")
                                     
-                                    result = await ha_api.call_service(
-                                        domain="media_player",
-                                        service="play_media",
-                                        service_data={
-                                            "entity_id": player,
-                                            "media_content_id": uri,
-                                            "media_content_type": "music"
-                                        }
-                                    )
+                                        result = await ha_api.call_service(
+                                            domain="media_player",
+                                            service="play_media",
+                                            service_data={
+                                                "entity_id": player,
+                                                "media_content_id": uri,
+                                                "media_content_type": "music"
+                                            }
+                                        )
                                     
-                                    tool_logger.info(f"MA Play Result: {result}")
-                                    if "error" in result:
-                                        await websocket.send(ERROR_CHIME)
+                                        tool_logger.info(f"MA Play Result: {result}")
+                                        if "error" in result:
+                                            await websocket.send(ERROR_CHIME)
+                                        else:
+                                            await websocket.send(SUCCESS_CHIME)
+                                        
+                                        safe_result = {"status": "success"}
+                                        if result:
+                                            if isinstance(result, list):
+                                                safe_result["data"] = result
+                                            elif isinstance(result, dict):
+                                                safe_result = result
+                                            else:
+                                                safe_result["data"] = str(result)
+
+                                        function_responses.append(types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response=safe_result
+                                        ))
                                     else:
-                                        await websocket.send(SUCCESS_CHIME)
-                                        
-                                    safe_result = {"status": "success"}
-                                    if result:
-                                        if isinstance(result, list):
-                                            safe_result["data"] = result
-                                        elif isinstance(result, dict):
-                                            safe_result = result
-                                        else:
-                                            safe_result["data"] = str(result)
-
-                                    function_responses.append(types.FunctionResponse(
-                                        name=fc.name,
-                                        id=fc.id,
-                                        response=safe_result
-                                    ))
-                                else:
-                                    tool_logger.warning(f"Unknown tool called: {name}")
-                                    function_responses.append(types.FunctionResponse(
-                                        name=fc.name,
-                                        id=fc.id,
-                                        response={"error": "Unknown tool"}
-                                    ))
+                                        tool_logger.warning(f"Unknown tool called: {name}")
+                                        function_responses.append(types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response={"error": "Unknown tool"}
+                                        ))
                             
-                            if function_responses:
-                                tool_logger.info(f"Sending Tool Responses: {function_responses}")
-                                async with gemini_send_lock:
-                                    await session.send_tool_response(function_responses=function_responses)
-                                session_state["is_tool_pending"] = False
-                                session_state["is_gemini_speaking"] = False
+                                if function_responses:
+                                    tool_logger.info(f"Sending Tool Responses: {function_responses}")
+                                    async with gemini_send_lock:
+                                        await session.send_tool_response(function_responses=function_responses)
+                                    session_state["is_tool_pending"] = False
+                                    session_state["is_gemini_speaking"] = False
                                     
+                except asyncio.CancelledError:
+                    pass
                 except ConnectionClosed:
                     logger.info("Client disconnected (Gemini read)")
                 except Exception as e:
