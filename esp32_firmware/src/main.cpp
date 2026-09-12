@@ -660,8 +660,9 @@ void loop() {
     }
 
     if (!is_listening) {
-        if (detect_wakeword(mic_buffer_16, samples_read)) {
-            Serial.println("Wake word detected! Sending pre-roll buffer...");
+        if (millis() - last_sleep_time > 2000) {
+            if (detect_wakeword(mic_buffer_16, samples_read)) {
+                Serial.println("Wake word detected! Sending pre-roll buffer...");
             is_listening = true;
             listening_start_time = millis(); // Запоминаем время начала прослушивания
             client.send("{\"type\":\"wake_word_detected\"}");
@@ -677,6 +678,7 @@ void loop() {
                 // Отправляем вторую часть (от начала массива до pre_roll_head)
                 if (oldest_idx > 0) {
                     client.sendBinary((const char*)pre_roll_buffer, oldest_idx * 2);
+                }
                 }
             }
         }
