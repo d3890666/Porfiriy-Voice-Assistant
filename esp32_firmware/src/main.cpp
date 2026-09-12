@@ -632,12 +632,12 @@ void loop() {
         return;
     }
 
-    // Safety timeout: если слушаем дольше 15 секунд, принудительно возвращаемся в сон
     if (is_listening && millis() - listening_start_time > 15000) {
         Serial.println("Microphone timeout (15s)! Forcing sleep mode.");
         is_listening = false;
         is_speaking = false;
         memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
+        client.send("{\"type\":\"timeout\"}");
     }
 
     client.poll();

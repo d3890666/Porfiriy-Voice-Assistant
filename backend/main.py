@@ -136,6 +136,14 @@ async def handle_client(websocket):
                                             turns=[types.Content(parts=[types.Part.from_text(text=data['text'])])],
                                             turn_complete=True
                                         )
+                                elif "type" in data and data["type"] == "timeout":
+                                    logger.info("Received timeout from ESP32. Forcing Gemini turn complete.")
+                                    async with gemini_send_lock:
+                                        # Отправляем текстовое сообщение, чтобы заставить Gemini ответить
+                                        await session.send_client_content(
+                                            turns=[types.Content(parts=[types.Part.from_text(text="[Пауза]")])],
+                                            turn_complete=True
+                                        )
                             except Exception as e:
                                 logger.error(f"Error parsing text message: {e}")
                 except ConnectionClosed:
