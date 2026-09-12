@@ -509,7 +509,6 @@ void onMessageCallback(WebsocketsMessage message) {
             is_listening = false;
             is_speaking = false;
             last_sleep_time = millis();
-            memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
         }
         else if (message.data().indexOf("\"type\":\"speaking\"") >= 0) {
             is_speaking = true;
@@ -530,7 +529,6 @@ void onEventsCallback(WebsocketsEvent event, String data) {
         is_listening = false;
         is_speaking = false;
         last_sleep_time = millis();
-        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
     }
 }
 
@@ -640,7 +638,6 @@ void loop() {
         is_listening = false;
         is_speaking = false;
         last_sleep_time = millis();
-        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
         client.send("{\"type\":\"timeout\"}");
     }
 
@@ -664,8 +661,9 @@ void loop() {
     }
 
     if (!is_listening) {
+        bool detected = detect_wakeword(mic_buffer_16, samples_read);
         if (millis() - last_sleep_time > 2000) {
-            if (detect_wakeword(mic_buffer_16, samples_read)) {
+            if (detected) {
                 Serial.println("Wake word detected! Sending pre-roll buffer...");
             is_listening = true;
             listening_start_time = millis(); // Запоминаем время начала прослушивания
