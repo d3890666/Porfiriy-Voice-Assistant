@@ -65,6 +65,7 @@ bool is_connected = false;
 bool is_speaking = false;
 bool captive_portal = false;
 unsigned long last_reconnect_time = 0;
+unsigned long listening_start_time = 0;
 
 // --- Буферы для микрофона ---
 #define SAMPLE_RATE 16000
@@ -629,6 +630,13 @@ void loop() {
         return;
     }
 
+    // Safety timeout: если слушаем дольше 15 секунд, принудительно возвращаемся в сон
+    if (is_listening && millis() - listening_start_time > 15000) {
+        Serial.println("Microphone timeout (15s)! Forcing sleep mode.");
+        is_listening = false;
+        is_speaking = false;
+    }
+
     client.poll();
 
     size_t bytes_read = 0;
@@ -652,6 +660,7 @@ void loop() {
         if (detect_wakeword(mic_buffer_16, samples_read)) {
             Serial.println("Wake word detected! Sending pre-roll buffer...");
             is_listening = true;
+            listening_start_time = millis(); // Запоминаем время начала прослушивания
             client.send("{\"type\":\"wake_word_detected\"}");
             
             // Отправляем предзаписанный буфер по частям (чтобы не превысить размер пакета WebSocket)
