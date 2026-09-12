@@ -48,7 +48,7 @@ def get_options():
             return json.load(f)
     return {
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
-        "gemini_model": "gemini-2.0-flash-exp",
+        "gemini_model": "models/gemini-3.1-flash-live-preview",
         "system_prompt": "",
         "prompt_persona": "",
         "prompt_users": "",

@@ -18,7 +18,7 @@ map:
   - config:rw
 options:
   gemini_api_key: ""
-  gemini_model: "gemini-2.0-flash-exp"
+  gemini_model: "models/gemini-3.1-flash-live-preview"
   system_prompt: ""
   prompt_persona: |
     IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
@@ -93,7 +93,7 @@ options:
   regenerate_phrases: false
 schema:
   gemini_api_key: str
-  gemini_model: "list(models/gemini-2.5-flash-native-audio-preview-12-2025|models/gemini-2.5-flash-native-audio-latest|models/gemini-3.1-flash-live-preview|models/lyria-realtime-exp|models/gemini-2.0-flash-exp)"
+  gemini_model: "list(models/gemini-2.5-flash-native-audio-preview-12-2025|models/gemini-2.5-flash-native-audio-latest|models/gemini-3.1-flash-live-preview|models/lyria-realtime-exp)"
   system_prompt: str
   prompt_persona: str
   prompt_users: str

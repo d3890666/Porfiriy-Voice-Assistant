@@ -139,34 +139,40 @@ class PhraseManager:
         logger.info("Brainstorming dynamic system phrases using Porfiriy persona...")
         client = genai.Client(api_key=api_key)
         
+        # Берем модель напрямую из настроек пользователя
+        model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+        logger.info(f"Using model {model} and voice {voice_name} for system phrases...")
+        
         # 1. Запрос к Gemini для создания текстов
         prompt = build_generation_prompt(persona)
-        text_model = "gemini-2.0-flash-exp" if "flash" in model_name else model_name
         
-        try:
-            resp = await client.aio.models.generate_content(
-                model=text_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
+        phrases_dict = None
+        for candidate_model in [model, "models/gemini-2.5-flash", "models/gemini-1.5-flash"]:
+            try:
+                logger.info(f"Requesting phrase texts from {candidate_model}...")
+                resp = await client.aio.models.generate_content(
+                    model=candidate_model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
                 )
-            )
-            raw_text = resp.text.strip()
-            phrases_dict = json.loads(raw_text)
-            logger.info(f"Porfiriy generated phrase catalog: {json.dumps(phrases_dict, ensure_ascii=False)}")
-        except Exception as e:
-            logger.error(f"Error generating phrase texts: {e}")
+                raw_text = resp.text.strip()
+                phrases_dict = json.loads(raw_text)
+                logger.info(f"Porfiriy generated phrase catalog: {json.dumps(phrases_dict, ensure_ascii=False)}")
+                break
+            except Exception as e:
+                logger.warning(f"Failed generating phrases with {candidate_model}: {e}")
+
+        if not phrases_dict:
+            logger.error("Could not generate phrase texts with available models.")
             return
 
         # 2. Синтез аудио для каждой фразы
         manifest_files = {}
         manifest_texts = {}
         curr_hash = self._hash_persona(persona, voice_name)
-        
-        # Речевая модель для модальности AUDIO
-        tts_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
-        if "native" not in tts_model and "live" not in tts_model:
-            tts_model = "models/gemini-2.0-flash-exp"
+        tts_model = model
 
         categories = ["thinking", "network_error", "device_error", "empty_noise"]
         for cat in categories:
@@ -178,18 +184,25 @@ class PhraseManager:
             for idx, text in enumerate(texts):
                 try:
                     logger.info(f"Synthesizing [{cat} #{idx+1}]: '{text}' with voice {voice_name}...")
-                    tts_resp = await client.aio.models.generate_content(
-                        model=tts_model,
-                        contents=f"Say strictly: {text}",
-                        config=types.GenerateContentConfig(
-                            response_modalities=["AUDIO"],
-                            speech_config=types.SpeechConfig(
-                                voice_config=types.VoiceConfig(
-                                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                    tts_resp = None
+                    for t_mod in [tts_model, "models/gemini-2.5-flash-native-audio-latest", "models/gemini-2.5-flash"]:
+                        try:
+                            tts_resp = await client.aio.models.generate_content(
+                                model=t_mod,
+                                contents=f"Say strictly: {text}",
+                                config=types.GenerateContentConfig(
+                                    response_modalities=["AUDIO"],
+                                    speech_config=types.SpeechConfig(
+                                        voice_config=types.VoiceConfig(
+                                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
+                                        )
+                                    )
                                 )
                             )
-                        )
-                    )
+                            if tts_resp and tts_resp.candidates:
+                                break
+                        except Exception as e_mod:
+                            logger.warning(f"Audio synthesis failed with {t_mod}: {e_mod}")
                     
                     audio_data = None
                     if tts_resp.candidates and tts_resp.candidates[0].content:
