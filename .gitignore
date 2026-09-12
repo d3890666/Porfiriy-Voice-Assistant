@@ -11,6 +11,11 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+scratch_venv/
+
+# PlatformIO
+.pio/
+.vscode/
 
 # Logs
 logs/

@@ -15,7 +15,7 @@ class GeminiProxyClient:
             logger.warning("Gemini API key is empty! Connection will likely fail.")
             
         self.client = genai.Client(
-            http_options={"api_version": "v1beta"},
+            http_options={"api_version": "v1alpha"},
             api_key=api_key
         )
         self.ha_api = ha_api
