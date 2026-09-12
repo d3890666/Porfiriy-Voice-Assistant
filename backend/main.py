@@ -143,10 +143,12 @@ async def handle_client(websocket):
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
                                 elif msg_type == "end_of_speech":
-                                    logger.info("Received end_of_speech from ESP32. Sending silence padding to trigger VAD.")
+                                    vad_ms = options.get("vad_silence_duration_ms", 600)
+                                    needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)
+                                    logger.info(f"Received end_of_speech from ESP32. Sending {needed_chunks} silence chunks (~{needed_chunks*32}ms) to trigger Gemini VAD.")
                                     silence_chunk = b"\x00" * 1024
                                     async with gemini_send_lock:
-                                        for _ in range(6):
+                                        for _ in range(needed_chunks):
                                             await session.send_realtime_input(
                                                 audio=types.Blob(
                                                     data=silence_chunk,
