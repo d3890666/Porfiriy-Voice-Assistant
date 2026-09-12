@@ -66,6 +66,7 @@ bool is_speaking = false;
 bool captive_portal = false;
 unsigned long last_reconnect_time = 0;
 unsigned long listening_start_time = 0;
+unsigned long last_sleep_time = 0;
 
 // --- Буферы для микрофона ---
 #define SAMPLE_RATE 16000
@@ -472,7 +473,6 @@ void setup_tflite() {
     
     num_slices = input_tensor->dims->data[1];
     feature_ring_buffer = (int8_t*)malloc(num_slices * PREPROCESSOR_FEATURE_SIZE);
-    memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
 
     Serial.println("TFLite initialized successfully.");
 }
@@ -507,7 +507,7 @@ void onMessageCallback(WebsocketsMessage message) {
             Serial.println("Server commanded SLEEP. Returning to wake word mode.");
             is_listening = false;
             is_speaking = false;
-            memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
+            last_sleep_time = millis();
         }
         else if (message.data().indexOf("\"type\":\"speaking\"") >= 0) {
             is_speaking = true;
@@ -527,7 +527,7 @@ void onEventsCallback(WebsocketsEvent event, String data) {
         is_connected = false;
         is_listening = false;
         is_speaking = false;
-        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
+        last_sleep_time = millis();
     }
 }
 
@@ -636,7 +636,7 @@ void loop() {
         Serial.println("Microphone timeout (15s)! Forcing sleep mode.");
         is_listening = false;
         is_speaking = false;
-        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
+        last_sleep_time = millis();
         client.send("{\"type\":\"timeout\"}");
     }
 
