@@ -158,9 +158,14 @@ async def handle_client(websocket):
                                         logger.info("Started receiving audio stream from Gemini (Speaker active)...")
                                         session_state["first_audio_sent"] = True
                                         
-                                    audio_logger.debug(f"Sending {len(part.inline_data.data)} bytes audio chunk from Gemini to WS Client")
-                                    # Пересылаем сырой PCM аудио-чанк обратно клиенту
-                                    await websocket.send(part.inline_data.data)
+                                    pcm_audio = part.inline_data.data
+                                    audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (chunked)")
+                                    
+                                    # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
+                                    CHUNK_SIZE = 2048
+                                    for i in range(0, len(pcm_audio), CHUNK_SIZE):
+                                        chunk = pcm_audio[i:i+CHUNK_SIZE]
+                                        await websocket.send(chunk)
                                     
                         # Обработка транскрипции и состояния
                         content = response.server_content
