@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.33"
+version: "0.0.34"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -52,7 +52,7 @@ options:
   ma_api_key: ""
 schema:
   gemini_api_key: str
-  gemini_model: str
+  gemini_model: "list(models/gemini-2.5-flash-native-audio-preview-12-2025|models/gemini-2.5-flash-native-audio-latest|models/gemini-3.1-flash-live-preview|models/lyria-realtime-exp|models/gemini-2.0-flash-exp)"
   system_prompt: str
   voice_name: "list(Puck|Charon|Kore|Fenrir|Aoede|Zephyr)"
   debug_mode: bool
