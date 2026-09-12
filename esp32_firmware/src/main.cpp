@@ -473,6 +473,7 @@ void setup_tflite() {
     
     num_slices = input_tensor->dims->data[1];
     feature_ring_buffer = (int8_t*)malloc(num_slices * PREPROCESSOR_FEATURE_SIZE);
+    memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
 
     Serial.println("TFLite initialized successfully.");
 }
@@ -508,6 +509,7 @@ void onMessageCallback(WebsocketsMessage message) {
             is_listening = false;
             is_speaking = false;
             last_sleep_time = millis();
+            memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
         }
         else if (message.data().indexOf("\"type\":\"speaking\"") >= 0) {
             is_speaking = true;
@@ -528,6 +530,7 @@ void onEventsCallback(WebsocketsEvent event, String data) {
         is_listening = false;
         is_speaking = false;
         last_sleep_time = millis();
+        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
     }
 }
 
@@ -637,6 +640,7 @@ void loop() {
         is_listening = false;
         is_speaking = false;
         last_sleep_time = millis();
+        memset(feature_ring_buffer, 0, num_slices * PREPROCESSOR_FEATURE_SIZE);
         client.send("{\"type\":\"timeout\"}");
     }
 
