@@ -96,9 +96,47 @@ async def handle_client(websocket):
                 "is_gemini_speaking": False,
                 "first_audio_received": False,
                 "first_audio_sent": False,
-                "is_tool_pending": False
+                "is_tool_pending": False,
+                "ducked_media_players": {}
             }
             gemini_send_lock = asyncio.Lock()
+
+            async def duck_media():
+                """Приглушить громкость активных медиаплееров в Home Assistant."""
+                if not options.get("enable_media_ducking", True):
+                    return
+                try:
+                    factor = float(options.get("ducking_volume_factor", 0.25))
+                    playing_players = await ha_api.get_playing_media_players()
+                    for p in playing_players:
+                        eid = p.get("entity_id")
+                        if eid and eid not in session_state["ducked_media_players"]:
+                            curr_vol = p.get("attributes", {}).get("volume_level")
+                            if curr_vol is not None:
+                                session_state["ducked_media_players"][eid] = curr_vol
+                                target_vol = max(0.05, round(curr_vol * factor, 2))
+                                logger.info(f"[DUCKING] Ducking {eid} from {curr_vol} to {target_vol}")
+                                await ha_api.call_service("media_player", "volume_set", {
+                                    "entity_id": eid,
+                                    "volume_level": target_vol
+                                })
+                except Exception as e:
+                    logger.error(f"[DUCKING] Error ducking media: {e}")
+
+            async def unduck_media():
+                """Восстановить исходную громкость медиаплееров."""
+                if not session_state.get("ducked_media_players"):
+                    return
+                try:
+                    for eid, orig_vol in list(session_state["ducked_media_players"].items()):
+                        logger.info(f"[DUCKING] Restoring {eid} volume back to {orig_vol}")
+                        await ha_api.call_service("media_player", "volume_set", {
+                            "entity_id": eid,
+                            "volume_level": orig_vol
+                        })
+                    session_state["ducked_media_players"].clear()
+                except Exception as e:
+                    logger.error(f"[DUCKING] Error restoring media volume: {e}")
             
             async def receive_from_client():
                 """Слушает входящие аудио-чанки (PCM) от WebSocket клиента (ПК/ESP32) и шлет их в Gemini."""
@@ -143,6 +181,13 @@ async def handle_client(websocket):
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
                                     session_state["first_audio_received"] = False
+                                    await duck_media()
+                                elif msg_type == "interrupted":
+                                    logger.info("Interrupted signal received from ESP32. Stopping playback.")
+                                    session_state["is_gemini_speaking"] = False
+                                    session_state["is_tool_pending"] = False
+                                    session_state["first_audio_sent"] = False
+                                    session_state["first_audio_received"] = False
                                 elif msg_type == "end_of_speech":
                                     vad_ms = options.get("vad_silence_duration_ms", 600)
                                     needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)
@@ -164,6 +209,7 @@ async def handle_client(websocket):
                                     session_state["first_audio_sent"] = False
                                     session_state["first_audio_received"] = False
                                     await websocket.send(json.dumps({"type": "sleep"}))
+                                    await unduck_media()
                             except Exception as e:
                                 logger.error(f"Error parsing text message: {e}")
                 except ConnectionClosed:

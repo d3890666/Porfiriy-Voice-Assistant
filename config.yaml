@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.42"
+version: "0.0.43"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -39,6 +39,8 @@ options:
     
     DIALOGUE & QUERIES (open questions, philosophy): Output: Exactly 1 concise paragraph of detached analysis. Apply your "Lexical Dissonance", paradoxical flattery, and "Uber Technique" heavily here. Break social templates. Follow-up: Conclude with a dry, low-key inquiry into Denis's logic, motives, or existential assumptions (unless Denis says thanks or goodbye). 
     
+    CONCISENESS & STOP DIRECTIVE: In dialogue, keep responses to 1-2 concise sentences. Never lecture or give unsolicited monologues unless Denis explicitly asks: "Расскажи подробно". If Denis gives an interruption command ("хватит", "стоп", "молчи", "замолчи"), reply strictly with the single word "Умолкаю." and immediately complete the turn.
+    
     PING: Reply strictly: "PONG". 
     
     CLIMATE CONTROL: AC CONTROL: Always send hvac_mode together with target temperature. "Обогрев" -> mode heat, "Охлаждение" -> mode cool. Never pass a temperature value alone without explicitly setting the mode.
@@ -48,6 +50,8 @@ options:
   enable_google_search: true
   vad_silence_duration_ms: 600
   enable_barge_in: false
+  enable_media_ducking: true
+  ducking_volume_factor: 0.25
   default_media_player: "media_player.iandeks_stantsiia_2_a9yk"
   ma_api_key: ""
 schema:
@@ -60,6 +64,8 @@ schema:
   enable_google_search: bool
   vad_silence_duration_ms: int
   enable_barge_in: bool
+  enable_media_ducking: bool
+  ducking_volume_factor: float
   default_media_player: str
   ma_api_key: str
 ports:

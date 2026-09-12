@@ -50,6 +50,7 @@ int led_mode_listen = 1; // 0=Off, 1=Solid, 2=Breathing
 int led_mode_think = 2;  // 0=Off, 1=Solid, 2=Breathing
 int led_mode_speak = 1;  // 0=Off, 1=Solid, 2=Breathing
 int reconnect_interval = 5; // в секундах
+bool enable_barge_in = false; // прерывание речи вейквордом (Barge-in)
 
 // --- Настройки пинов ---
 #define I2S_MIC_BCLK 3
@@ -240,6 +241,10 @@ const char index_html[] PROGMEM = R"rawliteral(
   <input type="number" step="0.1" name="speaker_volume" value="%SPK_VOL%">
   <label>Порог вейкворда (0.0 - 1.0)</label>
   <input type="number" step="0.01" name="wake_word_threshold" value="%WW_THRES%">
+  <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:14px; background:#2b3035; padding:10px 14px; border-radius:6px; font-weight:bold;">
+    <input type="checkbox" name="enable_barge_in" %BARGE_IN_CHECKED% style="width:20px; height:20px; margin:0;">
+    <span>Разрешить прерывание речи вейквордом (Barge-in)</span>
+  </label>
   
   <h2 style="margin-top:30px;">Настройки Подсветки (На лету)</h2>
   <label>Яркость (0 - 255)</label>
@@ -335,6 +340,7 @@ void handleRoot() {
     html.replace("%SIL_THRES%", String(silence_threshold_energy));
     html.replace("%SPK_VOL%", String(speaker_volume, 1));
     html.replace("%WW_THRES%", String(wake_word_threshold, 2));
+    html.replace("%BARGE_IN_CHECKED%", enable_barge_in ? "checked" : "");
     
     html.replace("%LED_BRIGHT%", String(led_brightness));
 
@@ -396,6 +402,7 @@ void handleSave() {
     if (server.hasArg("speaker_volume")) { speaker_volume = server.arg("speaker_volume").toFloat(); preferences.putFloat("spk_vol", speaker_volume); }
     if (server.hasArg("wake_word_threshold")) { wake_word_threshold = server.arg("wake_word_threshold").toFloat(); preferences.putFloat("ww_thres", wake_word_threshold); }
     if (server.hasArg("reconnect_interval")) { reconnect_interval = server.arg("reconnect_interval").toInt(); preferences.putInt("reconn_int", reconnect_interval); }
+    enable_barge_in = server.hasArg("enable_barge_in"); preferences.putBool("barge_in", enable_barge_in);
     
     // Настройки LED
     if (server.hasArg("led_brightness")) { led_brightness = server.arg("led_brightness").toInt(); preferences.putInt("led_bright", led_brightness); }
@@ -432,6 +439,7 @@ void load_preferences() {
     speaker_volume = preferences.getFloat("spk_vol", 1.0);
     wake_word_threshold = preferences.getFloat("ww_thres", 0.93);
     reconnect_interval = preferences.getInt("reconn_int", 5);
+    enable_barge_in = preferences.getBool("barge_in", false);
     
     led_brightness = preferences.getInt("led_bright", 50);
     led_mode_idle = preferences.getInt("led_m_idle", 0);
@@ -588,6 +596,9 @@ void setup_tflite() {
 
 void onMessageCallback(WebsocketsMessage message) {
     if (message.isBinary()) {
+        if (current_state == STATE_LISTENING || current_state == STATE_IDLE) {
+            return;
+        }
         set_state(STATE_SPEAKING);
         
         const int16_t* pcm = (const int16_t*)message.c_str();
@@ -643,7 +654,7 @@ void onEventsCallback(WebsocketsEvent event, String data) {
     }
 }
 
-bool detect_wakeword(int16_t* audio_buffer, size_t num_samples) {
+bool detect_wakeword(int16_t* audio_buffer, size_t num_samples, float custom_threshold = -1.0) {
     size_t samples_processed = 0;
     struct FrontendOutput frontend_output = FrontendProcessSamples(&frontend_state, audio_buffer, num_samples, &samples_processed);
     
@@ -682,7 +693,8 @@ bool detect_wakeword(int16_t* audio_buffer, size_t num_samples) {
                 prob = (output_tensor->data.int8[0] - output_tensor->params.zero_point) * output_tensor->params.scale;
             }
             
-            if (prob >= wake_word_threshold) {
+            float active_threshold = (custom_threshold > 0.0) ? custom_threshold : wake_word_threshold;
+            if (prob >= active_threshold) {
                 return true;
             }
         }
@@ -827,5 +839,28 @@ void loop() {
             client.send("{\"type\":\"end_of_speech\"}");
         }
     }
-    // В STATE_THINKING и STATE_SPEAKING микрофон заглушен, вейкворд заблокирован!
+    else if (current_state == STATE_SPEAKING) {
+        if (enable_barge_in) {
+            float barge_thresh = (wake_word_threshold + 0.03f > 0.98f) ? 0.98f : (wake_word_threshold + 0.03f);
+            bool detected = detect_wakeword(mic_buffer_16, samples_read, barge_thresh);
+            if (detected) {
+                Serial.println("[BARGE-IN] Wake word detected during speech! Interrupting speaker...");
+                i2s_zero_dma_buffer(I2S_NUM_1);
+                set_state(STATE_LISTENING);
+                user_has_spoken = false;
+                last_speech_time = millis();
+                client.send("{\"type\":\"interrupted\"}");
+                client.send("{\"type\":\"wake_word_detected\"}");
+                
+                if (is_connected) {
+                    int oldest_idx = pre_roll_head;
+                    int oldest_count = PRE_ROLL_SAMPLES - oldest_idx;
+                    client.sendBinary((const char*)(pre_roll_buffer + oldest_idx), oldest_count * 2);
+                    if (oldest_idx > 0) {
+                        client.sendBinary((const char*)pre_roll_buffer, oldest_idx * 2);
+                    }
+                }
+            }
+        }
+    }
 }

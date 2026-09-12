@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.42-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.43-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -167,6 +167,11 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.43 (Media Ducking и голосовое прерывание Barge-In)
+* 🔇 **Automated Media Ducking**: При обнаружении вейкворда бэкенд автоматически находит все играющие медиаплееры в Home Assistant (Music Assistant, Яндекс Станции, ресиверы) и плавно приглушает их громкость до 25%. После завершения ответа или таймаута исходная громкость восстанавливается.
+* 🛑 **Wake Word Barge-In**: В прошивку ESP32 добавлена возможность перебивать говорящего ассистента словом «Порфирий». В Web UI добавлен переключатель «Разрешить прерывание речи вейквордом (Barge-in)».
+* 🤐 **Anti-Verbosity Directive**: В системный промпт добавлены директивы лаконичности в диалоге (1–2 емких предложения) и немедленного замалчивания по командам «хватит», «стоп», «молчи».
 
 ### Версия 0.0.42 (Исправление совместимости с websockets v13+)
 * 🐛 **Fix ServerConnection State**: Замена websocket.closed на while True во избежание AttributeError в библиотеке websockets, из-за которого корутина чтения Gemini падала сразу при подключении клиента.
