@@ -70,9 +70,8 @@ class GeminiProxyClient:
         )
 
         tool_args = {"function_declarations": [ha_tool, search_music_tool, play_music_tool]}
-        # ВРЕМЕННО ОТКЛЮЧЕНО ИЗ-ЗА БАГА GOOGLE API (ОШИБКА 1011 ПРИ СОВМЕЩЕНИИ С FUNCTION CALLING)
-        # if self.enable_google_search:
-        #     tool_args["google_search"] = types.GoogleSearch()
+        if self.enable_google_search:
+            tool_args["google_search"] = types.GoogleSearch()
             
         tool = types.Tool(**tool_args)
         tools = [tool]
