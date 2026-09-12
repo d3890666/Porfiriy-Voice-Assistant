@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.44"
+version: "0.0.45"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -90,6 +90,7 @@ options:
   ducking_volume_factor: 0.25
   default_media_player: "media_player.iandeks_stantsiia_2_a9yk"
   ma_api_key: ""
+  regenerate_phrases: false
 schema:
   gemini_api_key: str
   gemini_model: "list(models/gemini-2.5-flash-native-audio-preview-12-2025|models/gemini-2.5-flash-native-audio-latest|models/gemini-3.1-flash-live-preview|models/lyria-realtime-exp|models/gemini-2.0-flash-exp)"
@@ -108,6 +109,7 @@ schema:
   ducking_volume_factor: float
   default_media_player: str
   ma_api_key: str
+  regenerate_phrases: bool
 ports:
   8765/tcp: 8765
 ports_description:

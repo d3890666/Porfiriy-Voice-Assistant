@@ -10,6 +10,9 @@ from websockets.exceptions import ConnectionClosed
 from ha_api import HomeAssistantAPI
 from gemini_client import GeminiProxyClient
 from google.genai import types
+from phrase_manager import PhraseManager
+
+phrase_manager = PhraseManager()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("server")
@@ -120,8 +123,37 @@ async def handle_client(websocket):
                 "first_audio_received": False,
                 "first_audio_sent": False,
                 "is_tool_pending": False,
+                "is_thinking": False,
+                "thinking_watchdog_task": None,
                 "ducked_media_players": {}
             }
+
+            def start_thinking_watchdog():
+                if session_state.get("thinking_watchdog_task"):
+                    session_state["thinking_watchdog_task"].cancel()
+                session_state["is_thinking"] = True
+
+                async def _watchdog():
+                    try:
+                        await asyncio.sleep(2.5)
+                        if session_state.get("is_thinking") and not session_state.get("first_audio_sent") and not session_state.get("is_tool_pending"):
+                            phrase = phrase_manager.get_phrase("thinking")
+                            if phrase:
+                                logger.info("Thinking timeout > 2.5s: playing dynamic Porfiriy filler phrase...")
+                                await phrase_manager.play_phrase(websocket, phrase)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as ex:
+                        logger.error(f"Error playing thinking phrase: {ex}")
+
+                session_state["thinking_watchdog_task"] = asyncio.create_task(_watchdog())
+
+            def cancel_thinking_watchdog():
+                session_state["is_thinking"] = False
+                task = session_state.get("thinking_watchdog_task")
+                if task and not task.done():
+                    task.cancel()
+                    session_state["thinking_watchdog_task"] = None
             gemini_send_lock = asyncio.Lock()
 
             async def duck_media():
@@ -200,6 +232,7 @@ async def handle_client(websocket):
                                         )
                                 elif msg_type == "wake_word_detected":
                                     logger.info("Wake word received from ESP32. Resetting session state.")
+                                    cancel_thinking_watchdog()
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
@@ -225,12 +258,20 @@ async def handle_client(websocket):
                                                 )
                                             )
                                     await websocket.send(json.dumps({"type": "thinking"}))
+                                    start_thinking_watchdog()
                                 elif msg_type == "timeout":
                                     logger.info("Received timeout from ESP32. Returning client to sleep.")
+                                    cancel_thinking_watchdog()
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
                                     session_state["first_audio_received"] = False
+                                    phrase = phrase_manager.get_phrase("empty_noise")
+                                    if phrase:
+                                        try:
+                                            await phrase_manager.play_phrase(websocket, phrase)
+                                        except Exception:
+                                            pass
                                     await websocket.send(json.dumps({"type": "sleep"}))
                                     await unduck_media()
                             except Exception as e:
@@ -255,6 +296,7 @@ async def handle_client(websocket):
                                         if not session_state.get("first_audio_sent"):
                                             logger.info("Started receiving audio stream from Gemini (Speaker active)...")
                                             session_state["first_audio_sent"] = True
+                                            cancel_thinking_watchdog()
                                             await websocket.send(json.dumps({"type": "speaking"}))
                                         
                                         pcm_audio = part.inline_data.data
@@ -271,6 +313,7 @@ async def handle_client(websocket):
                             if content:
                                 if getattr(content, "turn_complete", False):
                                     logger.info("Gemini finished turn. Sending SLEEP command to client.")
+                                    cancel_thinking_watchdog()
                                     session_state["is_gemini_speaking"] = False
                                     # Сбрасываем флаг отправки аудио для следующего ответа
                                     session_state["first_audio_sent"] = False
@@ -298,6 +341,7 @@ async def handle_client(websocket):
                             # Обработка вызовов функций (Home Assistant)
                             if response.tool_call:
                                 session_state["is_tool_pending"] = True
+                                cancel_thinking_watchdog()
                                 await websocket.send(json.dumps({"type": "thinking"}))
                                 tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
                                 function_responses = []
@@ -328,9 +372,13 @@ async def handle_client(websocket):
                                     
                                         tool_logger.info(f"HA Action Result: {result}")
                                     
-                                        # Отправляем звуковой отклик (Earcon) клиенту напрямую
+                                        # Отправляем звуковой отклик (Earcon / Phrase) клиенту напрямую
                                         if "error" in result:
-                                            await websocket.send(ERROR_CHIME)
+                                            phrase = phrase_manager.get_phrase("device_error")
+                                            if phrase:
+                                                await phrase_manager.play_phrase(websocket, phrase)
+                                            else:
+                                                await websocket.send(ERROR_CHIME)
                                         else:
                                             await websocket.send(SUCCESS_CHIME)
                                         
@@ -458,6 +506,19 @@ async def handle_client(websocket):
                     logger.info("Client disconnected (Gemini read)")
                 except Exception as e:
                     logger.error(f"Error receiving from Gemini: {e}")
+                    cancel_thinking_watchdog()
+                    phrase = phrase_manager.get_phrase("network_error")
+                    if phrase:
+                        logger.info("Playing dynamic network_error phrase...")
+                        try:
+                            await phrase_manager.play_phrase(websocket, phrase)
+                        except Exception:
+                            pass
+                    try:
+                        await websocket.send(json.dumps({"type": "sleep"}))
+                    except Exception:
+                        pass
+                    await unduck_media()
 
             # Запускаем задачи параллельно
             tg.create_task(receive_from_client())
@@ -474,6 +535,11 @@ async def handle_client(websocket):
 async def main():
     port = 8765
     logger.info(f"Porfiriy Backend Server starting on ws://0.0.0.0:{port} ...")
+    
+    # Загружаем / генерируем динамический кэш фраз Порфирия
+    options = get_options()
+    phrase_manager.load_from_cache()
+    asyncio.create_task(phrase_manager.initialize(options))
     
     # Поднимаем WebSocket сервер
     async with websockets.serve(handle_client, "0.0.0.0", port):

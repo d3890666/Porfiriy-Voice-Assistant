@@ -50,3 +50,6 @@ configuration:
   ma_api_key:
     name: "API-ключ Music Assistant"
     description: "Опциональный токен для Music Assistant."
+  regenerate_phrases:
+    name: "Перегенерировать фразы"
+    description: "Принудительно заставить Порфирия придумать и озвучить новый комплект системных фраз при перезапуске."

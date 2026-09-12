@@ -50,3 +50,6 @@ configuration:
   ma_api_key:
     name: "Music Assistant API Key"
     description: "Optional API token for Music Assistant integration."
+  regenerate_phrases:
+    name: "Regenerate Dynamic Phrases"
+    description: "Force Porfiriy to brainstorm and synthesize a new set of system phrases on startup."
