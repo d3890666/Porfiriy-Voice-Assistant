@@ -141,7 +141,11 @@ async def handle_client(websocket):
                             phrase = phrase_manager.get_phrase("thinking")
                             if phrase:
                                 logger.info(f"Thinking timeout > {thinking_delay}s: playing dynamic Porfiriy filler phrase...")
-                                await phrase_manager.play_phrase(websocket, phrase)
+                                await phrase_manager.play_phrase(
+                                    websocket, 
+                                    phrase, 
+                                    cancel_check=lambda: session_state.get("first_audio_sent", False)
+                                )
                     except asyncio.CancelledError:
                         pass
                     except Exception as ex:

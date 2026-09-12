@@ -4,7 +4,7 @@ import logging
 import random
 import hashlib
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 from google import genai
 from google.genai import types
 
@@ -211,15 +211,19 @@ class PhraseManager:
                                 turn_complete=True
                             )
 
-                            pcm_chunks = bytearray()
-                            async for live_msg in session.receive():
-                                if live_msg.server_content:
-                                    if live_msg.server_content.model_turn:
-                                        for part in live_msg.server_content.model_turn.parts:
-                                            if part.inline_data and part.inline_data.data:
-                                                pcm_chunks.extend(part.inline_data.data)
-                                    if getattr(live_msg.server_content, "turn_complete", False):
-                                        break
+                            async def _collect_turn() -> bytearray:
+                                buf = bytearray()
+                                async for live_msg in session.receive():
+                                    if live_msg.server_content:
+                                        if live_msg.server_content.model_turn:
+                                            for part in live_msg.server_content.model_turn.parts:
+                                                if part.inline_data and part.inline_data.data:
+                                                    buf.extend(part.inline_data.data)
+                                        if getattr(live_msg.server_content, "turn_complete", False):
+                                            break
+                                return buf
+
+                            pcm_chunks = await asyncio.wait_for(_collect_turn(), timeout=15.0)
 
                             if len(pcm_chunks) > 0:
                                 filename = f"{cat}_{idx}.pcm"
@@ -259,9 +263,19 @@ class PhraseManager:
             return random.choice(items)
         return None
 
-    async def play_phrase(self, websocket, phrase_bytes: bytes):
-        """Потоковая отправка PCM чанками клиенту (ESP32)."""
+    async def play_phrase(self, websocket, phrase_bytes: bytes, cancel_check: Optional[Callable[[], bool]] = None):
+        """Потоковая отправка PCM чанками клиенту (ESP32) с корректным темпом (24кГц, 16 бит)."""
+        try:
+            await websocket.send(json.dumps({"type": "speaking"}))
+        except Exception:
+            pass
+
         CHUNK_SIZE = 2048
+        # 24000 Hz * 2 bytes = 48000 bytes/sec -> 2048 bytes ≈ 42.6 ms
+        CHUNK_SLEEP = (CHUNK_SIZE / 48000.0) * 0.9  # ~38.4ms
         for i in range(0, len(phrase_bytes), CHUNK_SIZE):
+            if cancel_check and cancel_check():
+                break
             chunk = phrase_bytes[i:i + CHUNK_SIZE]
             await websocket.send(chunk)
+            await asyncio.sleep(CHUNK_SLEEP)

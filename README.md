@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.50-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.51-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -167,6 +167,10 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.51 (Темпирование воспроизведения фраз и защита от сброса)
+* ⏱️ **Paced Audio Playback**: Корректная отправка PCM-чанков на ESP32 с реальным темпом (~38мс на чанк) и пробуждением динамика через  перед началом реплики, исключая отсечение звука и переполнение буфера.
+* ⚡ **Live Watchdog Interrupt**: Прерывание фразы ожидания (), как только Gemini начинает возвращать ответ.
 
 ### Версия 0.0.50 (Замена Part.from_text на types.Part)
 * 🩹 **Direct types.Part(text=...)**: Замена методов `Part.from_text` на надежный прямой конструктор `types.Part(text=...)` для системы озвучки.
