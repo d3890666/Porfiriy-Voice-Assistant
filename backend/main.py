@@ -46,7 +46,11 @@ def get_options():
     return {
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": "gemini-2.0-flash-exp",
-        "system_prompt": "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом.",
+        "system_prompt": "",
+        "prompt_persona": "",
+        "prompt_users": "",
+        "prompt_smart_home": "",
+        "prompt_general": "",
         "voice_name": "Zephyr",
         "debug_mode": False,
         "enable_google_search": True,
@@ -72,9 +76,28 @@ async def handle_client(websocket):
     
     # 1. Формируем контекст устройств
     devices_text = await ha_api.get_filtered_entities()
-    system_prompt = options.get('system_prompt', '')
-    anti_hallucination = "ВАЖНО: НИКОГДА не фантазируй и не говори, что выполнил действие, если ты не вызвал соответствующий инструмент. Устройства типа switch могут управлять светом, используй их."
-    full_prompt = f"{system_prompt}\n\n{anti_hallucination}\n\nНиже список доступных устройств Умного Дома:\n{devices_text}"
+    # Сборка модульного системного промпта
+    modular_parts = []
+    if options.get("prompt_persona", "").strip():
+        modular_parts.append(f"### PERSONA & CONTEXT\n{options['prompt_persona'].strip()}")
+    if options.get("prompt_users", "").strip():
+        modular_parts.append(f"### USERS & ACOUSTIC IDENTIFICATION\n{options['prompt_users'].strip()}")
+    if options.get("prompt_smart_home", "").strip():
+        modular_parts.append(f"### SMART HOME EXECUTION RULES\n{options['prompt_smart_home'].strip()}")
+    if options.get("prompt_general", "").strip():
+        modular_parts.append(f"### GENERAL DIALOGUE, SEARCH & MEDIA\n{options['prompt_general'].strip()}")
+
+    if modular_parts:
+        prompt_base = "\n\n".join(modular_parts)
+    else:
+        prompt_base = options.get("system_prompt", "").strip()
+
+    anti_hallucination = (
+        "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
+        "unless you have explicitly called the corresponding tool (e.g. call_ha_service). "
+        "Devices under domain 'switch' can also control lights or appliances; use them when appropriate."
+    )
+    full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
     gemini_client = GeminiProxyClient(
@@ -281,18 +304,26 @@ async def handle_client(websocket):
                                 for fc in response.tool_call.function_calls:
                                     name = fc.name
                                     if name == "call_ha_service":
-                                        args = fc.args
-                                        domain = args.get("domain")
-                                        service = args.get("service")
-                                        entity_id = args.get("entity_id")
+                                        raw_args = dict(fc.args) if fc.args else {}
+                                        domain = raw_args.get("domain")
+                                        service = raw_args.get("service")
+                                        entity_id = raw_args.get("entity_id")
                                     
-                                        tool_logger.info(f"Gemini Calling Tool: {domain}.{service} on {entity_id}")
+                                        # Forward all parameters (position, temperature, etc.)
+                                        service_data = {
+                                            k: v for k, v in raw_args.items()
+                                            if k not in ("domain", "service") and v is not None
+                                        }
+                                        if entity_id and "entity_id" not in service_data:
+                                            service_data["entity_id"] = entity_id
+                                    
+                                        tool_logger.info(f"Gemini Calling Tool: {domain}.{service} with service_data: {service_data}")
                                     
                                         # Выполняем действие в Home Assistant
                                         result = await ha_api.call_service(
                                             domain=domain,
                                             service=service,
-                                            service_data={"entity_id": entity_id}
+                                            service_data=service_data
                                         )
                                     
                                         tool_logger.info(f"HA Action Result: {result}")

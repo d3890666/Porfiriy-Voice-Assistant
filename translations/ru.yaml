@@ -1,0 +1,52 @@
+configuration:
+  gemini_api_key:
+    name: "API-ключ Gemini"
+    description: "Ключ доступа к Google Gemini Live API."
+  gemini_model:
+    name: "Модель Gemini"
+    description: "Идентификатор модели Gemini Live API."
+  prompt_persona:
+    name: "Личность и философия"
+    description: "Образ Порфирия, стиль из 'iPhuck 10' Пелевина, лексический диссонанс и тон общения."
+  prompt_users:
+    name: "Пользователи и голос"
+    description: "Профили Дениса и Светы, распознавание по тембру/высоте голоса и согласование родов."
+  prompt_smart_home:
+    name: "Управление Умным Домом"
+    description: "Правила управления устройствами (шторы, жалюзи, свет, климат) и лаконичные ответы."
+  prompt_general:
+    name: "Общий диалог и поиск"
+    description: "Поиск Google, музыка, краткость диалога (1-2 предложения) и команды остановки."
+  system_prompt:
+    name: "Старый монолитный промпт (резерв)"
+    description: "Используется только если 4 модульных поля промпта пусты."
+  voice_name:
+    name: "Голос синтеза"
+    description: "Выбор голоса синтеза речи Gemini."
+  debug_mode:
+    name: "Режим отладки"
+    description: "Включить подробные логи сервера."
+  debug_audio:
+    name: "Отладка аудио"
+    description: "Логирование передачи аудиопакетов."
+  enable_google_search:
+    name: "Поиск в Google"
+    description: "Разрешить Gemini обращаться к поиску Google для получения актуальной информации."
+  vad_silence_duration_ms:
+    name: "Пауза VAD (мс)"
+    description: "Длительность тишины перед завершением фразы пользователя."
+  enable_barge_in:
+    name: "Прерывание по вейкворду"
+    description: "Разрешить прерывать речь Порфирия произнесением вейкворда."
+  enable_media_ducking:
+    name: "Приглушение музыки (Ducking)"
+    description: "Автоматически понижать громкость колонки во время диалога с ассистентом."
+  ducking_volume_factor:
+    name: "Коэффициент приглушения"
+    description: "Коэффициент громкости при дакинге (например 0.25 = 25% от текущей громкости)."
+  default_media_player:
+    name: "Медиаплеер для приглушения"
+    description: "Entity ID медиаплеера Home Assistant, громкость которого приглушается."
+  ma_api_key:
+    name: "API-ключ Music Assistant"
+    description: "Опциональный токен для Music Assistant."

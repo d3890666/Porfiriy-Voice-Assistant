@@ -36,9 +36,12 @@ class GeminiProxyClient:
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service, e.g. light, switch, script, scene, climate"),
-                    "service": types.Schema(type=types.Type.STRING, description="The service to call, e.g. turn_on, turn_off, toggle"),
-                    "entity_id": types.Schema(type=types.Type.STRING, description="The exact entity_id of the device from the provided context, e.g. light.kitchen"),
+                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service, e.g. light, switch, cover, script, scene, climate, media_player"),
+                    "service": types.Schema(type=types.Type.STRING, description="The service to call, e.g. turn_on, turn_off, toggle, open_cover, close_cover, stop_cover, set_cover_position"),
+                    "entity_id": types.Schema(type=types.Type.STRING, description="The exact entity_id of the device from the provided context, e.g. light.kitchen, cover.living_room_curtains"),
+                    "position": types.Schema(type=types.Type.INTEGER, description="Optional target position for cover (curtains/blinds) from 0 (closed) to 100 (open)."),
+                    "temperature": types.Schema(type=types.Type.NUMBER, description="Optional target temperature for climate devices."),
+                    "hvac_mode": types.Schema(type=types.Type.STRING, description="Optional HVAC mode for climate devices (e.g. heat, cool, off)."),
                 },
                 required=["domain", "service", "entity_id"]
             )

@@ -1,0 +1,52 @@
+configuration:
+  gemini_api_key:
+    name: "Gemini API Key"
+    description: "API key for Google Gemini Live API."
+  gemini_model:
+    name: "Gemini Model"
+    description: "Gemini Multimodal Live API model identifier."
+  prompt_persona:
+    name: "Persona & Philosophy"
+    description: "Porfiriy identity, Pelevin iPhuck 10 style, lexical dissonance, and conversational tone."
+  prompt_users:
+    name: "Users & Voice Identification"
+    description: "User profiles (Denis and Sveta), acoustic pitch guidelines, and grammatical agreement."
+  prompt_smart_home:
+    name: "Smart Home Automation"
+    description: "Rules for controlling devices (covers, curtains, lights, climate) and 1-word confirmations."
+  prompt_general:
+    name: "General Dialogue & Knowledge"
+    description: "Google Search grounding, music playback, dialogue conciseness, and stop commands."
+  system_prompt:
+    name: "Legacy System Prompt (Optional)"
+    description: "Fallback system prompt used only if modular prompt fields are empty."
+  voice_name:
+    name: "Voice Name"
+    description: "Voice model for Gemini speech synthesis."
+  debug_mode:
+    name: "Debug Mode"
+    description: "Enable verbose debug logging."
+  debug_audio:
+    name: "Debug Audio"
+    description: "Log detailed audio packet metrics."
+  enable_google_search:
+    name: "Enable Google Search"
+    description: "Allow Gemini to query Google Search for real-time information."
+  vad_silence_duration_ms:
+    name: "VAD Silence Duration (ms)"
+    description: "Duration of silence before Gemini concludes user speech turn."
+  enable_barge_in:
+    name: "Enable Wake Word Barge-in"
+    description: "Allow ESP32 wake word detection to interrupt Porfiriy while speaking."
+  enable_media_ducking:
+    name: "Enable Media Ducking"
+    description: "Temporarily lower Home Assistant media player volume during voice interaction."
+  ducking_volume_factor:
+    name: "Ducking Volume Factor"
+    description: "Fraction to reduce volume during ducking (e.g. 0.25 = 25% of current volume)."
+  default_media_player:
+    name: "Default Media Player"
+    description: "Entity ID of the media player to duck during speech."
+  ma_api_key:
+    name: "Music Assistant API Key"
+    description: "Optional API token for Music Assistant integration."

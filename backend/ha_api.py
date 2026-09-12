@@ -213,7 +213,7 @@ class HomeAssistantAPI:
         Фильтрует по нужным доменам и проверяет, выставлен ли доступ к Assist.
         """
         if not allowed_domains:
-            allowed_domains = ["light", "switch", "script", "scene", "media_player", "climate"]
+            allowed_domains = ["light", "switch", "cover", "script", "scene", "media_player", "climate"]
             
         states = await self.get_states()
         exposed_metadata = await self.get_exposed_entities_metadata()

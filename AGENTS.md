@@ -18,6 +18,12 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.44 (Шторы cover, распознавание пользователей Денис/Света и 4 модульных промпта)
+*   **Cover Domain & Curtains Control**: Добавлен домен `cover` в `ha_api.py` `allowed_domains`. Расширен `call_ha_service` в `gemini_client.py` (добавлены сервисы `open_cover`, `close_cover`, `stop_cover`, `set_cover_position` и опциональные параметры `position`, `temperature`, `hvac_mode`). В `backend/main.py` исправлена передача `service_data` — теперь все параметры из `args` пробрасываются в Home Assistant, а не затираются `entity_id`.
+*   **Acoustic Speaker Recognition**: За счет нативного 16 kHz PCM аудиопотока в Gemini Live промпт инструктирует модель определять пол говорящего по F0: мужской низкий голос (~85-180 Гц) -> Денис (мужской род глаголов), женский высокий голос (~165-260+ Гц) -> Света (женский род глаголов).
+*   **4 Modular Prompt Fields**: Промпт разделен на 4 англоязычных поля в `config.yaml` (`prompt_persona`, `prompt_users`, `prompt_smart_home`, `prompt_general`). В `backend/main.py` выполняется их модульная конкатенация с сохранением обратной совместимости со старым `system_prompt`.
+*   **Add-on Translations**: Созданы `translations/en.yaml` и `translations/ru.yaml` для красивого отображения всех опций и подсказок в UI Home Assistant.
+
 ### Версия 0.0.1 - 0.0.9 (Базовая интеграция)
 *   Создан базовый каркас аддона для Home Assistant.
 *   Реализована двунаправленная потоковая передача аудио по WebSocket.
