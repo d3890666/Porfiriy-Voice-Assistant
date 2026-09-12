@@ -129,6 +129,7 @@ async def handle_client(websocket):
                             # Обработка текстовых сообщений
                             try:
                                 data = json.loads(message)
+                                msg_type = data.get("type")
                                 if "text" in data:
                                     logger.info(f"Received text input from WS Client: {data['text']}")
                                     async with gemini_send_lock:
@@ -136,14 +137,29 @@ async def handle_client(websocket):
                                             turns=[types.Content(parts=[types.Part.from_text(text=data['text'])])],
                                             turn_complete=True
                                         )
-                                elif "type" in data and data["type"] == "timeout":
-                                    logger.info("Received timeout from ESP32. Forcing Gemini turn complete.")
+                                elif msg_type == "wake_word_detected":
+                                    logger.info("Wake word received from ESP32. Resetting session state.")
+                                    session_state["is_gemini_speaking"] = False
+                                    session_state["is_tool_pending"] = False
+                                    session_state["first_audio_sent"] = False
+                                elif msg_type == "end_of_speech":
+                                    logger.info("Received end_of_speech from ESP32. Sending silence padding to trigger VAD.")
+                                    silence_chunk = b"\x00" * 1024
                                     async with gemini_send_lock:
-                                        # Отправляем пробел, чтобы заставить Gemini ответить на предыдущий звук
-                                        await session.send_client_content(
-                                            turns=[types.Content(parts=[types.Part.from_text(text=" ")])],
-                                            turn_complete=True
-                                        )
+                                        for _ in range(6):
+                                            await session.send_realtime_input(
+                                                audio=types.Blob(
+                                                    data=silence_chunk,
+                                                    mime_type="audio/pcm;rate=16000"
+                                                )
+                                            )
+                                    await websocket.send(json.dumps({"type": "thinking"}))
+                                elif msg_type == "timeout":
+                                    logger.info("Received timeout from ESP32. Returning client to sleep.")
+                                    session_state["is_gemini_speaking"] = False
+                                    session_state["is_tool_pending"] = False
+                                    session_state["first_audio_sent"] = False
+                                    await websocket.send(json.dumps({"type": "sleep"}))
                             except Exception as e:
                                 logger.error(f"Error parsing text message: {e}")
                 except ConnectionClosed:
@@ -165,6 +181,7 @@ async def handle_client(websocket):
                                     if not session_state.get("first_audio_sent"):
                                         logger.info("Started receiving audio stream from Gemini (Speaker active)...")
                                         session_state["first_audio_sent"] = True
+                                        await websocket.send(json.dumps({"type": "speaking"}))
                                         
                                     pcm_audio = part.inline_data.data
                                     audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (chunked)")
@@ -193,6 +210,8 @@ async def handle_client(websocket):
                                 
                             if getattr(content, "input_transcription", None):
                                 logger.info(f"User Speech Recognized: {content.input_transcription.text}")
+                                if not session_state.get("is_gemini_speaking"):
+                                    await websocket.send(json.dumps({"type": "thinking"}))
                             if getattr(content, "output_transcription", None):
                                 logger.info(f"Gemini Speech: {content.output_transcription.text}")
                                     
@@ -205,6 +224,7 @@ async def handle_client(websocket):
                         # Обработка вызовов функций (Home Assistant)
                         if response.tool_call:
                             session_state["is_tool_pending"] = True
+                            await websocket.send(json.dumps({"type": "thinking"}))
                             tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
                             function_responses = []
                             for fc in response.tool_call.function_calls:
@@ -348,7 +368,7 @@ async def handle_client(websocket):
                                 async with gemini_send_lock:
                                     await session.send_tool_response(function_responses=function_responses)
                                 session_state["is_tool_pending"] = False
-                                session_state["is_gemini_speaking"] = True  # Block mic until turn completes to prevent 1008 Policy Violation
+                                session_state["is_gemini_speaking"] = False
                                     
                 except ConnectionClosed:
                     logger.info("Client disconnected (Gemini read)")
@@ -361,6 +381,10 @@ async def handle_client(websocket):
             
     except Exception as e:
         logger.error(f"Gemini Session Setup Error: {e}")
+        try:
+            await websocket.send(json.dumps({"type": "sleep"}))
+        except Exception:
+            pass
         await websocket.close()
 
 async def main():

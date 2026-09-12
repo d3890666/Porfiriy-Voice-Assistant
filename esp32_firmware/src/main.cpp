@@ -37,11 +37,18 @@ uint16_t ws_port = 8765;
 int mic_gain = 2;
 float speaker_volume = 1.0;
 float wake_word_threshold = 0.93;
+int silence_timeout_ms = 700;        // таймаут тишины после фразы (мс)
+int listen_timeout_s = 6;            // макс. время ожидания команды (сек)
+int silence_threshold_energy = 180;  // порог энергии звука для детекции голоса
 int led_brightness = 50;
 String led_color_idle = "#000000";
 String led_color_listen = "#0000ff";
+String led_color_think = "#ffaa00";
 String led_color_speak = "#00ff00";
-int led_mode = 1; // 0=Off, 1=Solid, 2=Breathing
+int led_mode_idle = 0;   // 0=Off, 1=Solid, 2=Breathing
+int led_mode_listen = 1; // 0=Off, 1=Solid, 2=Breathing
+int led_mode_think = 2;  // 0=Off, 1=Solid, 2=Breathing
+int led_mode_speak = 1;  // 0=Off, 1=Solid, 2=Breathing
 int reconnect_interval = 5; // в секундах
 
 // --- Настройки пинов ---
@@ -59,13 +66,36 @@ int reconnect_interval = 5; // в секундах
 
 CRGB leds[NUM_LEDS];
 
-// --- Состояния ---
-bool is_listening = false;
+// --- Конечный автомат (State Machine) ---
+enum DeviceState {
+    STATE_IDLE,       // 0: Ожидание вейкворда (микрофон идет только в TFLite)
+    STATE_LISTENING,  // 1: Запись команды (микрофон стримится в WebSocket)
+    STATE_THINKING,   // 2: Ожидание ответа от сервера (микрофон заглушен)
+    STATE_SPEAKING    // 3: Воспроизведение звука динамиком (микрофон заглушен)
+};
+DeviceState current_state = STATE_IDLE;
+unsigned long state_enter_time = 0;
+
+void set_state(DeviceState new_state) {
+    if (current_state != new_state) {
+        Serial.printf("[STATE] %d -> %d\n", current_state, new_state);
+        current_state = new_state;
+        state_enter_time = millis();
+    }
+}
+
+// Inline геттеры для совместимости
+inline bool is_listening() { return current_state == STATE_LISTENING; }
+inline bool is_thinking() { return current_state == STATE_THINKING; }
+inline bool is_speaking() { return current_state == STATE_SPEAKING; }
+inline bool is_idle() { return current_state == STATE_IDLE; }
+
 bool is_connected = false;
-bool is_speaking = false;
+bool user_has_spoken = false;
 bool captive_portal = false;
 unsigned long last_reconnect_time = 0;
 unsigned long listening_start_time = 0;
+unsigned long last_speech_time = 0;
 unsigned long last_sleep_time = 0;
 
 // --- Буферы для микрофона ---
@@ -114,25 +144,44 @@ CRGB hexToCRGB(String hex) {
 
 // Управление светодиодом
 void update_led() {
-    if (led_mode == 0) {
+    int active_mode = led_mode_idle;
+    String active_color = led_color_idle;
+    
+    switch (current_state) {
+        case STATE_SPEAKING:
+            active_mode = led_mode_speak;
+            active_color = led_color_speak;
+            break;
+        case STATE_THINKING:
+            active_mode = led_mode_think;
+            active_color = led_color_think;
+            break;
+        case STATE_LISTENING:
+            active_mode = led_mode_listen;
+            active_color = led_color_listen;
+            break;
+        case STATE_IDLE:
+        default:
+            active_mode = led_mode_idle;
+            active_color = led_color_idle;
+            break;
+    }
+    
+    if (active_mode == 0) {
         leds[0] = CRGB::Black;
         FastLED.show();
         return;
     }
     
-    CRGB target_color;
-    if (is_speaking) target_color = hexToCRGB(led_color_speak);
-    else if (is_listening) target_color = hexToCRGB(led_color_listen);
-    else target_color = hexToCRGB(led_color_idle);
-    
-    if (led_mode == 1) { // Solid
+    CRGB target_color = hexToCRGB(active_color);
+    if (active_mode == 1) { // Solid
         leds[0] = target_color;
         FastLED.setBrightness(led_brightness);
-    } else if (led_mode == 2) { // Breathing
-        // Простое синусоидальное "дыхание" раз в 2 секунды
+    } else if (active_mode == 2) { // Breathing
         float breathe = (exp(sin(millis()/2000.0*PI)) - 0.36787944)*108.0; 
-        // 0..255 примерно
         int b = (int)((breathe / 255.0) * led_brightness);
+        if (b < 0) b = 0;
+        if (b > 255) b = 255;
         leds[0] = target_color;
         FastLED.setBrightness(b);
     }
@@ -181,57 +230,84 @@ const char index_html[] PROGMEM = R"rawliteral(
   <h2 style="margin-top:30px;">Тонкая настройка (На лету)</h2>
   <label>Усиление микрофона (x1-x10)</label>
   <input type="number" name="mic_gain" value="%MIC_GAIN%" min="1" max="10">
+  <label>Таймаут тишины после фразы (мс, 300-3000)</label>
+  <input type="number" name="silence_timeout_ms" value="%SILENCE_MS%" min="300" max="3000" step="50">
+  <label>Макс. ожидание команды (сек, 3-15)</label>
+  <input type="number" name="listen_timeout_s" value="%LISTEN_TO%" min="3" max="15">
+  <label>Порог детекции голоса (RMS, 50-1000)</label>
+  <input type="number" name="silence_threshold_energy" value="%SIL_THRES%" min="50" max="1000">
   <label>Громкость динамика (0.1 - 2.0)</label>
   <input type="number" step="0.1" name="speaker_volume" value="%SPK_VOL%">
   <label>Порог вейкворда (0.0 - 1.0)</label>
   <input type="number" step="0.01" name="wake_word_threshold" value="%WW_THRES%">
   
   <h2 style="margin-top:30px;">Настройки Подсветки (На лету)</h2>
-  <label>Режим диода</label>
-  <select name="led_mode">
-    <option value="0" %LED_M0%>Выключен</option>
-    <option value="1" %LED_M1%>Светится</option>
-    <option value="2" %LED_M2%>Дышит</option>
-  </select>
   <label>Яркость (0 - 255)</label>
   <input type="range" name="led_brightness" value="%LED_BRIGHT%" min="0" max="255" style="padding:0">
-  <label>Цвет (Ожидание)</label>
-  <input type="color" name="led_color_idle" value="%LED_CIDLE%" style="height:40px; padding:0;">
-  <label>Цвет (Слушает)</label>
-  <input type="color" name="led_color_listen" value="%LED_CLISTEN%" style="height:40px; padding:0;">
-  <label>Цвет (Говорит)</label>
-  <input type="color" name="led_color_speak" value="%LED_CSPEAK%" style="height:40px; padding:0;">
+
+  <label style="color:#4dabf7; font-weight:bold; margin-top:10px;">1. Ожидание (Idle)</label>
+  <select name="led_mode_idle">
+    <option value="0" %LED_IDLE_M0%>Выключен</option>
+    <option value="1" %LED_IDLE_M1%>Светится</option>
+    <option value="2" %LED_IDLE_M2%>Дышит</option>
+  </select>
+  <input type="color" name="led_color_idle" value="%LED_CIDLE%" style="height:35px; padding:0;">
+
+  <label style="color:#4dabf7; font-weight:bold; margin-top:10px;">2. Слушает (Listening)</label>
+  <select name="led_mode_listen">
+    <option value="0" %LED_LISTEN_M0%>Выключен</option>
+    <option value="1" %LED_LISTEN_M1%>Светится</option>
+    <option value="2" %LED_LISTEN_M2%>Дышит</option>
+  </select>
+  <input type="color" name="led_color_listen" value="%LED_CLISTEN%" style="height:35px; padding:0;">
+
+  <label style="color:#4dabf7; font-weight:bold; margin-top:10px;">3. Думает / Обработка (Thinking)</label>
+  <select name="led_mode_think">
+    <option value="0" %LED_THINK_M0%>Выключен</option>
+    <option value="1" %LED_THINK_M1%>Светится</option>
+    <option value="2" %LED_THINK_M2%>Дышит</option>
+  </select>
+  <input type="color" name="led_color_think" value="%LED_CTHINK%" style="height:35px; padding:0;">
+
+  <label style="color:#4dabf7; font-weight:bold; margin-top:10px;">4. Отвечает (Speaking)</label>
+  <select name="led_mode_speak">
+    <option value="0" %LED_SPEAK_M0%>Выключен</option>
+    <option value="1" %LED_SPEAK_M1%>Светится</option>
+    <option value="2" %LED_SPEAK_M2%>Дышит</option>
+  </select>
+  <input type="color" name="led_color_speak" value="%LED_CSPEAK%" style="height:35px; padding:0;">
 
   <input type="submit" value="Сохранить настройки">
 </form>
 
 <script>
 setInterval(() => {
-  fetch('/status').then(r => r.json()).then(data => {
-    let st = document.getElementById('status-text');
-    let ct = document.getElementById('conn-text');
-    if(data.is_speaking) { st.innerText = "Отвечаю..."; st.style.background = "#28a745"; }
-    else if(data.is_listening) { st.innerText = "Слушаю вас..."; st.style.background = "#007bff"; }
-    else { st.innerText = "Ожидание слова"; st.style.background = "#6c757d"; }
+  fetch("/status").then(r => r.json()).then(data => {
+    let st = document.getElementById("status-text");
+    let ct = document.getElementById("conn-text");
+    if(data.is_speaking) { st.innerText = "Отвечаю..."; st.style.background = "#28a745"; st.style.color = "#fff"; }
+    else if(data.is_thinking) { st.innerText = "Думаю..."; st.style.background = "#ffc107"; st.style.color = "#000"; }
+    else if(data.is_listening) { st.innerText = "Слушаю вас..."; st.style.background = "#007bff"; st.style.color = "#fff"; }
+    else { st.innerText = "Ожидание слова"; st.style.background = "#6c757d"; st.style.color = "#fff"; }
     
     if(data.is_connected) { ct.innerText = "Подключено"; ct.style.background = "#28a745"; }
     else { ct.innerText = "Отключено"; ct.style.background = "#dc3545"; }
   }).catch(() => {
-    document.getElementById('status-text').innerText = "Плата недоступна";
-    document.getElementById('status-text').style.background = "#dc3545";
+    document.getElementById("status-text").innerText = "Плата недоступна";
+    document.getElementById("status-text").style.background = "#dc3545";
   });
 }, 1000);
 
 // Перехват отправки формы для сохранения "на лету" без ребута (если wifi/сервер не менялись)
-document.getElementById('settingsForm').addEventListener('submit', function(e) {
+document.getElementById("settingsForm").addEventListener("submit", function(e) {
   e.preventDefault();
   let fd = new FormData(this);
-  fetch('/save', {
-    method: 'POST',
+  fetch("/save", {
+    method: "POST",
     body: new URLSearchParams(fd)
   }).then(r => r.text()).then(t => {
     if(t.includes("перезагружается")) {
-      document.body.innerHTML = "<h2 style='text-align:center;margin-top:20vh;'>Настройки сети изменены. Перезагрузка...</h2>";
+      document.body.innerHTML = "<h2 style="text-align:center;margin-top:20vh;">Настройки сети изменены. Перезагрузка...</h2>";
     } else {
       alert("Настройки успешно применены на лету!");
     }
@@ -254,15 +330,32 @@ void handleRoot() {
     html.replace("%PORT%", String(ws_port));
     html.replace("%RECONNECT%", String(reconnect_interval));
     html.replace("%MIC_GAIN%", String(mic_gain));
+    html.replace("%SILENCE_MS%", String(silence_timeout_ms));
+    html.replace("%LISTEN_TO%", String(listen_timeout_s));
+    html.replace("%SIL_THRES%", String(silence_threshold_energy));
     html.replace("%SPK_VOL%", String(speaker_volume, 1));
     html.replace("%WW_THRES%", String(wake_word_threshold, 2));
     
-    html.replace("%LED_M0%", led_mode == 0 ? "selected" : "");
-    html.replace("%LED_M1%", led_mode == 1 ? "selected" : "");
-    html.replace("%LED_M2%", led_mode == 2 ? "selected" : "");
     html.replace("%LED_BRIGHT%", String(led_brightness));
+
+    html.replace("%LED_IDLE_M0%", led_mode_idle == 0 ? "selected" : "");
+    html.replace("%LED_IDLE_M1%", led_mode_idle == 1 ? "selected" : "");
+    html.replace("%LED_IDLE_M2%", led_mode_idle == 2 ? "selected" : "");
     html.replace("%LED_CIDLE%", led_color_idle);
+
+    html.replace("%LED_LISTEN_M0%", led_mode_listen == 0 ? "selected" : "");
+    html.replace("%LED_LISTEN_M1%", led_mode_listen == 1 ? "selected" : "");
+    html.replace("%LED_LISTEN_M2%", led_mode_listen == 2 ? "selected" : "");
     html.replace("%LED_CLISTEN%", led_color_listen);
+
+    html.replace("%LED_THINK_M0%", led_mode_think == 0 ? "selected" : "");
+    html.replace("%LED_THINK_M1%", led_mode_think == 1 ? "selected" : "");
+    html.replace("%LED_THINK_M2%", led_mode_think == 2 ? "selected" : "");
+    html.replace("%LED_CTHINK%", led_color_think);
+
+    html.replace("%LED_SPEAK_M0%", led_mode_speak == 0 ? "selected" : "");
+    html.replace("%LED_SPEAK_M1%", led_mode_speak == 1 ? "selected" : "");
+    html.replace("%LED_SPEAK_M2%", led_mode_speak == 2 ? "selected" : "");
     html.replace("%LED_CSPEAK%", led_color_speak);
     
     server.send(200, "text/html", html);
@@ -271,6 +364,7 @@ void handleRoot() {
 void handleStatus() {
     String json = "{\"is_connected\": " + String(is_connected ? "true" : "false") + 
                   ", \"is_listening\": " + String(is_listening ? "true" : "false") + 
+                  ", \"is_thinking\": " + String(is_thinking ? "true" : "false") + 
                   ", \"is_speaking\": " + String(is_speaking ? "true" : "false") + "}";
     server.send(200, "application/json", json);
 }
@@ -296,15 +390,22 @@ void handleSave() {
     
     // Тонкие настройки (На лету)
     if (server.hasArg("mic_gain")) { mic_gain = server.arg("mic_gain").toInt(); preferences.putInt("mic_gain", mic_gain); }
+    if (server.hasArg("silence_timeout_ms")) { silence_timeout_ms = server.arg("silence_timeout_ms").toInt(); preferences.putInt("sil_ms", silence_timeout_ms); }
+    if (server.hasArg("listen_timeout_s")) { listen_timeout_s = server.arg("listen_timeout_s").toInt(); preferences.putInt("listen_to", listen_timeout_s); }
+    if (server.hasArg("silence_threshold_energy")) { silence_threshold_energy = server.arg("silence_threshold_energy").toInt(); preferences.putInt("sil_thres", silence_threshold_energy); }
     if (server.hasArg("speaker_volume")) { speaker_volume = server.arg("speaker_volume").toFloat(); preferences.putFloat("spk_vol", speaker_volume); }
     if (server.hasArg("wake_word_threshold")) { wake_word_threshold = server.arg("wake_word_threshold").toFloat(); preferences.putFloat("ww_thres", wake_word_threshold); }
     if (server.hasArg("reconnect_interval")) { reconnect_interval = server.arg("reconnect_interval").toInt(); preferences.putInt("reconn_int", reconnect_interval); }
     
     // Настройки LED
-    if (server.hasArg("led_mode")) { led_mode = server.arg("led_mode").toInt(); preferences.putInt("led_mode", led_mode); }
     if (server.hasArg("led_brightness")) { led_brightness = server.arg("led_brightness").toInt(); preferences.putInt("led_bright", led_brightness); }
+    if (server.hasArg("led_mode_idle")) { led_mode_idle = server.arg("led_mode_idle").toInt(); preferences.putInt("led_m_idle", led_mode_idle); }
     if (server.hasArg("led_color_idle")) { led_color_idle = server.arg("led_color_idle"); preferences.putString("led_cidle", led_color_idle); }
+    if (server.hasArg("led_mode_listen")) { led_mode_listen = server.arg("led_mode_listen").toInt(); preferences.putInt("led_m_listen", led_mode_listen); }
     if (server.hasArg("led_color_listen")) { led_color_listen = server.arg("led_color_listen"); preferences.putString("led_clisten", led_color_listen); }
+    if (server.hasArg("led_mode_think")) { led_mode_think = server.arg("led_mode_think").toInt(); preferences.putInt("led_m_think", led_mode_think); }
+    if (server.hasArg("led_color_think")) { led_color_think = server.arg("led_color_think"); preferences.putString("led_cthink", led_color_think); }
+    if (server.hasArg("led_mode_speak")) { led_mode_speak = server.arg("led_mode_speak").toInt(); preferences.putInt("led_m_speak", led_mode_speak); }
     if (server.hasArg("led_color_speak")) { led_color_speak = server.arg("led_color_speak"); preferences.putString("led_cspeak", led_color_speak); }
     
     preferences.end();
@@ -325,14 +426,21 @@ void load_preferences() {
     ws_host = preferences.getString("host", "192.168.1.50");
     ws_port = preferences.getUInt("port", 8765);
     mic_gain = preferences.getInt("mic_gain", 2);
+    silence_timeout_ms = preferences.getInt("sil_ms", 700);
+    listen_timeout_s = preferences.getInt("listen_to", 6);
+    silence_threshold_energy = preferences.getInt("sil_thres", 180);
     speaker_volume = preferences.getFloat("spk_vol", 1.0);
     wake_word_threshold = preferences.getFloat("ww_thres", 0.93);
     reconnect_interval = preferences.getInt("reconn_int", 5);
     
-    led_mode = preferences.getInt("led_mode", 1);
     led_brightness = preferences.getInt("led_bright", 50);
+    led_mode_idle = preferences.getInt("led_m_idle", 0);
     led_color_idle = preferences.getString("led_cidle", "#000000");
+    led_mode_listen = preferences.getInt("led_m_listen", 1);
     led_color_listen = preferences.getString("led_clisten", "#0000ff");
+    led_mode_think = preferences.getInt("led_m_think", 2);
+    led_color_think = preferences.getString("led_cthink", "#ffaa00");
+    led_mode_speak = preferences.getInt("led_m_speak", 1);
     led_color_speak = preferences.getString("led_cspeak", "#00ff00");
     preferences.end();
 }
@@ -480,16 +588,15 @@ void setup_tflite() {
 
 void onMessageCallback(WebsocketsMessage message) {
     if (message.isBinary()) {
-        is_speaking = true; // При получении аудио переходим в статус "Отвечаю"
+        set_state(STATE_SPEAKING);
         
-        // Применяем speaker_volume и пишем в I2S ЧАНКАМИ, чтобы избежать переполнения стека!
         const int16_t* pcm = (const int16_t*)message.c_str();
         int num_samples = message.length() / 2;
         int chunk_size = 512;
         
         for (int i = 0; i < num_samples; i += chunk_size) {
             int current_chunk = (num_samples - i < chunk_size) ? (num_samples - i) : chunk_size;
-            int16_t vol_buffer[512]; // Фиксированный безопасный размер буфера на стеке (1 КБ)
+            int16_t vol_buffer[512];
             
             for(int j = 0; j < current_chunk; j++) {
                 float val = pcm[i + j] * speaker_volume;
@@ -503,18 +610,22 @@ void onMessageCallback(WebsocketsMessage message) {
     } else if (message.isText()) {
         Serial.println("Server text: " + message.data());
         
-        // Обработка команд от бэкенда
         if (message.data().indexOf("\"type\":\"sleep\"") >= 0 || message.data().indexOf("\"type\": \"sleep\"") >= 0) {
-            Serial.println("Server commanded SLEEP. Returning to wake word mode.");
-            is_listening = false;
-            is_speaking = false;
+            Serial.println("Server commanded SLEEP.");
+            set_state(STATE_IDLE);
             last_sleep_time = millis();
         }
-        else if (message.data().indexOf("\"type\":\"speaking\"") >= 0) {
-            is_speaking = true;
+        else if (message.data().indexOf("\"type\":\"thinking\"") >= 0 || message.data().indexOf("\"type\": \"thinking\"") >= 0) {
+            Serial.println("Server commanded THINKING.");
+            set_state(STATE_THINKING);
         }
-        else if (message.data().indexOf("\"type\":\"done_speaking\"") >= 0) {
-            is_speaking = false;
+        else if (message.data().indexOf("\"type\":\"speaking\"") >= 0 || message.data().indexOf("\"type\": \"speaking\"") >= 0) {
+            Serial.println("Server commanded SPEAKING.");
+            set_state(STATE_SPEAKING);
+        }
+        else if (message.data().indexOf("\"type\":\"done_speaking\"") >= 0 || message.data().indexOf("\"type\": \"done_speaking\"") >= 0) {
+            set_state(STATE_IDLE);
+            last_sleep_time = millis();
         }
     }
 }
@@ -523,11 +634,11 @@ void onEventsCallback(WebsocketsEvent event, String data) {
     if (event == WebsocketsEvent::ConnectionOpened) {
         Serial.println("WebSocket Connected!");
         is_connected = true;
+        set_state(STATE_IDLE);
     } else if (event == WebsocketsEvent::ConnectionClosed) {
         Serial.println("WebSocket Disconnected");
         is_connected = false;
-        is_listening = false;
-        is_speaking = false;
+        set_state(STATE_IDLE);
         last_sleep_time = millis();
     }
 }
@@ -633,60 +744,88 @@ void loop() {
         return;
     }
 
-    if (is_listening && millis() - listening_start_time > 15000) {
-        Serial.println("Microphone timeout (15s)! Forcing sleep mode.");
-        is_listening = false;
-        is_speaking = false;
+    // --- СТОРОЖЕВЫЕ ТАЙМЕРЫ (WATCHDOG) ---
+    // 1. В режиме LISTENING: если прошло listen_timeout_s (например 6 сек)
+    if (current_state == STATE_LISTENING && (millis() - state_enter_time > (unsigned long)(listen_timeout_s * 1000))) {
+        Serial.println("[WATCHDOG] Listening timeout! Returning to IDLE.");
+        set_state(STATE_IDLE);
         last_sleep_time = millis();
         client.send("{\"type\":\"timeout\"}");
     }
 
+    // 2. В режиме THINKING: если сервер не отвечает 10 секунд (защита от зависания!)
+    if (current_state == STATE_THINKING && (millis() - state_enter_time > 10000)) {
+        Serial.println("[WATCHDOG] Thinking timeout (10s)! Returning to IDLE.");
+        set_state(STATE_IDLE);
+        last_sleep_time = millis();
+    }
+
+    // 3. В режиме SPEAKING: если последний аудиопакет был более 3.5 секунд назад
+    if (current_state == STATE_SPEAKING && (millis() - state_enter_time > 3500)) {
+        Serial.println("[WATCHDOG] Speaking timeout. Returning to IDLE.");
+        set_state(STATE_IDLE);
+        last_sleep_time = millis();
+    }
+
     client.poll();
 
+    // Считываем микрофон
     size_t bytes_read = 0;
     i2s_read(I2S_NUM_0, mic_buffer_32, sizeof(mic_buffer_32), &bytes_read, portMAX_DELAY);
-    
     int samples_read = bytes_read / 4;
     
-    // Конвертация 32-bit в 16-bit + Применение усиления микрофона
+    int32_t sum_amp = 0;
     for (int i = 0; i < samples_read; i++) {
         int32_t val = (mic_buffer_32[i] >> 16) * mic_gain;
         if (val > 32767) val = 32767;
         if (val < -32768) val = -32768;
         mic_buffer_16[i] = (int16_t)val;
+        sum_amp += abs(mic_buffer_16[i]);
         
-        // Пишем в pre-roll буфер
         pre_roll_buffer[pre_roll_head] = mic_buffer_16[i];
         pre_roll_head = (pre_roll_head + 1) % PRE_ROLL_SAMPLES;
     }
+    int avg_amp = samples_read > 0 ? (sum_amp / samples_read) : 0;
 
-    if (!is_listening) {
+    // --- ЛОГИКА КОНЕЧНОГО АВТОМАТА (STATE MACHINE) ---
+    if (current_state == STATE_IDLE) {
+        // ТОЛЬКО В РЕЖИМЕ IDLE ДЕТЕКТИРУЕТСЯ ВЕЙКВОРД!
         bool detected = detect_wakeword(mic_buffer_16, samples_read);
-        if (millis() - last_sleep_time > 2000) {
+        if (millis() - last_sleep_time > 1500) {
             if (detected) {
-                Serial.println("Wake word detected! Sending pre-roll buffer...");
-            is_listening = true;
-            listening_start_time = millis(); // Запоминаем время начала прослушивания
-            client.send("{\"type\":\"wake_word_detected\"}");
-            
-            // Отправляем предзаписанный буфер по частям (чтобы не превысить размер пакета WebSocket)
-            if (is_connected) {
-                // Данные в буфере идут от pre_roll_head (самые старые) до pre_roll_head - 1 (самые свежие)
-                int oldest_idx = pre_roll_head;
-                int oldest_count = PRE_ROLL_SAMPLES - oldest_idx;
+                Serial.println("Wake word detected! Entering LISTENING state...");
+                set_state(STATE_LISTENING);
+                user_has_spoken = false;
+                last_speech_time = millis();
+                client.send("{\"type\":\"wake_word_detected\"}");
                 
-                // Отправляем первую часть (до конца массива)
-                client.sendBinary((const char*)(pre_roll_buffer + oldest_idx), oldest_count * 2);
-                // Отправляем вторую часть (от начала массива до pre_roll_head)
-                if (oldest_idx > 0) {
-                    client.sendBinary((const char*)pre_roll_buffer, oldest_idx * 2);
-                }
+                // Отправляем буфер предзаписи
+                if (is_connected) {
+                    int oldest_idx = pre_roll_head;
+                    int oldest_count = PRE_ROLL_SAMPLES - oldest_idx;
+                    client.sendBinary((const char*)(pre_roll_buffer + oldest_idx), oldest_count * 2);
+                    if (oldest_idx > 0) {
+                        client.sendBinary((const char*)pre_roll_buffer, oldest_idx * 2);
+                    }
                 }
             }
         }
-    } else {
+    }
+    else if (current_state == STATE_LISTENING) {
+        // Передаем звук микрофона в WebSocket
         if (is_connected) {
             client.sendBinary((const char*)mic_buffer_16, samples_read * 2);
         }
+
+        // Локальный детектор тишины
+        if (avg_amp > silence_threshold_energy) {
+            user_has_spoken = true;
+            last_speech_time = millis();
+        } else if (user_has_spoken && (millis() - last_speech_time > (unsigned long)silence_timeout_ms)) {
+            Serial.println("Silence detected after speech! Switching to THINKING.");
+            set_state(STATE_THINKING);
+            client.send("{\"type\":\"end_of_speech\"}");
+        }
     }
+    // В STATE_THINKING и STATE_SPEAKING микрофон заглушен, вейкворд заблокирован!
 }
