@@ -87,6 +87,8 @@ async def handle_client(websocket):
         vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600)
     )
     
+    logger.info(f"Connecting to Gemini Live API using model: {gemini_client.model}")
+    
     try:
         async with gemini_client.connect() as session, asyncio.TaskGroup() as tg:
             
@@ -164,10 +166,12 @@ async def handle_client(websocket):
                         content = response.server_content
                         if content:
                             if getattr(content, "turn_complete", False):
-                                logger.info("Gemini finished turn. Mic is now OPEN.")
+                                logger.info("Gemini finished turn. Sending SLEEP command to client.")
                                 session_state["is_gemini_speaking"] = False
                                 # Сбрасываем флаг отправки аудио для следующего ответа
                                 session_state["first_audio_sent"] = False
+                                # Отправляем команду на засыпание (чтобы колонка снова ждала вейкворд)
+                                await websocket.send(json.dumps({"type": "sleep"}))
                                 
                             # Обработка прерывания
                             if getattr(content, "interrupted", False):
@@ -178,6 +182,12 @@ async def handle_client(websocket):
                                 logger.info(f"User Speech Recognized: {content.input_transcription.text}")
                             if getattr(content, "output_transcription", None):
                                 logger.info(f"Gemini Speech: {content.output_transcription.text}")
+                                    
+                            # Логируем текст ответа Gemini напрямую
+                            if getattr(response.server_content.model_turn, "parts", None):
+                                for part in response.server_content.model_turn.parts:
+                                    if getattr(part, "text", None):
+                                        logger.info(f"Gemini says: {part.text}")
                         
                         # Обработка вызовов функций (Home Assistant)
                         if response.tool_call:

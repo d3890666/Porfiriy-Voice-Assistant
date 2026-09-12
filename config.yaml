@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.27"
+version: "0.0.28"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -18,7 +18,7 @@ map:
   - config:rw
 options:
   gemini_api_key: ""
-  gemini_model: "gemini-2.5-flash-native-audio-preview-12-2025"
+  gemini_model: "gemini-2.0-flash-exp"
   system_prompt: "Ты умный голосовой помощник Порфирий, интегрированный в Умный Дом. Если тебя просят выполнить команду по умному дому, используй доступные функции."
   voice_name: "Charon"
   debug_mode: true
