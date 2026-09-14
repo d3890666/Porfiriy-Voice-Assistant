@@ -22,6 +22,10 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.64 (Barge-In Global Setting UI & Test Client Support)
+*   **Barge-In Global Web UI Setting**: Чекбокс «Прерывание речи (Barge-in)» добавлен на вкладку «Мозг & Личность» (`tab-brain`) веб-интерфейса Ingress UI рядом с поиском Google и синхронизируется с сервером на лету (`POST /api/global`).
+*   **PC Test Client Barge-In Support**: Отладочный клиент на ПК (`debug_client.py`) полностью поддерживает серверный шлюз Barge-in — при произнесении речи поверх ответа Gemini сервер мгновенно отправляет `interrupted`, очищая очередь воспроизведения звуковой карты ПК.
+
 ### Версия 0.0.63 (Server-Side Adaptive Barge-In Gate, Continuous Mic Stream & ESP32 Code Preservation)
 *   **Server-Side Adaptive Barge-In Gate**: Вся тяжелая логика фильтрации прерываний (Barge-in) перенесена на бэкенд в Home Assistant Add-on (`backend/main.py`). Пока говорит Gemini Live, микрофонный звук не отправляется в сессию вслепую, исключая мгновенные самопрерывания модели собственным эхом динамика.
 *   **Adaptive Speaker Echo Baseline**: Сервер динамически отслеживает уровень эха динамика в микрофоне и пропускает прерывание только тогда, когда человек явно произносит команду поверх звука (порог RMS по умолчанию 1800 и превышение эха в 2.2 раза). При детекции речи сервер мгновенно отправляет `interrupted` на ESP32 (глуша динамик) и отправляет предзаписанный буфер речи в Gemini Live.

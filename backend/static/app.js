@@ -664,6 +664,11 @@ function populateGlobalSettingsForm() {
     googleSearchChk.checked = globalOptions.enable_google_search !== false;
   }
 
+  const bargeInChk = document.getElementById('cfg-barge-in');
+  if (bargeInChk) {
+    bargeInChk.checked = globalOptions.enable_barge_in !== false;
+  }
+
   // 4 Модульных промпта: если в настройках пусто или пробелы, подставляем каноничный шаблон!
   const getPromptVal = (key, fallbackKey) => {
     const val = globalOptions[key];
@@ -747,6 +752,7 @@ async function saveGlobalSettings(e) {
       thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 7),
       vad_silence_duration_ms: parseInt(document.getElementById('cfg-vad-silence')?.value || 600),
       enable_google_search: document.getElementById('cfg-google-search')?.checked || false,
+      enable_barge_in: document.getElementById('cfg-barge-in')?.checked !== false,
       prompt_persona: document.getElementById('cfg-prompt-persona')?.value || '',
       prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
       prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',

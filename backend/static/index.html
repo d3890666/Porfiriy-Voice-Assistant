@@ -454,7 +454,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.62</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.64</p>
         </div>
       </div>
       
@@ -773,6 +773,16 @@ PING:
                 <span>Поиск Google (Grounding)</span>
               </label>
               <small class="field-hint">Позволяет Порфирию искать свежие данные и новости в сети</small>
+            </div>
+
+            <!-- Разрешить голосовое прерывание (Barge-in) -->
+            <div class="form-field-checkbox">
+              <label class="checkbox-label">
+                <input type="checkbox" id="cfg-barge-in" name="enable_barge_in" checked>
+                <span class="custom-checkbox"></span>
+                <span>Прерывание речи (Barge-in)</span>
+              </label>
+              <small class="field-hint">Разрешает перебивать Порфирия голосом во время его ответа</small>
             </div>
 
             <!-- VAD Silence Duration -->
