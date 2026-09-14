@@ -18,6 +18,12 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.60 (Fix Ingress JS Caching, Auto-Inline app.js, Model Options & Save Button)
+*   **Fix Ingress JS Caching via Auto-Inline**: В `handle_index` в `backend/web_server.py` добавлено автоматическое инлайнирование содержимого `app.js` прямо в тело HTML-ответа перед отправкой клиенту. Это навсегда устранило проблему Home Assistant Ingress, когда браузер или прокси кэшировали устаревший `app.js`, приводя к неработающим обработчикам и рассинхронизации логики с HTML.
+*   **Fix Save Global Settings Button**: Кнопка «Сохранить и применить на лету» снабжена индикацией процесса (`⏳ Сохраняю...`), всплывающими тостами и подробным выводом в консоль. Все интерактивные функции явно привязаны к глобальному объекту `window`, исключая `ReferenceError`.
+*   **Pre-filled Model Options**: Список моделей в `<select id="cfg-model">` заполнен базовыми проверенными Live-моделями прямо в разметке HTML, что полностью убрало надпись `(Загрузка...)` при открытии вкладки.
+*   **ReadyState-Safe Init**: Инициализация скрипта дополнена проверкой `document.readyState` на случай, если событие `DOMContentLoaded` уже наступило к моменту старта скрипта.
+
 ### Версия 0.0.59 (Fix SSE Disconnect Error Logging)
 *   **Fix SSE Disconnect Error Logging**: В `handle_events` в `backend/web_server.py` добавлен перехват `(ConnectionResetError, BrokenPipeError, aiohttp.ClientConnectionResetError, aiohttp.ClientPayloadError)`. Это устранило спам трейсбеками `ClientConnectionResetError: Cannot write to closing transport` в логах Home Assistant при перезагрузке страниц дашборда или сбросе соединения клиентом.
 

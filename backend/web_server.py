@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import re
 import json
 import asyncio
 import logging
@@ -55,9 +56,22 @@ class WebServer:
 
     async def handle_index(self, request):
         index_file = os.path.join(self.static_dir, "index.html")
+        app_js_file = os.path.join(self.static_dir, "app.js")
         if os.path.exists(index_file):
             with open(index_file, "r", encoding="utf-8") as f:
                 content = f.read()
+            # Автоматически инлайним свежий app.js прямо в HTML для 100% защиты от кэширования в Ingress
+            if os.path.exists(app_js_file):
+                try:
+                    with open(app_js_file, "r", encoding="utf-8") as fjs:
+                        js_content = fjs.read()
+                    content = re.sub(
+                        r'<script\s+src=["\']static/app\.js.*?["\']></script>',
+                        lambda _: f'<script>\n{js_content}\n</script>',
+                        content
+                    )
+                except Exception as je:
+                    logger.warning(f"Could not inline app.js: {je}")
             return web.Response(
                 text=content,
                 content_type="text/html",

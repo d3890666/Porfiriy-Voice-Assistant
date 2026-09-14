@@ -1,11 +1,11 @@
 // Porfiriy Dashboard Frontend Logic
-const API_BASE = window.location.pathname.replace(/\/+$/, '');
+const API_BASE = window.location.pathname.replace(/\/index\.html.*$/i, '').replace(/\/+$/, '');
 
 let devices = [];
 let globalOptions = {};
 let availableModels = [];
 
-const CANONICAL_PROMPTS = {
+const CANONICAL_PROMPTS = window.CANONICAL_PROMPTS || {
   persona: `IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
 
 CORE COMMUNICATION PRINCIPLES: 
@@ -68,13 +68,19 @@ PING:
 };
 
 // Инициализация
-document.addEventListener('DOMContentLoaded', () => {
+function initApp() {
   setupTabs();
   fetchDevices();
   fetchGlobalOptions();
   setupSSE();
   setupSelectAll();
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
 
 // Навигация по вкладкам
 function setupTabs() {
@@ -407,20 +413,17 @@ function populateModelsDropdown(selectedModel) {
 
   const currentVal = selectedModel || globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview';
 
-  let models = [...availableModels];
-  if (models.length === 0) {
-    models = [
-      { id: 'models/gemini-3.1-flash-live-preview', name: 'Gemini 3.1 Flash Live Preview (Новейшая)', is_live: true },
-      { id: 'models/gemini-2.5-flash-native-audio-preview', name: 'Gemini 2.5 Flash Native Audio Preview', is_live: true },
-      { id: 'models/gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Experimental', is_live: true },
-      { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (Короткий ID)', is_live: true }
-    ];
-  }
+  let models = Array.isArray(availableModels) && availableModels.length > 0 ? [...availableModels] : [
+    { id: 'models/gemini-3.1-flash-live-preview', name: 'Gemini 3.1 Flash Live Preview (Новейшая)', is_live: true },
+    { id: 'models/gemini-2.5-flash-native-audio-preview', name: 'Gemini 2.5 Flash Native Audio Preview', is_live: true },
+    { id: 'models/gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Experimental', is_live: true },
+    { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (Короткий ID)', is_live: true }
+  ];
 
-  const isModelInList = models.some(m => m.id === currentVal);
+  const isModelInList = models.some(m => m && m.id === currentVal);
 
-  const liveGroup = models.filter(m => m.is_live);
-  const otherGroup = models.filter(m => !m.is_live);
+  const liveGroup = models.filter(m => m && m.is_live);
+  const otherGroup = models.filter(m => m && !m.is_live);
 
   let html = '';
 
@@ -607,9 +610,20 @@ function toggleKeyVisibility() {
 
 // Сохранение глобальных настроек (Hot Reload)
 async function saveGlobalSettings(e) {
-  if (e) e.preventDefault();
+  if (e) {
+    try {
+      e.preventDefault();
+      e.stopPropagation();
+    } catch (_) {}
+  }
   const btn = document.getElementById('btn-save-global');
-  if (btn) btn.disabled = true;
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Сохраняю...';
+  }
+
+  showToast('Сохраняю настройки Порфирия...');
 
   try {
     let selectedModel = document.getElementById('cfg-model')?.value?.trim();
@@ -635,6 +649,8 @@ async function saveGlobalSettings(e) {
       payload.gemini_api_key = newKey;
     }
 
+    console.log('Sending global settings payload to:', `${API_BASE}/api/global`, payload);
+
     const res = await fetch(`${API_BASE}/api/global`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -647,12 +663,16 @@ async function saveGlobalSettings(e) {
       showToast('Настройки Порфирия сохранены и применены на лету!');
       populateGlobalSettingsForm();
     } else {
-      showToast(`Ошибка: ${data.error || 'Не удалось сохранить'}`, true);
+      showToast(`Ошибка сохранения: ${data.error || 'Проверьте данные'}`, true);
     }
   } catch (err) {
-    showToast('Ошибка связи с сервером при сохранении', true);
+    console.error('Error saving global settings:', err);
+    showToast('Ошибка связи с сервером при сохранении: ' + (err.message || err), true);
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml || '💾 Сохранить и применить на лету';
+    }
   }
 }
 
@@ -767,3 +787,24 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+// Явный экспорт всех интерактивных функций на объект window
+window.setupTabs = setupTabs;
+window.fetchDevices = fetchDevices;
+window.fetchGlobalOptions = fetchGlobalOptions;
+window.handleBulkSubmit = handleBulkSubmit;
+window.toggleSelectAll = toggleSelectAll;
+window.updateSingleDeviceConfig = updateSingleDeviceConfig;
+window.triggerDeviceAction = triggerDeviceAction;
+window.renderBrainInfo = renderBrainInfo;
+window.populateModelsDropdown = populateModelsDropdown;
+window.handleModelSelectChange = handleModelSelectChange;
+window.refreshModelsList = refreshModelsList;
+window.restoreDefaultPrompt = restoreDefaultPrompt;
+window.populateGlobalSettingsForm = populateGlobalSettingsForm;
+window.updatePromptCharCounters = updatePromptCharCounters;
+window.toggleKeyVisibility = toggleKeyVisibility;
+window.saveGlobalSettings = saveGlobalSettings;
+window.regeneratePhrases = regeneratePhrases;
+window.checkPhrasesStatus = checkPhrasesStatus;
+window.showToast = showToast;

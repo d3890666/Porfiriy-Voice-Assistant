@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.59">
+  <link rel="stylesheet" href="static/style.css?v=0.0.60">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -354,7 +354,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.59</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.60</p>
         </div>
       </div>
       
@@ -589,7 +589,15 @@ PING:
                 </button>
               </div>
               <select id="cfg-model" name="gemini_model" onchange="handleModelSelectChange(this.value)">
-                <option value="models/gemini-3.1-flash-live-preview">models/gemini-3.1-flash-live-preview (Загрузка...)</option>
+                <optgroup label="🌟 Поддерживают Live Audio (Рекомендуемые)">
+                  <option value="models/gemini-3.1-flash-live-preview" selected>Gemini 3.1 Flash Live Preview (Новейшая)</option>
+                  <option value="models/gemini-2.5-flash-native-audio-preview">Gemini 2.5 Flash Native Audio Preview</option>
+                  <option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental</option>
+                  <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Короткий ID)</option>
+                </optgroup>
+                <optgroup label="Ручной ввод">
+                  <option value="__custom__">✍️ Ввести другую модель вручную...</option>
+                </optgroup>
               </select>
               <div id="custom-model-box" style="display: none; margin-top: 8px;">
                 <input type="text" id="cfg-model-custom" placeholder="Введите имя модели вручную, например: models/gemini-3.1-flash-live-preview">
@@ -772,6 +780,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.59"></script>
+  <script src="static/app.js?v=0.0.60"></script>
 </body>
 </html>
