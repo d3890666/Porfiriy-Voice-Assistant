@@ -209,9 +209,13 @@ const char index_html[] PROGMEM = R"rawliteral(
 
 <div class="dashboard">
   <h2>Статус Колонки</h2>
+  <div style="display:flex; justify-content:space-between; margin-bottom:12px; font-size:13px; color:#aaa;">
+    <span>IP: <strong id="dev-ip" style="color:#4dabf7;">%LOCAL_IP%</strong></span>
+    <span>Wi-Fi: <strong id="dev-rssi" style="color:#4dabf7;">--- dBm</strong></span>
+  </div>
   <p>Состояние: <span id="status-text" class="status-badge">Загрузка...</span></p>
-  <p>Связь с сервером: <span id="conn-text" class="status-badge">Загрузка...</span></p>
-  <button type="button" onclick="forceReconnect()" style="margin-top:10px; padding:5px 10px; background:#ffc107; color:#000; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">Переподключить сейчас</button>
+  <p style="margin-top:8px;">Связь с сервером: <span id="conn-text" class="status-badge">Загрузка...</span></p>
+  <button type="button" onclick="forceReconnect()" style="margin-top:12px; padding:6px 12px; background:#ffc107; color:#000; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">Переподключить сейчас</button>
 </div>
 
 <form id="settingsForm" action="/save" method="POST">
@@ -290,16 +294,29 @@ setInterval(() => {
   fetch("/status").then(r => r.json()).then(data => {
     let st = document.getElementById("status-text");
     let ct = document.getElementById("conn-text");
+    let devIp = document.getElementById("dev-ip");
+    let devRssi = document.getElementById("dev-rssi");
+    if(devIp && data.ip) devIp.innerText = data.ip;
+    if(devRssi && data.rssi !== undefined) devRssi.innerText = data.rssi + " dBm";
+    
     if(data.is_speaking) { st.innerText = "Отвечаю..."; st.style.background = "#28a745"; st.style.color = "#fff"; }
     else if(data.is_thinking) { st.innerText = "Думаю..."; st.style.background = "#ffc107"; st.style.color = "#000"; }
     else if(data.is_listening) { st.innerText = "Слушаю вас..."; st.style.background = "#007bff"; st.style.color = "#fff"; }
     else { st.innerText = "Ожидание слова"; st.style.background = "#6c757d"; st.style.color = "#fff"; }
     
-    if(data.is_connected) { ct.innerText = "Подключено"; ct.style.background = "#28a745"; }
-    else { ct.innerText = "Отключено"; ct.style.background = "#dc3545"; }
+    let srv = data.server_url || "сервер";
+    if(data.is_connected) { 
+      ct.innerText = "● Подключено: " + srv; 
+      ct.style.background = "#28a745"; 
+      ct.style.color = "#fff";
+    } else { 
+      ct.innerText = "○ Отключено (" + srv + ")"; 
+      ct.style.background = "#dc3545"; 
+      ct.style.color = "#fff";
+    }
   }).catch(() => {
-    document.getElementById("status-text").innerText = "Плата недоступна";
-    document.getElementById("status-text").style.background = "#dc3545";
+    let st = document.getElementById("status-text");
+    if(st) { st.innerText = "Плата занята / переподключение"; st.style.background = "#6c757d"; }
   });
 }, 1000);
 
@@ -312,7 +329,7 @@ document.getElementById("settingsForm").addEventListener("submit", function(e) {
     body: new URLSearchParams(fd)
   }).then(r => r.text()).then(t => {
     if(t.includes("перезагружается")) {
-      document.body.innerHTML = "<h2 style="text-align:center;margin-top:20vh;">Настройки сети изменены. Перезагрузка...</h2>";
+      document.body.innerHTML = "<h2 style=\"text-align:center;margin-top:20vh;\">Настройки сети изменены. Перезагрузка...</h2>";
     } else {
       alert("Настройки успешно применены на лету!");
     }
@@ -364,14 +381,23 @@ void handleRoot() {
     html.replace("%LED_SPEAK_M2%", led_mode_speak == 2 ? "selected" : "");
     html.replace("%LED_CSPEAK%", led_color_speak);
     
+    html.replace("%LOCAL_IP%", WiFi.localIP().toString());
+    
     server.send(200, "text/html", html);
 }
 
 void handleStatus() {
-    String json = "{\"is_connected\": " + String(is_connected ? "true" : "false") + 
-                  ", \"is_listening\": " + String(is_listening ? "true" : "false") + 
-                  ", \"is_thinking\": " + String(is_thinking ? "true" : "false") + 
-                  ", \"is_speaking\": " + String(is_speaking ? "true" : "false") + "}";
+    bool connected = is_connected && client.available();
+    String json = "{";
+    json += "\"is_connected\":" + String(connected ? "true" : "false") + ",";
+    json += "\"is_listening\":" + String(is_listening() ? "true" : "false") + ",";
+    json += "\"is_thinking\":" + String(is_thinking() ? "true" : "false") + ",";
+    json += "\"is_speaking\":" + String(is_speaking() ? "true" : "false") + ",";
+    json += "\"server_url\":\"ws://" + ws_host + ":" + String(ws_port) + "\",";
+    json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+    json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+    json += "\"uptime\":" + String(millis() / 1000);
+    json += "}";
     server.send(200, "application/json", json);
 }
 
@@ -767,7 +793,7 @@ void send_registration() {
     json += "\"rssi\":" + String(rssi) + ",";
     json += "\"uptime\":" + String(millis() / 1000) + ",";
     json += "\"device_type\":\"esp32\",";
-    json += "\"firmware\":\"0.0.52\",";
+    json += "\"firmware\":\"0.0.54\",";
     json += "\"config\":{";
     json += "\"mic_gain\":" + String(mic_gain) + ",";
     json += "\"speaker_volume\":" + String(speaker_volume, 2) + ",";
@@ -891,13 +917,14 @@ void loop() {
         return;
     }
 
-    if (!is_connected) {
-        if (millis() - last_reconnect_time > (reconnect_interval * 1000)) {
+    if (!is_connected || !client.available()) {
+        is_connected = false;
+        if (millis() - last_reconnect_time > (unsigned long)(reconnect_interval * 1000)) {
             Serial.println("Attempting to reconnect WebSocket...");
             last_reconnect_time = millis();
             client.connect(ws_host.c_str(), ws_port, "/");
         }
-        delay(100);
+        delay(10);
         return;
     }
 

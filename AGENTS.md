@@ -18,6 +18,12 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.54 (Web Configurator, Hot Reload, Phrases Regeneration, ESP32 Web UI Links & Status Fix)
+*   **Web Configurator & Hot Reload**: Все параметры аддона и 4 модульных промпта перенесены в интерактивную форму Ingress UI (`POST /api/global`). Настройки сохраняются на лету без перезапуска аддона и синхронизируются со штатным Home Assistant через Supervisor API.
+*   **Manual Phrases Regeneration**: Добавлена кнопка и эндпоинт `POST /api/phrases/regenerate` для ручной перегенерации каталога системных фраз в фоне (без автоматического сброса при каждом сохранении настроек) и отслеживание статуса (`GET /api/phrases/status`).
+*   **Strict ESP32 Device Filtering**: Логика карточек колонок и групповой настройки разделена по условию `isEsp = (dev.device_type === 'esp32')`. Для ESP доступны все аппаратные параметры, шкала Wi-Fi RSSI, порог вейкворда TFLite, кнопки звука и рестарта, а также ссылка на встроенный Web UI колонки (`http://<ip>/ ↗`). Для виртуального клиента (ПК) отображаются только базовые свойства.
+*   **ESP32 Web Server & Status Fixes**: Исправлено залипание статуса подключения к серверу (`is_connected && client.available()`), расширен JSON `/status` (IP, RSSI, адрес сервера), устранены задержки `server.handleClient()` при переподключении и экранированы кавычки в JS.
+
 ### Версия 0.0.53 (Fix NameError Optional in ha_api)
 *   **Fix Optional import**: В `ha_api.py` добавлен импорт `Optional` из `typing` для аннотации возвращаемого значения `get_device_area_name(mac) -> Optional[str]`.
 

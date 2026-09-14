@@ -45,12 +45,21 @@ SUCCESS_CHIME = generate_beep(600, 100) + generate_beep(800, 150)
 ERROR_CHIME = generate_beep(300, 150) + generate_beep(200, 200)
 
 options_path = "/data/options.json"
+_runtime_options = None
 
 def get_options():
+    global _runtime_options
+    if _runtime_options is not None:
+        return dict(_runtime_options)
     if os.path.exists(options_path):
-        with open(options_path, "r") as f:
-            return json.load(f)
-    return {
+        try:
+            with open(options_path, "r", encoding="utf-8") as f:
+                _runtime_options = json.load(f)
+                return dict(_runtime_options)
+        except Exception as e:
+            logger.error(f"Error loading options.json: {e}")
+            
+    _runtime_options = {
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": "models/gemini-3.1-flash-live-preview",
         "system_prompt": "",
@@ -58,12 +67,28 @@ def get_options():
         "prompt_users": "",
         "prompt_smart_home": "",
         "prompt_general": "",
-        "voice_name": "Zephyr",
+        "voice_name": "Charon",
+        "temperature": 0.7,
+        "thinking_timeout_s": 7,
         "debug_mode": False,
         "enable_google_search": True,
         "vad_silence_duration_ms": 600,
         "enable_barge_in": True
     }
+    return dict(_runtime_options)
+
+def save_options(new_options: dict):
+    global _runtime_options
+    opts = get_options()
+    opts.update(new_options)
+    _runtime_options = opts
+    try:
+        os.makedirs(os.path.dirname(options_path), exist_ok=True)
+        with open(options_path, "w", encoding="utf-8") as f:
+            json.dump(opts, f, indent=2, ensure_ascii=False)
+        logger.info("Saved updated options to /data/options.json")
+    except Exception as e:
+        logger.warning(f"Failed to persist options to file: {e}")
 
 async def handle_client(websocket):
     options = get_options()
@@ -611,7 +636,14 @@ async def main():
     asyncio.create_task(mqtt_manager.start())
     
     # 2. Запуск Ingress Web Server (порт 8099)
-    web_server = WebServer(device_manager, ha_api, get_options, port=8099)
+    web_server = WebServer(
+        device_manager, 
+        ha_api, 
+        get_options, 
+        options_save_callback=save_options, 
+        phrase_manager=phrase_manager, 
+        port=8099
+    )
     asyncio.create_task(web_server.start())
     
     # 3. Поднимаем WebSocket аудио-сервер (порт 8765)

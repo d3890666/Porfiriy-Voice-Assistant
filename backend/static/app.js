@@ -99,6 +99,9 @@ function renderDevicesGrid() {
     const roomText = dev.area_name ? `📍 ${dev.area_name}` : '📍 Без комнаты';
     const volumePercent = Math.round((cfg.speaker_volume || 1.0) * 100);
 
+    // Условие: если ESP32 — отображаем все настройки, шкалу Wi-Fi, вейкворд и Web UI. Иначе — только базовые.
+    const isEsp = (dev.device_type === 'esp32');
+
     return `
       <div class="device-card ${stateClass}" id="card-${dev.mac}">
         <div class="card-header">
@@ -109,19 +112,26 @@ function renderDevicesGrid() {
           <span class="state-badge ${stateClass}">${stateLabel}</span>
         </div>
 
-        <div class="rssi-container">
-          <div class="rssi-bars">
-            <div class="rssi-bar ${rssiInfo.bars >= 1 ? 'active ' + rssiInfo.color : ''}"></div>
-            <div class="rssi-bar ${rssiInfo.bars >= 2 ? 'active ' + rssiInfo.color : ''}"></div>
-            <div class="rssi-bar ${rssiInfo.bars >= 3 ? 'active ' + rssiInfo.color : ''}"></div>
-            <div class="rssi-bar ${rssiInfo.bars >= 4 ? 'active ' + rssiInfo.color : ''}"></div>
+        ${isEsp ? `
+          <div class="rssi-container">
+            <div class="rssi-bars">
+              <div class="rssi-bar ${rssiInfo.bars >= 1 ? 'active ' + rssiInfo.color : ''}"></div>
+              <div class="rssi-bar ${rssiInfo.bars >= 2 ? 'active ' + rssiInfo.color : ''}"></div>
+              <div class="rssi-bar ${rssiInfo.bars >= 3 ? 'active ' + rssiInfo.color : ''}"></div>
+              <div class="rssi-bar ${rssiInfo.bars >= 4 ? 'active ' + rssiInfo.color : ''}"></div>
+            </div>
+            <span style="font-weight: 600;">${rssi} dBm</span>
+            <span style="color: #888; font-size: 12px; margin-left: auto;">${rssiInfo.quality}</span>
           </div>
-          <span style="font-weight: 600;">${rssi} dBm</span>
-          <span style="color: #888; font-size: 12px; margin-left: auto;">${rssiInfo.quality}</span>
-        </div>
+        ` : `
+          <div class="virtual-client-banner">
+            <span>💻 Клиент (${escapeHtml(dev.device_type || 'ПК')})</span>
+            <span class="virtual-tag">Виртуальное устройство</span>
+          </div>
+        `}
 
         <div class="dev-meta">
-          <div>IP: ${dev.ip || '---'}</div>
+          <div>IP: ${isEsp && dev.ip && dev.ip !== '---' ? `<a href="http://${dev.ip}" target="_blank" class="dev-ip-link" title="Открыть страницу колонки">${dev.ip} ↗</a>` : (dev.ip || '---')}</div>
           <div>MAC: ${dev.mac}</div>
           <div>Аптайм: ${formatUptime(dev.uptime)}</div>
           <div>Тип: ${dev.device_type || 'ESP32'}</div>
@@ -135,23 +145,32 @@ function renderDevicesGrid() {
               oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">
             <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${volumePercent}%</span>
           </div>
-          <div class="slider-row">
-            <span>🎯 Чувств. вейкворда:</span>
-            <input type="range" min="0.80" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
-              onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
-              oninput="this.nextElementSibling.innerText = this.value">
-            <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
-          </div>
+          ${isEsp ? `
+            <div class="slider-row">
+              <span>🎯 Чувств. вейкворда:</span>
+              <input type="range" min="0.80" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
+                oninput="this.nextElementSibling.innerText = this.value">
+              <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
+            </div>
+          ` : ''}
         </div>
 
-        <div class="card-actions">
-          <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'beep')" title="Проиграть звуковой сигнал">
-            🔔 Звук
-          </button>
-          <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'reboot')" title="Перезагрузить плату">
-            🔄 Рестарт
-          </button>
-        </div>
+        ${isEsp ? `
+          <div class="card-actions">
+            <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'beep')" title="Проиграть звуковой сигнал">
+              🔔 Звук
+            </button>
+            <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'reboot')" title="Перезагрузить плату">
+              🔄 Рестарт
+            </button>
+            ${dev.ip && dev.ip !== '---' ? `
+              <a href="http://${dev.ip}" target="_blank" class="btn btn-secondary btn-icon dev-web-btn" title="Встроенный Web UI колонки">
+                🌐 Web UI
+              </a>
+            ` : ''}
+          </div>
+        ` : ''}
       </div>
     `;
   }).join('');
@@ -174,19 +193,26 @@ function formatUptime(sec) {
   return `${m}м`;
 }
 
-// Отрисовка списка колонок для групповой настройки
+// Отрисовка списка колонок для групповой настройки (ТОЛЬКО ESP32)
 function renderBulkTargets() {
   const container = document.getElementById('bulk-targets-list');
   if (!container) return;
 
+  const espDevices = devices.filter(dev => dev.device_type === 'esp32');
+
+  if (espDevices.length === 0) {
+    container.innerHTML = `<div class="empty-hint" style="color: var(--text-secondary); font-size: 13px;">Нет активных плат ESP32 для групповой настройки акустики и подсветки.</div>`;
+    return;
+  }
+
   const selectAllHtml = `
     <label class="checkbox-badge">
       <input type="checkbox" id="bulk-select-all" checked onchange="toggleSelectAll(this.checked)">
-      <span><strong>Выбрать все</strong> (${devices.length})</span>
+      <span><strong>Выбрать все ESP32</strong> (${espDevices.length})</span>
     </label>
   `;
 
-  const itemsHtml = devices.map(dev => `
+  const itemsHtml = espDevices.map(dev => `
     <label class="checkbox-badge">
       <input type="checkbox" name="target_dev" value="${dev.mac}" checked class="bulk-dev-checkbox">
       <span>${escapeHtml(dev.name)} ${dev.area_name ? `(${dev.area_name})` : ''}</span>
@@ -303,33 +329,196 @@ async function triggerDeviceAction(mac, action) {
   }
 }
 
-// Отрисовка вкладки Brain
+// Заполнение формы глобальных настроек
 function renderBrainInfo() {
-  const container = document.getElementById('brain-info');
-  if (!container) return;
+  populateGlobalSettingsForm();
+  checkPhrasesStatus();
+}
 
-  container.innerHTML = `
-    <div class="brain-item">
-      <strong>Модель Gemini:</strong>
-      <code>${escapeHtml(globalOptions.gemini_model || 'Не указана')}</code>
-    </div>
-    <div class="brain-item">
-      <strong>Синтез речи (Голос):</strong>
-      <span>${escapeHtml(globalOptions.voice_name || 'Charon')}</span>
-    </div>
-    <div class="brain-item">
-      <strong>Таймаут размышления:</strong>
-      <span>${globalOptions.thinking_timeout_s || 7.0} сек</span>
-    </div>
-    <div class="brain-item">
-      <strong>Поиск Google:</strong>
-      <span>${globalOptions.enable_google_search ? 'Включен' : 'Выключен'}</span>
-    </div>
-    <div class="brain-item">
-      <strong>VAD пауза:</strong>
-      <span>${globalOptions.vad_silence_duration_ms || 600} мс</span>
-    </div>
-  `;
+function populateGlobalSettingsForm() {
+  const form = document.getElementById('global-settings-form');
+  if (!form) return;
+
+  const setVal = (id, val) => {
+    const el = document.getElementById(id);
+    if (el && val !== undefined && val !== null) el.value = val;
+  };
+
+  const keyInput = document.getElementById('cfg-api-key');
+  if (keyInput) {
+    if (globalOptions.has_api_key) {
+      keyInput.placeholder = `Ключ задан (${globalOptions.gemini_api_key || '••••••••'})`;
+      keyInput.value = '';
+    } else {
+      keyInput.placeholder = 'AIza... (введите ключ Gemini API)';
+    }
+  }
+
+  setVal('cfg-model', globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview');
+  setVal('cfg-voice', globalOptions.voice_name || 'Charon');
+  setVal('cfg-temperature', globalOptions.temperature !== undefined ? globalOptions.temperature : 0.7);
+  const valTemp = document.getElementById('val-temp');
+  if (valTemp) valTemp.innerText = globalOptions.temperature !== undefined ? globalOptions.temperature : 0.7;
+
+  setVal('cfg-thinking-timeout', globalOptions.thinking_timeout_s !== undefined ? globalOptions.thinking_timeout_s : 7);
+  setVal('cfg-vad-silence', globalOptions.vad_silence_duration_ms || 600);
+
+  const googleSearchChk = document.getElementById('cfg-google-search');
+  if (googleSearchChk) {
+    googleSearchChk.checked = globalOptions.enable_google_search !== false;
+  }
+
+  // 4 Модульных промпта
+  setVal('cfg-prompt-persona', globalOptions.prompt_persona || '');
+  setVal('cfg-prompt-users', globalOptions.prompt_users || '');
+  setVal('cfg-prompt-smart-home', globalOptions.prompt_smart_home || '');
+  setVal('cfg-prompt-general', globalOptions.prompt_general || '');
+
+  updatePromptCharCounters();
+
+  // Привязка счетчиков символов
+  ['persona', 'users', 'smart-home', 'general'].forEach(name => {
+    const txt = document.getElementById(`cfg-prompt-${name}`);
+    if (txt && !txt._hasCounterListener) {
+      txt.addEventListener('input', updatePromptCharCounters);
+      txt._hasCounterListener = true;
+    }
+  });
+}
+
+function updatePromptCharCounters() {
+  const update = (id, countId) => {
+    const el = document.getElementById(id);
+    const countEl = document.getElementById(countId);
+    if (el && countEl) {
+      countEl.innerText = `${el.value.length} симв.`;
+    }
+  };
+  update('cfg-prompt-persona', 'count-persona');
+  update('cfg-prompt-users', 'count-users');
+  update('cfg-prompt-smart-home', 'count-smart-home');
+  update('cfg-prompt-general', 'count-general');
+}
+
+function toggleKeyVisibility() {
+  const input = document.getElementById('cfg-api-key');
+  const btn = document.getElementById('btn-toggle-key');
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.textContent = '🔒';
+  } else {
+    input.type = 'password';
+    btn.textContent = '👁️';
+  }
+}
+
+// Сохранение глобальных настроек (Hot Reload)
+async function saveGlobalSettings(e) {
+  if (e) e.preventDefault();
+  const btn = document.getElementById('btn-save-global');
+  if (btn) btn.disabled = true;
+
+  try {
+    const payload = {
+      gemini_model: document.getElementById('cfg-model')?.value?.trim(),
+      voice_name: document.getElementById('cfg-voice')?.value,
+      temperature: parseFloat(document.getElementById('cfg-temperature')?.value || 0.7),
+      thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 7),
+      vad_silence_duration_ms: parseInt(document.getElementById('cfg-vad-silence')?.value || 600),
+      enable_google_search: document.getElementById('cfg-google-search')?.checked || false,
+      prompt_persona: document.getElementById('cfg-prompt-persona')?.value || '',
+      prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
+      prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',
+      prompt_general: document.getElementById('cfg-prompt-general')?.value || ''
+    };
+
+    const newKey = document.getElementById('cfg-api-key')?.value?.trim();
+    if (newKey) {
+      payload.gemini_api_key = newKey;
+    }
+
+    const res = await fetch(`${API_BASE}/api/global`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (data.success) {
+      globalOptions = data.options || {};
+      showToast('Настройки Порфирия сохранены и применены на лету!');
+      populateGlobalSettingsForm();
+    } else {
+      showToast(`Ошибка: ${data.error || 'Не удалось сохранить'}`, true);
+    }
+  } catch (err) {
+    showToast('Ошибка связи с сервером при сохранении', true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Ручной запуск перегенерации фраз
+async function regeneratePhrases() {
+  const btn = document.getElementById('btn-regenerate-phrases');
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/phrases/regenerate`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Регенерация фраз запущена в фоне!');
+      pollPhrasesProgress();
+    } else {
+      showToast(`Ошибка: ${data.error || 'Не удалось запустить'}`, true);
+      if (btn) btn.disabled = false;
+    }
+  } catch (err) {
+    showToast('Ошибка запроса на регенерацию фраз', true);
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Проверка статуса системных фраз
+async function checkPhrasesStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/phrases/status`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const pill = document.getElementById('phrase-status-pill');
+    const text = document.getElementById('phrase-status-text');
+    if (!pill || !text) return;
+
+    if (data.is_generating) {
+      pill.className = 'phrase-status-badge generating';
+      text.textContent = 'Генерация реплик в фоне...';
+    } else if (data.is_ready && data.total_phrases > 0) {
+      pill.className = 'phrase-status-badge ready';
+      text.textContent = `Кэш готов (${data.total_phrases} реплик)`;
+    } else {
+      pill.className = 'phrase-status-badge empty';
+      text.textContent = 'Кэш фраз пуст';
+    }
+  } catch (err) {}
+}
+
+function pollPhrasesProgress() {
+  const interval = setInterval(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/phrases/status`);
+      const data = await res.json();
+      checkPhrasesStatus();
+      if (!data.is_generating) {
+        clearInterval(interval);
+        const btn = document.getElementById('btn-regenerate-phrases');
+        if (btn) btn.disabled = false;
+        showToast(`Фразы готовы: ${data.total_phrases || 0} файлов в кэше!`);
+      }
+    } catch (e) {
+      clearInterval(interval);
+    }
+  }, 3000);
 }
 
 // Server-Sent Events (Live Telemetry)

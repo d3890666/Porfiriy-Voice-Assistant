@@ -279,3 +279,43 @@ class PhraseManager:
             chunk = phrase_bytes[i:i + CHUNK_SIZE]
             await websocket.send(chunk)
             await asyncio.sleep(CHUNK_SLEEP)
+
+    def get_status(self) -> dict:
+        """Возвращает текущее состояние кэша фраз."""
+        counts = {cat: len(self.phrases.get(cat, [])) for cat in self.phrases}
+        total = sum(counts.values())
+        return {
+            "is_ready": self.is_ready,
+            "total_phrases": total,
+            "categories": counts,
+            "is_generating": self._generating_lock.locked(),
+            "texts": self.texts
+        }
+
+    async def regenerate(self, options: dict):
+        """Ручная очистка кэша и принудительная регенерация всех системных фраз."""
+        async with self._generating_lock:
+            logger.info("Manual phrase cache regeneration requested...")
+            for cat in self.phrases:
+                self.phrases[cat] = []
+            self.texts = {}
+            self.is_ready = False
+            
+            if os.path.exists(self.manifest_path):
+                try:
+                    os.remove(self.manifest_path)
+                except Exception:
+                    pass
+            if os.path.exists(self.cache_dir):
+                for fname in os.listdir(self.cache_dir):
+                    if fname.endswith(".pcm"):
+                        try:
+                            os.remove(os.path.join(self.cache_dir, fname))
+                        except Exception:
+                            pass
+                            
+            opts = dict(options)
+            opts["regenerate_phrases"] = True
+            await self._generate_all(opts)
+            self.is_ready = True
+            logger.info("Manual phrase regeneration completed.")

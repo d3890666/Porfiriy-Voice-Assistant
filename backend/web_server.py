@@ -2,16 +2,19 @@ import os
 import json
 import asyncio
 import logging
+import aiohttp
 from aiohttp import web
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 
 logger = logging.getLogger("web_server")
 
 class WebServer:
-    def __init__(self, device_manager, ha_api, options_callback, port: int = 8099):
+    def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, port: int = 8099):
         self.device_manager = device_manager
         self.ha_api = ha_api
         self.options_callback = options_callback
+        self.options_save_callback = options_save_callback
+        self.phrase_manager = phrase_manager
         self.port = port
         self.app = web.Application()
         self.sse_queues = set()
@@ -31,6 +34,9 @@ class WebServer:
         self.app.router.add_post("/api/devices/{mac}/reboot", self.handle_device_reboot)
         self.app.router.add_get("/api/areas", self.handle_get_areas)
         self.app.router.add_get("/api/global", self.handle_get_global)
+        self.app.router.add_post("/api/global", self.handle_set_global)
+        self.app.router.add_post("/api/phrases/regenerate", self.handle_regenerate_phrases)
+        self.app.router.add_get("/api/phrases/status", self.handle_phrases_status)
         self.app.router.add_get("/api/events", self.handle_events)
         
         if os.path.exists(self.static_dir):
@@ -103,13 +109,96 @@ class WebServer:
             return web.json_response({"areas": areas})
         return web.json_response({"areas": []})
 
+    def _safe_options(self, opts: Dict[str, Any]) -> Dict[str, Any]:
+        safe = dict(opts)
+        key = safe.get("gemini_api_key", "")
+        safe["has_api_key"] = bool(key)
+        if key:
+            safe["gemini_api_key"] = key[:4] + "..." + key[-4:] if len(key) >= 8 else "********"
+        return safe
+
     async def handle_get_global(self, request):
         opts = self.options_callback() if self.options_callback else {}
-        # Скрываем api key в выводе
-        safe_opts = dict(opts)
-        if "gemini_api_key" in safe_opts and safe_opts["gemini_api_key"]:
-            safe_opts["gemini_api_key"] = safe_opts["gemini_api_key"][:4] + "..." + safe_opts["gemini_api_key"][-4:]
-        return web.json_response({"options": safe_opts})
+        return web.json_response({"options": self._safe_options(opts)})
+
+    async def handle_set_global(self, request):
+        try:
+            data = await request.json()
+            current_opts = self.options_callback() if self.options_callback else {}
+            updated_opts = dict(current_opts)
+            
+            allowed_fields = [
+                "gemini_api_key", "gemini_model", "voice_name", "temperature",
+                "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
+                "enable_barge_in", "prompt_persona", "prompt_users", "prompt_smart_home",
+                "prompt_general"
+            ]
+            
+            for field in allowed_fields:
+                if field in data:
+                    val = data[field]
+                    if field == "gemini_api_key":
+                        # Если передан пустой или маскированный ключ — оставляем прежний
+                        if val and "..." not in str(val) and "*" not in str(val):
+                            updated_opts[field] = str(val).strip()
+                    elif field in ["thinking_timeout_s", "vad_silence_duration_ms"]:
+                        try:
+                            updated_opts[field] = int(val)
+                        except (ValueError, TypeError):
+                            pass
+                    elif field == "temperature":
+                        try:
+                            updated_opts[field] = float(val)
+                        except (ValueError, TypeError):
+                            pass
+                    elif field in ["enable_google_search", "enable_barge_in"]:
+                        updated_opts[field] = bool(val)
+                    else:
+                        updated_opts[field] = str(val)
+
+            # 1. Мгновенно сохраняем в памяти бэкенда (Hot Reload) и локальный файл
+            if self.options_save_callback:
+                self.options_save_callback(updated_opts)
+            
+            # 2. Синхронизируем с Home Assistant Supervisor API (чтобы в UI HA настройки обновились)
+            supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
+            if supervisor_token:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        url = "http://supervisor/addons/self/options"
+                        async with session.post(
+                            url,
+                            headers={
+                                "Authorization": f"Bearer {supervisor_token}",
+                                "Content-Type": "application/json"
+                            },
+                            json={"options": updated_opts},
+                            timeout=aiohttp.ClientTimeout(total=5)
+                        ) as resp:
+                            if resp.status == 200:
+                                logger.info("Synchronized options with Home Assistant Supervisor.")
+                            else:
+                                logger.warning(f"Supervisor options sync returned HTTP {resp.status}")
+                except Exception as se:
+                    logger.warning(f"Failed to sync options with Supervisor: {se}")
+
+            return web.json_response({"success": True, "options": self._safe_options(updated_opts)})
+        except Exception as e:
+            logger.error(f"Error updating global options: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_regenerate_phrases(self, request):
+        if not self.phrase_manager:
+            return web.json_response({"success": False, "error": "PhraseManager is not configured"}, status=503)
+            
+        opts = self.options_callback() if self.options_callback else {}
+        asyncio.create_task(self.phrase_manager.regenerate(opts))
+        return web.json_response({"success": True, "message": "Phrase regeneration started in background"})
+
+    async def handle_phrases_status(self, request):
+        if not self.phrase_manager:
+            return web.json_response({"is_ready": False, "total_phrases": 0, "categories": {}, "is_generating": False})
+        return web.json_response(self.phrase_manager.get_status())
 
     async def handle_events(self, request):
         """Server-Sent Events (SSE) для обновления дашборда в реальном времени."""
