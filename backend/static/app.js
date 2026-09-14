@@ -170,7 +170,7 @@ function renderDevicesGrid() {
     const rssiInfo = getRssiVisual(rssi);
 
     const roomText = dev.area_name ? `📍 ${dev.area_name}` : '📍 Без комнаты';
-    const volumePercent = Math.round((cfg.speaker_volume || 1.0) * 100);
+    const volumePercent = Math.round((cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5) * 100);
 
     // Условие: если ESP32 — отображаем все настройки, шкалу Wi-Fi, вейкворд и Web UI. Иначе — только базовые.
     const isEsp = (dev.device_type === 'esp32');
@@ -228,7 +228,7 @@ function renderDevicesGrid() {
         <div class="quick-controls">
           <div class="slider-row">
             <span>🔊 Громкость:</span>
-            <input type="range" min="0.1" max="2.0" step="0.05" value="${cfg.speaker_volume || 1.0}" 
+            <input type="range" min="0.1" max="2.0" step="0.05" value="${cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5}" 
               onchange="updateSingleDeviceConfig('${dev.mac}', 'speaker_volume', parseFloat(this.value))"
               oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">
             <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${volumePercent}%</span>
@@ -524,6 +524,14 @@ async function updateSingleDeviceConfig(mac, field, value) {
   try {
     const payload = {};
     payload[field] = value;
+
+    // Мгновенно обновляем локальный объект устройства в памяти
+    const d = devices.find(x => x.mac === mac);
+    if (d) {
+      if (!d.config) d.config = {};
+      d.config[field] = value;
+    }
+
     await fetch(`${API_BASE}/api/devices/${mac}/config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -39,6 +39,25 @@ def calculate_pcm_rms(pcm_data: bytes) -> float:
         shorts = struct.unpack(f"<{count}h", pcm_data[:count*2])
         return math.sqrt(sum(s * s for s in shorts) / count)
 
+def scale_pcm16(pcm_data: bytes, volume: float) -> bytes:
+    """Масштабирует громкость 16-битного PCM звука с защитой от клиппинга."""
+    if not pcm_data or volume == 1.0:
+        return pcm_data
+    volume = max(0.0, min(2.0, volume))
+    try:
+        import audioop
+        return audioop.mul(pcm_data, 2, volume)
+    except Exception:
+        import array
+        arr = array.array("h")
+        arr.frombytes(pcm_data)
+        for i in range(len(arr)):
+            v = int(arr[i] * volume)
+            if v > 32767: v = 32767
+            elif v < -32768: v = -32768
+            arr[i] = v
+        return arr.tobytes()
+
 def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume: float = 0.5) -> bytes:
     """Генерация сырого 16-bit PCM аудио сигнала (синусоиды)."""
     num_samples = int(sample_rate * (duration_ms / 1000.0))
@@ -340,9 +359,11 @@ async def handle_client(websocket):
                             phrase = phrase_manager.get_phrase("thinking")
                             if phrase:
                                 logger.info(f"Thinking timeout > {thinking_delay}s: playing dynamic Porfiriy filler phrase...")
+                                speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
                                 await phrase_manager.play_phrase(
                                     websocket, 
                                     phrase, 
+                                    volume=speaker_vol,
                                     cancel_check=lambda: session_state.get("first_audio_sent", False)
                                 )
                     except asyncio.CancelledError:
@@ -600,7 +621,8 @@ async def handle_client(websocket):
                                     phrase = phrase_manager.get_phrase("empty_noise")
                                     if phrase:
                                         try:
-                                            await phrase_manager.play_phrase(websocket, phrase)
+                                            speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+                                            await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
                                         except Exception:
                                             pass
                                     await websocket.send(json.dumps({"type": "sleep"}))
@@ -631,8 +653,10 @@ async def handle_client(websocket):
                                             device_manager.set_device_state(client_mac, "speaking")
                                             await websocket.send(json.dumps({"type": "speaking"}))
                                         
-                                        pcm_audio = part.inline_data.data
-                                        audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (chunked)")
+                                        # Масштабируем звук на сервере согласно настроенной громкости колонки
+                                        speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+                                        pcm_audio = scale_pcm16(part.inline_data.data, speaker_vol)
+                                        audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (scaled to {speaker_vol*100:.0f}%)")
                                     
                                         # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
                                         CHUNK_SIZE = 2048
@@ -710,14 +734,15 @@ async def handle_client(websocket):
                                         tool_logger.info(f"HA Action Result: {result}")
                                     
                                         # Отправляем звуковой отклик (Earcon / Phrase) клиенту напрямую
+                                        speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
                                         if "error" in result:
                                             phrase = phrase_manager.get_phrase("device_error")
                                             if phrase:
-                                                await phrase_manager.play_phrase(websocket, phrase)
+                                                await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
                                             else:
-                                                await websocket.send(ERROR_CHIME)
+                                                await websocket.send(scale_pcm16(ERROR_CHIME, speaker_vol))
                                         else:
-                                            await websocket.send(SUCCESS_CHIME)
+                                            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
                                         
                                         # Формируем безопасный словарь для ответа, чтобы Gemini не ругался на пустые списки
                                         safe_result = {"status": "success"}
@@ -826,10 +851,11 @@ async def handle_client(websocket):
                                         )
                                     
                                         tool_logger.info(f"MA Play Result: {result}")
+                                        speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
                                         if "error" in result:
-                                            await websocket.send(ERROR_CHIME)
+                                            await websocket.send(scale_pcm16(ERROR_CHIME, speaker_vol))
                                         else:
-                                            await websocket.send(SUCCESS_CHIME)
+                                            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
                                         
                                         safe_result = {"status": "success"}
                                         if result:
@@ -871,7 +897,8 @@ async def handle_client(websocket):
                     if phrase:
                         logger.info("Playing dynamic network_error phrase...")
                         try:
-                            await phrase_manager.play_phrase(websocket, phrase)
+                            speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+                            await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
                         except Exception:
                             pass
                     try:

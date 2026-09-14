@@ -7,11 +7,11 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.66"
+TARGET_FIRMWARE_VERSION = "0.0.72"
 
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 1.3,
-    "speaker_volume": 1.0,
+    "speaker_volume": 0.5,
     "wake_word_threshold": 0.93,
     "wake_word_window_size": 3,
     "wake_word_window_mode": 1,
@@ -135,6 +135,10 @@ class DeviceManager:
         
         if ws:
             self.active_sockets[clean_mac] = ws
+            # Автоматически отправляем сохраненный на сервере конфиг на ESP32 при подключении
+            cfg_to_send = dict(dev["config"])
+            cfg_to_send["speaker_volume"] = 1.0  # На ESP32 держим 1.0, чтобы не было двойного затухания
+            asyncio.create_task(self.send_command(clean_mac, {"type": "set_config", "config": cfg_to_send}))
             
         self._save()
         self._notify("registered", dev)
@@ -232,13 +236,32 @@ class DeviceManager:
         """Отправка JSON-команды на подключенное устройство по WebSocket."""
         clean_mac = mac.strip().lower()
         ws = self.active_sockets.get(clean_mac)
+
+        # Fallback 1: Поиск без разделителей (двоеточий и дефисов)
+        if not ws or getattr(ws, "closed", False):
+            norm_target = clean_mac.replace(":", "").replace("-", "")
+            for k, s in self.active_sockets.items():
+                if k.replace(":", "").replace("-", "") == norm_target and not getattr(s, "closed", False):
+                    ws = s
+                    break
+
+        # Fallback 2: Если активен ровно один сокет
+        if not ws or getattr(ws, "closed", False):
+            active_items = [(k, s) for k, s in self.active_sockets.items() if not getattr(s, "closed", False)]
+            if len(active_items) == 1:
+                ws = active_items[0][1]
+                logger.debug(f"Using single active socket ({active_items[0][0]}) for target {clean_mac}")
+
         if ws and not getattr(ws, "closed", False):
             try:
                 await ws.send(json.dumps(command))
+                logger.info(f"Command {command.get('type')} successfully sent to {clean_mac}")
                 return True
             except Exception as e:
                 logger.error(f"Error sending command to {clean_mac}: {e}")
                 return False
+
+        logger.warning(f"send_command failed for {clean_mac}: socket not found or closed. Active sockets: {list(self.active_sockets.keys())}")
         return False
 
     async def update_device_config(self, mac: str, new_config: Dict[str, Any]) -> bool:
@@ -246,16 +269,28 @@ class DeviceManager:
         clean_mac = mac.strip().lower()
         dev = self.devices.get(clean_mac)
         if not dev:
+            norm_target = clean_mac.replace(":", "").replace("-", "")
+            for k, d in self.devices.items():
+                if k.replace(":", "").replace("-", "") == norm_target:
+                    clean_mac = k
+                    dev = d
+                    break
+        if not dev:
+            logger.warning(f"Cannot update config: device {clean_mac} not found")
             return False
             
         dev.setdefault("config", {})
         dev["config"].update(new_config)
         self._save()
         
-        # Если онлайн, отправляем команду применения на устройство
+        # На ESP32 держим speaker_volume = 1.0 (pass-through), так как сервер масштабирует PCM напрямую
+        cfg_to_send = dict(new_config)
+        if "speaker_volume" in cfg_to_send:
+            cfg_to_send["speaker_volume"] = 1.0
+
         await self.send_command(clean_mac, {
             "type": "set_config",
-            "config": new_config
+            "config": cfg_to_send
         })
         self._notify("config_updated", dev)
         return True
@@ -268,15 +303,18 @@ class DeviceManager:
         results = {}
         is_all = "all" in target_macs or len(target_macs) == 0
         
+        cfg_to_send = dict(field_mask_config)
+        if "speaker_volume" in cfg_to_send:
+            cfg_to_send["speaker_volume"] = 1.0
+
         for mac, dev in self.devices.items():
             if is_all or mac in target_macs:
                 dev.setdefault("config", {})
                 dev["config"].update(field_mask_config)
                 
-                # Шлем на устройство команду
                 sent = await self.send_command(mac, {
                     "type": "set_config",
-                    "config": field_mask_config
+                    "config": cfg_to_send
                 })
                 results[mac] = sent
                 self._notify("config_updated", dev)

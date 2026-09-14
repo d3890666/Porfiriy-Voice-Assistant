@@ -9,7 +9,7 @@
 #include <nvs_flash.h>
 #include <Update.h>
 
-#define FIRMWARE_VERSION "0.0.66"
+#define FIRMWARE_VERSION "0.0.72"
 
 #include "model.h"
 // TFLite
@@ -704,16 +704,8 @@ void onMessageCallback(WebsocketsMessage message) {
         
         for (int i = 0; i < num_samples; i += chunk_size) {
             int current_chunk = (num_samples - i < chunk_size) ? (num_samples - i) : chunk_size;
-            int16_t vol_buffer[512];
-            
-            for(int j = 0; j < current_chunk; j++) {
-                float val = pcm[i + j] * speaker_volume;
-                if (val > 32767) val = 32767;
-                if (val < -32768) val = -32768;
-                vol_buffer[j] = (int16_t)val;
-            }
             size_t bytes_written;
-            i2s_write(I2S_NUM_1, vol_buffer, current_chunk * 2, &bytes_written, portMAX_DELAY);
+            i2s_write(I2S_NUM_1, (const char*)&pcm[i], current_chunk * 2, &bytes_written, portMAX_DELAY);
         }
     } else if (message.isText()) {
         Serial.println("Server text: " + message.data());

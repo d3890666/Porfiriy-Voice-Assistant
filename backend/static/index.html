@@ -575,8 +575,8 @@ PING:
                     <strong>Громкость динамика</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="range" name="speaker_volume" min="0.1" max="2.0" step="0.05" value="1.0" oninput="document.getElementById('val-vol').innerText = Math.round(this.value * 100) + '%'">
-                    <span class="range-val" id="val-vol">100%</span>
+                    <input type="range" name="speaker_volume" min="0.1" max="2.0" step="0.05" value="0.5" oninput="document.getElementById('val-vol').innerText = Math.round(this.value * 100) + '%'; document.getElementById('chk-vol').checked = true;">
+                    <span class="range-val" id="val-vol">50%</span>
                   </div>
                 </div>
 
@@ -588,7 +588,7 @@ PING:
                     <strong>Усиление микрофона (Gain)</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="number" step="0.1" min="0.5" max="5.0" name="mic_gain" value="1.3" style="width: 100%;">
+                    <input type="number" step="0.1" min="0.5" max="5.0" name="mic_gain" value="1.3" style="width: 100%;" oninput="document.getElementById('chk-gain').checked = true;">
                   </div>
                 </div>
 
@@ -600,7 +600,7 @@ PING:
                     <strong>Пауза после речи (VAD, мс)</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="number" name="silence_timeout_ms" value="700" min="300" max="3000" step="50" style="width: 100%;">
+                    <input type="number" name="silence_timeout_ms" value="700" min="300" max="3000" step="50" style="width: 100%;" oninput="document.getElementById('chk-sil').checked = true;">
                   </div>
                 </div>
 
@@ -612,7 +612,7 @@ PING:
                     <strong>Порог RMS перебивания</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="number" name="barge_in_threshold_rms" value="600" min="100" max="2500" step="50" placeholder="600 (по умолч.)" style="width: 100%;">
+                    <input type="number" name="barge_in_threshold_rms" value="600" min="100" max="2500" step="50" placeholder="600 (по умолч.)" style="width: 100%;" oninput="document.getElementById('chk-barge-rms').checked = true;">
                   </div>
                 </div>
 
@@ -625,7 +625,7 @@ PING:
                   </label>
                   <div class="field-wrapper">
                     <label class="checkbox-label" style="margin-top: 4px;">
-                      <input type="checkbox" name="enable_ducking" checked>
+                      <input type="checkbox" name="enable_ducking" checked onchange="document.getElementById('chk-enable-ducking').checked = true;">
                       <span>Разрешить приглушение звука при разговоре</span>
                     </label>
                   </div>
@@ -647,7 +647,7 @@ PING:
                     <strong>Порог нейросети (0.80 - 0.99)</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="range" name="wake_word_threshold" min="0.80" max="0.99" step="0.01" value="0.93" oninput="document.getElementById('val-ww').innerText = this.value">
+                    <input type="range" name="wake_word_threshold" min="0.80" max="0.99" step="0.01" value="0.93" oninput="document.getElementById('val-ww').innerText = this.value; document.getElementById('chk-ww').checked = true;">
                     <span class="range-val" id="val-ww">0.93</span>
                   </div>
                 </div>
@@ -660,7 +660,7 @@ PING:
                     <strong>Окно скольжения (1 - 8)</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="range" name="wake_word_window_size" min="1" max="8" step="1" value="3" oninput="document.getElementById('val-ww-win').innerText = this.value + ' (~' + (this.value*10) + ' мс)'">
+                    <input type="range" name="wake_word_window_size" min="1" max="8" step="1" value="3" oninput="document.getElementById('val-ww-win').innerText = this.value + ' (~' + (this.value*10) + ' мс)'; document.getElementById('chk-ww-win').checked = true;">
                     <span class="range-val" id="val-ww-win">3 (~30 мс)</span>
                   </div>
                 </div>
@@ -673,7 +673,7 @@ PING:
                     <strong>Режим окна вейкворда</strong>
                   </label>
                   <div class="field-wrapper">
-                    <select name="wake_word_window_mode">
+                    <select name="wake_word_window_mode" onchange="document.getElementById('chk-ww-mode').checked = true;">
                       <option value="1" selected>⚡ Пиковый (Peak Hold) — слитная речь</option>
                       <option value="0">📊 Скользящее среднее</option>
                       <option value="2">⚖️ Большинство срезов</option>
@@ -697,7 +697,7 @@ PING:
                     <strong>Яркость диода (0 - 255)</strong>
                   </label>
                   <div class="field-wrapper">
-                    <input type="range" name="led_brightness" min="0" max="255" value="50" oninput="document.getElementById('val-led-b').innerText = this.value">
+                    <input type="range" name="led_brightness" min="0" max="255" value="50" oninput="document.getElementById('val-led-b').innerText = this.value; document.getElementById('chk-led-b').checked = true;">
                     <span class="range-val" id="val-led-b">50</span>
                   </div>
                 </div>
@@ -710,12 +710,12 @@ PING:
                     <strong>1. Покой (Idle)</strong>
                   </label>
                   <div class="field-wrapper" style="display: flex; gap: 8px;">
-                    <select name="led_mode_idle" style="flex: 1;">
+                    <select name="led_mode_idle" style="flex: 1;" onchange="document.getElementById('chk-led-idle').checked = true;">
                       <option value="0" selected>Выключен</option>
                       <option value="1">Светит</option>
                       <option value="2">Дышит</option>
                     </select>
-                    <input type="color" name="led_color_idle" value="#000000" style="width: 44px; height: 38px; padding: 2px;">
+                    <input type="color" name="led_color_idle" value="#000000" style="width: 44px; height: 38px; padding: 2px;" onchange="document.getElementById('chk-led-idle').checked = true;">
                   </div>
                 </div>
 
@@ -727,12 +727,12 @@ PING:
                     <strong>2. Внимание (Listening)</strong>
                   </label>
                   <div class="field-wrapper" style="display: flex; gap: 8px;">
-                    <select name="led_mode_listen" style="flex: 1;">
+                    <select name="led_mode_listen" style="flex: 1;" onchange="document.getElementById('chk-led-listen').checked = true;">
                       <option value="0">Выключен</option>
                       <option value="1" selected>Светит</option>
                       <option value="2">Дышит</option>
                     </select>
-                    <input type="color" name="led_color_listen" value="#0000ff" style="width: 44px; height: 38px; padding: 2px;">
+                    <input type="color" name="led_color_listen" value="#0000ff" style="width: 44px; height: 38px; padding: 2px;" onchange="document.getElementById('chk-led-listen').checked = true;">
                   </div>
                 </div>
 
@@ -744,12 +744,12 @@ PING:
                     <strong>3. Думает (Thinking)</strong>
                   </label>
                   <div class="field-wrapper" style="display: flex; gap: 8px;">
-                    <select name="led_mode_think" style="flex: 1;">
+                    <select name="led_mode_think" style="flex: 1;" onchange="document.getElementById('chk-led-think').checked = true;">
                       <option value="0">Выключен</option>
                       <option value="1">Светит</option>
                       <option value="2" selected>Дышит</option>
                     </select>
-                    <input type="color" name="led_color_think" value="#ffaa00" style="width: 44px; height: 38px; padding: 2px;">
+                    <input type="color" name="led_color_think" value="#ffaa00" style="width: 44px; height: 38px; padding: 2px;" onchange="document.getElementById('chk-led-think').checked = true;">
                   </div>
                 </div>
 
@@ -761,12 +761,12 @@ PING:
                     <strong>4. Говорит (Speaking)</strong>
                   </label>
                   <div class="field-wrapper" style="display: flex; gap: 8px;">
-                    <select name="led_mode_speak" style="flex: 1;">
+                    <select name="led_mode_speak" style="flex: 1;" onchange="document.getElementById('chk-led-speak').checked = true;">
                       <option value="0">Выключен</option>
                       <option value="1" selected>Светит</option>
                       <option value="2">Дышит</option>
                     </select>
-                    <input type="color" name="led_color_speak" value="#00ff00" style="width: 44px; height: 38px; padding: 2px;">
+                    <input type="color" name="led_color_speak" value="#00ff00" style="width: 44px; height: 38px; padding: 2px;" onchange="document.getElementById('chk-led-speak').checked = true;">
                   </div>
                 </div>
 

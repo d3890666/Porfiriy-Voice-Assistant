@@ -10,6 +10,25 @@ from google.genai import types
 
 logger = logging.getLogger("phrases")
 
+def scale_pcm16(pcm_data: bytes, volume: float) -> bytes:
+    """Масштабирует громкость 16-битного PCM звука с защитой от клиппинга."""
+    if not pcm_data or volume == 1.0:
+        return pcm_data
+    volume = max(0.0, min(2.0, volume))
+    try:
+        import audioop
+        return audioop.mul(pcm_data, 2, volume)
+    except Exception:
+        import array
+        arr = array.array("h")
+        arr.frombytes(pcm_data)
+        for i in range(len(arr)):
+            v = int(arr[i] * volume)
+            if v > 32767: v = 32767
+            elif v < -32768: v = -32768
+            arr[i] = v
+        return arr.tobytes()
+
 DEFAULT_PERSONA = """IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
 
 CORE COMMUNICATION PRINCIPLES: 
@@ -263,12 +282,15 @@ class PhraseManager:
             return random.choice(items)
         return None
 
-    async def play_phrase(self, websocket, phrase_bytes: bytes, cancel_check: Optional[Callable[[], bool]] = None):
+    async def play_phrase(self, websocket, phrase_bytes: bytes, volume: float = 1.0, cancel_check: Optional[Callable[[], bool]] = None):
         """Потоковая отправка PCM чанками клиенту (ESP32) с корректным темпом (24кГц, 16 бит)."""
         try:
             await websocket.send(json.dumps({"type": "speaking"}))
         except Exception:
             pass
+
+        if volume != 1.0:
+            phrase_bytes = scale_pcm16(phrase_bytes, volume)
 
         CHUNK_SIZE = 2048
         # 24000 Hz * 2 bytes = 48000 bytes/sec -> 2048 bytes ≈ 42.6 ms
