@@ -38,9 +38,7 @@ class WebServer:
         self.app.router.add_post("/api/phrases/regenerate", self.handle_regenerate_phrases)
         self.app.router.add_get("/api/phrases/status", self.handle_phrases_status)
         self.app.router.add_get("/api/events", self.handle_events)
-        
-        if os.path.exists(self.static_dir):
-            self.app.router.add_static("/static/", self.static_dir)
+        self.app.router.add_get("/static/{filename:.*}", self.handle_static)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -54,8 +52,40 @@ class WebServer:
     async def handle_index(self, request):
         index_file = os.path.join(self.static_dir, "index.html")
         if os.path.exists(index_file):
-            return web.FileResponse(index_file)
+            with open(index_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            return web.Response(
+                text=content,
+                content_type="text/html",
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
         return web.Response(text="Porfiriy Web UI loading...", content_type="text/html")
+
+    async def handle_static(self, request):
+        filename = request.match_info.get("filename", "")
+        filepath = os.path.join(self.static_dir, filename)
+        if os.path.exists(filepath) and os.path.isfile(filepath):
+            content_type = "text/css" if filename.endswith(".css") else (
+                "application/javascript" if filename.endswith(".js") else (
+                    "image/png" if filename.endswith(".png") else "application/octet-stream"
+                )
+            )
+            with open(filepath, "rb") as f:
+                body = f.read()
+            return web.Response(
+                body=body,
+                content_type=content_type,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0"
+                }
+            )
+        return web.Response(status=404, text="Not Found")
 
     async def handle_get_devices(self, request):
         devices = self.device_manager.get_all_devices()

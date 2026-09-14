@@ -18,6 +18,11 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.55 (Fix UI Caching, Embed Form Styles & Restore Default Prompts)
+*   **Fix UI Caching**: Добавлены строгие заголовки `Cache-Control: no-cache, no-store, must-revalidate` для `index.html` и `/static/*`, а также версионированные query-параметры `?v=0.0.55` для устранения залипания старого CSS в браузере Ingress.
+*   **Embedded Form Styles**: Стили конфигуратора продублированы непосредственно в тег `<style>` внутри `index.html` для 100% гарантированного применения темной темы, сетки параметров и редакторов промптов.
+*   **Prompt Defaults Fallback**: В `backend/main.py` добавлены константы `DEFAULT_PERSONA`, `DEFAULT_USERS`, `DEFAULT_SMART_HOME`, `DEFAULT_GENERAL`. Если в `/data/options.json` поля промптов отсутствуют или пустые, они автоматически заполняются каноничными текстами.
+
 ### Версия 0.0.54 (Web Configurator, Hot Reload, Phrases Regeneration, ESP32 Web UI Links & Status Fix)
 *   **Web Configurator & Hot Reload**: Все параметры аддона и 4 модульных промпта перенесены в интерактивную форму Ingress UI (`POST /api/global`). Настройки сохраняются на лету без перезапуска аддона и синхронизируются со штатным Home Assistant через Supervisor API.
 *   **Manual Phrases Regeneration**: Добавлена кнопка и эндпоинт `POST /api/phrases/regenerate` для ручной перегенерации каталога системных фраз в фоне (без автоматического сброса при каждом сохранении настроек) и отслеживание статуса (`GET /api/phrases/status`).
