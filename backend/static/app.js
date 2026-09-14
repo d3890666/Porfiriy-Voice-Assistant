@@ -738,11 +738,6 @@ function populateGlobalSettingsForm() {
     }
   }
 
-  const regenPhrasesChk = document.getElementById('cfg-regen-phrases');
-  if (regenPhrasesChk) {
-    regenPhrasesChk.checked = Boolean(globalOptions.regenerate_phrases);
-  }
-
   // 4 Модульных промпта: если в настройках пусто или пробелы, подставляем каноничный шаблон!
   const getPromptVal = (key, fallbackKey) => {
     const val = globalOptions[key];
@@ -910,7 +905,6 @@ async function saveGlobalSettings(e) {
       enable_media_ducking: document.getElementById('cfg-ducking-mode')?.value !== 'disabled',
       ducking_volume_factor: parseFloat(document.getElementById('cfg-ducking-factor')?.value || 0.25),
       default_media_player: document.getElementById('cfg-default-media-player')?.value || 'auto',
-      regenerate_phrases: document.getElementById('cfg-regen-phrases')?.checked || false,
       prompt_persona: document.getElementById('cfg-prompt-persona')?.value || '',
       prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
       prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',
