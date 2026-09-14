@@ -212,6 +212,13 @@ class WebServer:
             supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
             if supervisor_token:
                 try:
+                    ha_allowed = {
+                        "gemini_api_key", "gemini_model", "system_prompt",
+                        "prompt_persona", "prompt_users", "prompt_smart_home", "prompt_general",
+                        "voice_name", "temperature", "thinking_timeout_s", "enable_google_search",
+                        "vad_silence_duration_ms", "enable_barge_in"
+                    }
+                    ha_opts = {k: v for k, v in updated_opts.items() if k in ha_allowed}
                     async with aiohttp.ClientSession() as session:
                         url = "http://supervisor/addons/self/options"
                         async with session.post(
@@ -220,13 +227,14 @@ class WebServer:
                                 "Authorization": f"Bearer {supervisor_token}",
                                 "Content-Type": "application/json"
                             },
-                            json={"options": updated_opts},
+                            json={"options": ha_opts},
                             timeout=aiohttp.ClientTimeout(total=5)
                         ) as resp:
                             if resp.status == 200:
                                 logger.info("Synchronized options with Home Assistant Supervisor.")
                             else:
-                                logger.warning(f"Supervisor options sync returned HTTP {resp.status}")
+                                text_err = await resp.text()
+                                logger.warning(f"Supervisor options sync returned HTTP {resp.status}: {text_err}")
                 except Exception as se:
                     logger.warning(f"Failed to sync options with Supervisor: {se}")
 

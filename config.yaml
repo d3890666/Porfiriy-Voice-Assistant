@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.57"
+version: "0.0.58"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -87,6 +87,7 @@ options:
     PING:
     - Reply strictly: "PONG".
   voice_name: "Charon"
+  temperature: 0.7
   debug_mode: true
   debug_audio: false
   enable_google_search: true
@@ -104,13 +105,14 @@ options:
   mqtt_password: ""
 schema:
   gemini_api_key: str
-  gemini_model: "list(models/gemini-2.5-flash-native-audio-preview-12-2025|models/gemini-2.5-flash-native-audio-latest|models/gemini-3.1-flash-live-preview|models/lyria-realtime-exp)"
+  gemini_model: str
   system_prompt: str
   prompt_persona: str
   prompt_users: str
   prompt_smart_home: str
   prompt_general: str
-  voice_name: "list(Puck|Charon|Kore|Fenrir|Aoede|Zephyr)"
+  voice_name: str
+  temperature: "float?"
   debug_mode: bool
   debug_audio: bool
   enable_google_search: bool

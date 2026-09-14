@@ -18,6 +18,12 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.58 (Fix 400 Bad Request on Save, Pre-fill Textareas & Head Inline Script)
+*   **Fix 400 Bad Request on Save**: Кнопки сохранения переведены с `type="submit"` на `type="button"`, а формам добавлено `action="javascript:void(0);" onsubmit="event.preventDefault(); return false;"`. Это полностью устранило нативную отправку формы браузером через GET с многокилобайтным query string в URL, вызывавшую ошибку `400: Bad Request` / URI Too Long в Nginx Ingress Home Assistant.
+*   **Pre-filled Prompt Textareas**: Каноничные тексты 4 промптов (Persona, Users, Smart Home, General) внедрены напрямую внутрь тегов `<textarea>` в `index.html`. Теперь поля никогда не отображаются пустыми, даже до инициализации JavaScript.
+*   **Synchronous Head Restore Script**: Логика кнопки «↺ Сбросить к шаблону» (`restoreDefaultPrompt`) и словарь шаблонов вынесены в синхронный инлайн-скрипт в `<head>` страницы, что гарантирует их мгновенную работу без зависимости от внешнего `app.js`.
+*   **Supervisor Schema & Options Sync**: В `config.yaml` схема `gemini_model` и `voice_name` расширена до произвольных строковых значений (`str`), добавлено поле `temperature: "float?"`, а отправляемые в Supervisor API параметры строго отфильтрованы по разрешенному списку, предотвращая отклонение настроек ядром Home Assistant.
+
 ### Версия 0.0.57 (Fix NameError List in web_server)
 *   **Fix List import & Future Annotations**: В `backend/web_server.py` добавлен импорт `List` из `typing` и директива `from __future__ import annotations`, что устранило падение при старте контейнера (`NameError: name 'List' is not defined`).
 
