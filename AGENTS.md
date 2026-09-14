@@ -18,6 +18,9 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.59 (Fix SSE Disconnect Error Logging)
+*   **Fix SSE Disconnect Error Logging**: В `handle_events` в `backend/web_server.py` добавлен перехват `(ConnectionResetError, BrokenPipeError, aiohttp.ClientConnectionResetError, aiohttp.ClientPayloadError)`. Это устранило спам трейсбеками `ClientConnectionResetError: Cannot write to closing transport` в логах Home Assistant при перезагрузке страниц дашборда или сбросе соединения клиентом.
+
 ### Версия 0.0.58 (Fix 400 Bad Request on Save, Pre-fill Textareas & Head Inline Script)
 *   **Fix 400 Bad Request on Save**: Кнопки сохранения переведены с `type="submit"` на `type="button"`, а формам добавлено `action="javascript:void(0);" onsubmit="event.preventDefault(); return false;"`. Это полностью устранило нативную отправку формы браузером через GET с многокилобайтным query string в URL, вызывавшую ошибку `400: Bad Request` / URI Too Long в Nginx Ingress Home Assistant.
 *   **Pre-filled Prompt Textareas**: Каноничные тексты 4 промптов (Persona, Users, Smart Home, General) внедрены напрямую внутрь тегов `<textarea>` в `index.html`. Теперь поля никогда не отображаются пустыми, даже до инициализации JavaScript.

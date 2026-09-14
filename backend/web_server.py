@@ -270,7 +270,7 @@ class WebServer:
         )
         await response.prepare(request)
         
-        q = asyncio.Queue()
+        q = asyncio.Queue(maxsize=50)
         self.sse_queues.add(q)
         
         try:
@@ -279,8 +279,10 @@ class WebServer:
             while True:
                 msg = await q.get()
                 await response.write(f"data: {msg}\n\n".encode("utf-8"))
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, aiohttp.ClientConnectionResetError, aiohttp.ClientPayloadError):
             pass
+        except Exception as e:
+            logger.debug(f"SSE connection closed: {e}")
         finally:
             self.sse_queues.discard(q)
             
