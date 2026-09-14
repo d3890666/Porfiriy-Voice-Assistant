@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.70-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.71-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -173,6 +173,11 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.71 (Expanded Domains: Sensors, Vacuums & Fans Support)
+* 🧹 **Поддержка пылесосов (`vacuum`) и вентиляторов (`fan`)**: В отбор сущностей из Home Assistant и схему вызова сервисов добавлены домены `vacuum` (старт, пауза, стоп, возврат на базу) и `fan` (включение/выключение, процент скорости).
+* 🌡️ **Поддержка датчиков (`sensor`) с мгновенным контекстом**: Все открытые для Assist сенсоры передаются в системный промпт сразу с их текущими значениями и единицами измерения (`[Значение: 22.5 °C]`).
+* 🔍 **Инструмент `get_ha_state`**: Gemini Live обучен запрашивать свежие показания любого датчика или устройства через API в процессе диалога.
 
 ### Версия 0.0.70 (Unified Phrase Cache Widget & UI Cleanup)
 * 🎛️ **Единый компактный виджет кэша фраз**: Статус кэша системных реплик (`● Кэш готов (12 реплик)`) и кнопка генерации (`🔄 Перегенерировать`) объединены в один аккуратный блок в шапке карточки на вкладке «Мозг & Личность».

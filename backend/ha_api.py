@@ -46,6 +46,18 @@ class HomeAssistantAPI:
                 logger.error(f"Error fetching HA states: {e}")
                 return []
 
+    async def get_entity_state(self, entity_id: str) -> Dict[str, Any]:
+        """Получить текущее состояние конкретной сущности (state + attributes)."""
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            try:
+                async with session.get(f"{self.base_url}/states/{entity_id}") as response:
+                    if response.status == 200:
+                        return await response.json()
+                    return {"error": f"Entity {entity_id} not found (status {response.status})"}
+            except Exception as e:
+                logger.error(f"Error fetching state for {entity_id}: {e}")
+                return {"error": str(e)}
+
     async def get_playing_media_players(self) -> List[Dict[str, Any]]:
         """Получить все медиаплееры, которые сейчас воспроизводят звук/музыку."""
         try:
@@ -229,7 +241,7 @@ class HomeAssistantAPI:
         Фильтрует по нужным доменам и проверяет, выставлен ли доступ к Assist.
         """
         if not allowed_domains:
-            allowed_domains = ["light", "switch", "cover", "script", "scene", "media_player", "climate"]
+            allowed_domains = ["light", "switch", "cover", "script", "scene", "media_player", "climate", "vacuum", "fan", "sensor"]
             
         states = await self.get_states()
         exposed_metadata = await self.get_exposed_entities_metadata()
@@ -249,10 +261,22 @@ class HomeAssistantAPI:
                 meta = exposed_metadata[entity_id]
                 
                 parts = [f"- {friendly_name} (ID: {entity_id})"]
-                if meta["room"]:
+                if meta.get("room"):
                     parts.append(f"[Комната: {meta['room']}]")
-                if meta["aliases"]:
+                if meta.get("aliases"):
                     parts.append(f"[Синонимы: {', '.join(meta['aliases'])}]")
+                    
+                # Добавляем актуальное состояние/значение
+                if domain == "sensor":
+                    current_val = state.get("state")
+                    unit = state.get("attributes", {}).get("unit_of_measurement", "")
+                    if current_val is not None:
+                        val_str = f"{current_val} {unit}".strip()
+                        parts.append(f"[Значение: {val_str}]")
+                elif domain in ("vacuum", "fan", "climate"):
+                    current_val = state.get("state")
+                    if current_val and current_val not in ("unavailable", "unknown"):
+                        parts.append(f"[Статус: {current_val}]")
                     
                 entities_text.append(" ".join(parts))
                 

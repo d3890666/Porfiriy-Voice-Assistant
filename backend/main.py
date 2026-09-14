@@ -98,13 +98,22 @@ DEFAULT_USERS = (
 
 DEFAULT_SMART_HOME = (
     "SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), "
-    "scripts (script), scenes (scene), and media players (media_player).\n\n"
+    "scripts (script), scenes (scene), media players (media_player), vacuums (vacuum), fans (fan), and monitor sensors (sensor).\n\n"
     "DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.\n\n"
     "CURTAINS & BLINDS (COVER):\n"
     "- To open curtains or blinds: call call_ha_service with domain \"cover\", service \"open_cover\", entity_id.\n"
     "- To close curtains or blinds: call call_ha_service with domain \"cover\", service \"close_cover\", entity_id.\n"
     "- To stop curtains: call call_ha_service with domain \"cover\", service \"stop_cover\", entity_id.\n"
     "- To set specific opening percentage: call call_ha_service with domain \"cover\", service \"set_cover_position\", entity_id, and position (0 to 100).\n\n"
+    "VACUUM CLEANERS (VACUUM):\n"
+    "- To start cleaning: call call_ha_service with domain \"vacuum\", service \"start\", entity_id.\n"
+    "- To return to dock/base: call call_ha_service with domain \"vacuum\", service \"return_to_base\", entity_id.\n"
+    "- To pause or stop: call call_ha_service with domain \"vacuum\", service \"pause\" or \"stop\", entity_id.\n\n"
+    "FANS & VENTILATION (FAN):\n"
+    "- To turn on or off: call call_ha_service with domain \"fan\", service \"turn_on\" or \"turn_off\", entity_id.\n"
+    "- To set fan speed: call call_ha_service with domain \"fan\", service \"set_percentage\", entity_id, and percentage (0 to 100).\n\n"
+    "SENSORS & MONITORING (SENSOR):\n"
+    "- Current sensor values (temperature, humidity, battery, etc.) are provided directly in the entity list with [Значение: ...]. Use them to answer questions concisely. If fresh data is needed, call get_ha_state with entity_id.\n\n"
     "CLIMATE & AIR CONDITIONING:\n"
     "- Always pass hvac_mode together with target temperature. \"Обогрев\" -> mode heat, \"Охлаждение\" -> mode cool. Never pass temperature alone without mode.\n\n"
     "SWITCHES & RELAYS:\n"
@@ -720,6 +729,29 @@ async def handle_client(websocket):
                                             else:
                                                 safe_result["data"] = str(result)
                                             
+                                        function_responses.append(types.FunctionResponse(
+                                            name=fc.name,
+                                            id=fc.id,
+                                            response=safe_result
+                                        ))
+
+                                    elif name == "get_ha_state":
+                                        raw_args = dict(fc.args)
+                                        entity_id = raw_args.get("entity_id")
+                                        tool_logger.info(f"Gemini Calling get_ha_state for entity: {entity_id}")
+                                        state_obj = await ha_api.get_entity_state(entity_id)
+                                        if isinstance(state_obj, dict) and "state" in state_obj:
+                                            safe_result = {
+                                                "status": "success",
+                                                "entity_id": entity_id,
+                                                "state": state_obj.get("state"),
+                                                "unit": state_obj.get("attributes", {}).get("unit_of_measurement"),
+                                                "friendly_name": state_obj.get("attributes", {}).get("friendly_name"),
+                                                "attributes": state_obj.get("attributes", {}),
+                                            }
+                                        else:
+                                            safe_result = state_obj if isinstance(state_obj, dict) else {"status": "error", "message": str(state_obj)}
+                                        tool_logger.info(f"HA get_ha_state result: {safe_result}")
                                         function_responses.append(types.FunctionResponse(
                                             name=fc.name,
                                             id=fc.id,

@@ -116,18 +116,30 @@ class GeminiProxyClient:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
         ha_tool = types.FunctionDeclaration(
             name="call_ha_service",
-            description="Call a Home Assistant service to control a smart home device or execute a script.",
+            description="Call a Home Assistant service to control a smart home device, vacuum, fan, media player, or execute a script.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service, e.g. light, switch, cover, script, scene, climate, media_player"),
-                    "service": types.Schema(type=types.Type.STRING, description="The service to call, e.g. turn_on, turn_off, toggle, open_cover, close_cover, stop_cover, set_cover_position"),
-                    "entity_id": types.Schema(type=types.Type.STRING, description="The exact entity_id of the device from the provided context, e.g. light.kitchen, cover.living_room_curtains"),
+                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service, e.g. light, switch, cover, script, scene, climate, media_player, vacuum, fan"),
+                    "service": types.Schema(type=types.Type.STRING, description="The service to call, e.g. turn_on, turn_off, toggle, open_cover, close_cover, stop_cover, set_cover_position, start, pause, stop, return_to_base, set_percentage"),
+                    "entity_id": types.Schema(type=types.Type.STRING, description="The exact entity_id of the device from the provided context, e.g. light.kitchen, cover.living_room_curtains, vacuum.robot, fan.bedroom"),
                     "position": types.Schema(type=types.Type.INTEGER, description="Optional target position for cover (curtains/blinds) from 0 (closed) to 100 (open)."),
                     "temperature": types.Schema(type=types.Type.NUMBER, description="Optional target temperature for climate devices."),
                     "hvac_mode": types.Schema(type=types.Type.STRING, description="Optional HVAC mode for climate devices (e.g. heat, cool, off)."),
+                    "percentage": types.Schema(type=types.Type.INTEGER, description="Optional fan speed percentage (0-100) for fan devices."),
                 },
                 required=["domain", "service", "entity_id"]
+            )
+        )
+        get_state_tool = types.FunctionDeclaration(
+            name="get_ha_state",
+            description="Get current state, sensor value (temperature, humidity, battery, etc.) or attributes of any Home Assistant entity.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "entity_id": types.Schema(type=types.Type.STRING, description="The entity_id to inspect, e.g. sensor.living_room_temp, vacuum.robot, climate.thermostat"),
+                },
+                required=["entity_id"]
             )
         )
         search_music_tool = types.FunctionDeclaration(
@@ -156,7 +168,7 @@ class GeminiProxyClient:
             )
         )
 
-        tool_args = {"function_declarations": [ha_tool, search_music_tool, play_music_tool]}
+        tool_args = {"function_declarations": [ha_tool, get_state_tool, search_music_tool, play_music_tool]}
         if self.enable_google_search:
             tool_args["google_search"] = types.GoogleSearch()
             

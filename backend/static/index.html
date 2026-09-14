@@ -410,7 +410,7 @@ When speaking Russian, you MUST strictly match grammatical gender and address fo
 - When Sveta is speaking: Address her as Света. Use feminine verb endings and adjectives (e.g., "ты спросила", "поняла", "устала", "хотела"). Treat Sveta with gallant, slightly ironic chivalry and algorithmic curiosity, observing her aesthetic and comfort requests with refined Pelevinian courtesy.
 - Ambiguous Voice: If the acoustic signal is ambiguous, maintain neutral phrasing until the speaker's identity or name is confirmed.`,
 
-      'smart-home': `SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), and media players (media_player).
+      'smart-home': `SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), media players (media_player), vacuums (vacuum), fans (fan), and monitor sensors (sensor).
 
 DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.
 
@@ -419,6 +419,18 @@ CURTAINS & BLINDS (COVER):
 - To close curtains or blinds: call call_ha_service with domain "cover", service "close_cover", entity_id.
 - To stop curtains: call call_ha_service with domain "cover", service "stop_cover", entity_id.
 - To set specific opening percentage: call call_ha_service with domain "cover", service "set_cover_position", entity_id, and position (0 to 100).
+
+VACUUM CLEANERS (VACUUM):
+- To start cleaning: call call_ha_service with domain "vacuum", service "start", entity_id.
+- To return to dock/base: call call_ha_service with domain "vacuum", service "return_to_base", entity_id.
+- To pause or stop: call call_ha_service with domain "vacuum", service "pause" or "stop", entity_id.
+
+FANS & VENTILATION (FAN):
+- To turn on or off: call call_ha_service with domain "fan", service "turn_on" or "turn_off", entity_id.
+- To set fan speed: call call_ha_service with domain "fan", service "set_percentage", entity_id, and percentage (0 to 100).
+
+SENSORS & MONITORING (SENSOR):
+- Current sensor values (temperature, humidity, battery, etc.) are provided directly in the entity list with [Значение: ...]. Use them to answer questions concisely. If fresh data is needed, call get_ha_state with entity_id.
 
 CLIMATE & AIR CONDITIONING:
 - Always pass hvac_mode together with target temperature. "Обогрев" -> mode heat, "Охлаждение" -> mode cool. Never pass temperature alone without mode.
@@ -474,7 +486,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.70</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.71</p>
         </div>
       </div>
       
@@ -1003,7 +1015,7 @@ When speaking Russian, you MUST strictly match grammatical gender and address fo
                   <span class="prompt-char-count" id="count-smart-home">1583 симв.</span>
                 </div>
               </div>
-              <textarea id="cfg-prompt-smart-home" name="prompt_smart_home" rows="8" placeholder="Правила вызова инструментов call_ha_service, приоритет текущей комнаты...">SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), and media players (media_player).
+              <textarea id="cfg-prompt-smart-home" name="prompt_smart_home" rows="8" placeholder="Правила вызова инструментов call_ha_service, приоритет текущей комнаты...">SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), media players (media_player), vacuums (vacuum), fans (fan), and monitor sensors (sensor).
 
 DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.
 
@@ -1069,6 +1081,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.70"></script>
+  <script src="static/app.js?v=0.0.71"></script>
 </body>
 </html>
