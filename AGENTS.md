@@ -18,6 +18,9 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.57 (Fix NameError List in web_server)
+*   **Fix List import & Future Annotations**: В `backend/web_server.py` добавлен импорт `List` из `typing` и директива `from __future__ import annotations`, что устранило падение при старте контейнера (`NameError: name 'List' is not defined`).
+
 ### Версия 0.0.56 (Dynamic Models Discovery, Prompt Defaults & Restoration)
 *   **Dynamic Gemini Models Discovery**: Реализовано автоматическое обнаружение доступных моделей Gemini на базе API-ключа пользователя (`fetch_available_gemini_models`) при старте аддона и при обновлении ключа. Включает сортировку с разделением моделей на группу Live Audio (нативный звук / `bidiGenerateContent`) и общие модели, кнопку `🔄 Обновить модели` в UI и возможность ручного ввода кастомных экспериментальных ID.
 *   **Prompt Defaults & One-Click Restoration**: В веб-интерфейс добавлены кнопки «↺ Сбросить к шаблону» для каждого из 4 модульных промптов (Persona, Users, Smart Home, General) для мгновенного восстановления каноничных текстов из повести Пелевина. Если при загрузке страницы или в `options.json` поля оказываются пустыми, они автоматически подтягивают каноничные тексты.

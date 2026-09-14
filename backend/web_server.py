@@ -1,10 +1,11 @@
+from __future__ import annotations
 import os
 import json
 import asyncio
 import logging
 import aiohttp
 from aiohttp import web
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 
 logger = logging.getLogger("web_server")
 
