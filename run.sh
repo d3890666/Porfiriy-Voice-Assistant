@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-echo "Starting Porfiriy Voice Assistant Backend v0.0.55..."
+echo "Starting Porfiriy Voice Assistant Backend v0.0.56..."
 
 # Export Home Assistant MQTT service credentials if available
 if bashio::services.available "mqtt"; then

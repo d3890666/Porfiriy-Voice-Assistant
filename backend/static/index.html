@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.55">
+  <link rel="stylesheet" href="static/style.css?v=0.0.56">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -155,6 +155,35 @@
       border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
+    .prompt-header-tools {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .btn-text-small {
+      background: none;
+      border: none;
+      color: #00d2ff;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 3px 8px;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .btn-text-small:hover {
+      background: rgba(0, 210, 255, 0.15);
+      text-decoration: underline;
+    }
+
+    .field-label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+
     .prompt-box textarea {
       width: 100% !important;
       min-height: 180px;
@@ -248,7 +277,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.55</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.56</p>
         </div>
       </div>
       
@@ -475,10 +504,21 @@
             </div>
 
             <!-- Gemini Model -->
-            <div class="form-field">
-              <label for="cfg-model">Модель Gemini Live</label>
-              <input type="text" id="cfg-model" name="gemini_model" placeholder="models/gemini-3.1-flash-live-preview">
-              <small class="field-hint">Например: models/gemini-3.1-flash-live-preview</small>
+            <div class="form-field full-width">
+              <div class="field-label-row">
+                <label for="cfg-model" style="margin-bottom: 0;">Модель Gemini Live</label>
+                <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-models" onclick="refreshModelsList()" title="Обновить список моделей через Gemini API">
+                  🔄 Обновить модели
+                </button>
+              </div>
+              <select id="cfg-model" name="gemini_model" onchange="handleModelSelectChange(this.value)">
+                <option value="models/gemini-3.1-flash-live-preview">models/gemini-3.1-flash-live-preview (Загрузка...)</option>
+              </select>
+              <div id="custom-model-box" style="display: none; margin-top: 8px;">
+                <input type="text" id="cfg-model-custom" placeholder="Введите имя модели вручную, например: models/gemini-3.1-flash-live-preview">
+                <small class="field-hint">Укажите точный идентификатор кастомной или новой модели</small>
+              </div>
+              <small class="field-hint">Список доступных моделей обновляется при старте аддона через ваш API-ключ.</small>
             </div>
 
             <!-- Voice Name -->
@@ -536,7 +576,10 @@
             <div class="prompt-box">
               <div class="prompt-header">
                 <label for="cfg-prompt-persona">1. Личность и характер (prompt_persona)</label>
-                <span class="prompt-char-count" id="count-persona">0 симв.</span>
+                <div class="prompt-header-tools">
+                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('persona')" title="Восстановить исходный текст Порфирия">↺ Сбросить к шаблону</button>
+                  <span class="prompt-char-count" id="count-persona">0 симв.</span>
+                </div>
               </div>
               <textarea id="cfg-prompt-persona" name="prompt_persona" rows="8" placeholder="Опишите характер, сарказм и роль алгоритмического следователя Порфирия..."></textarea>
               <small class="field-hint">Определяет роль, цинизм и литературный стиль по роману «iPhuck 10» Пелевина.</small>
@@ -546,7 +589,10 @@
             <div class="prompt-box">
               <div class="prompt-header">
                 <label for="cfg-prompt-users">2. Распознавание обитателей (prompt_users)</label>
-                <span class="prompt-char-count" id="count-users">0 симв.</span>
+                <div class="prompt-header-tools">
+                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('users')" title="Восстановить исходные правила пользователей">↺ Сбросить к шаблону</button>
+                  <span class="prompt-char-count" id="count-users">0 симв.</span>
+                </div>
               </div>
               <textarea id="cfg-prompt-users" name="prompt_users" rows="6" placeholder="Правила акустического разделения пользователей Дениса и Светы..."></textarea>
               <small class="field-hint">Инструкции по различению тембров голоса (баритон/сопрано) и родам глаголов.</small>
@@ -556,7 +602,10 @@
             <div class="prompt-box">
               <div class="prompt-header">
                 <label for="cfg-prompt-smart-home">3. Умный дом и комнаты (prompt_smart_home)</label>
-                <span class="prompt-char-count" id="count-smart-home">0 симв.</span>
+                <div class="prompt-header-tools">
+                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('smart-home')" title="Восстановить исходные правила умного дома">↺ Сбросить к шаблону</button>
+                  <span class="prompt-char-count" id="count-smart-home">0 симв.</span>
+                </div>
               </div>
               <textarea id="cfg-prompt-smart-home" name="prompt_smart_home" rows="8" placeholder="Правила вызова инструментов call_ha_service, приоритет текущей комнаты..."></textarea>
               <small class="field-hint">Правила ReAct: свет, шторы (cover), климат, приоритет комнаты вызова.</small>
@@ -566,7 +615,10 @@
             <div class="prompt-box">
               <div class="prompt-header">
                 <label for="cfg-prompt-general">4. Общие директивы и анти-болтливость (prompt_general)</label>
-                <span class="prompt-char-count" id="count-general">0 симв.</span>
+                <div class="prompt-header-tools">
+                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('general')" title="Восстановить общие директивы">↺ Сбросить к шаблону</button>
+                  <span class="prompt-char-count" id="count-general">0 симв.</span>
+                </div>
               </div>
               <textarea id="cfg-prompt-general" name="prompt_general" rows="6" placeholder="Ограничения длины ответов, реакция на «стоп/хватит»..."></textarea>
               <small class="field-hint">Запрет длинных монологов, краткость подтверждений и реакция на прерывание.</small>
@@ -591,6 +643,6 @@
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.55"></script>
+  <script src="static/app.js?v=0.0.56"></script>
 </body>
 </html>

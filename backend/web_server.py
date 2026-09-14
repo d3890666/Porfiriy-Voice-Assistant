@@ -9,12 +9,14 @@ from typing import Optional, Dict, Any, Callable
 logger = logging.getLogger("web_server")
 
 class WebServer:
-    def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, port: int = 8099):
+    def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, port: int = 8099):
         self.device_manager = device_manager
         self.ha_api = ha_api
         self.options_callback = options_callback
         self.options_save_callback = options_save_callback
         self.phrase_manager = phrase_manager
+        self.models_callback = models_callback
+        self.refresh_models_callback = refresh_models_callback
         self.port = port
         self.app = web.Application()
         self.sse_queues = set()
@@ -35,6 +37,7 @@ class WebServer:
         self.app.router.add_get("/api/areas", self.handle_get_areas)
         self.app.router.add_get("/api/global", self.handle_get_global)
         self.app.router.add_post("/api/global", self.handle_set_global)
+        self.app.router.add_post("/api/models/refresh", self.handle_refresh_models)
         self.app.router.add_post("/api/phrases/regenerate", self.handle_regenerate_phrases)
         self.app.router.add_get("/api/phrases/status", self.handle_phrases_status)
         self.app.router.add_get("/api/events", self.handle_events)
@@ -149,7 +152,21 @@ class WebServer:
 
     async def handle_get_global(self, request):
         opts = self.options_callback() if self.options_callback else {}
-        return web.json_response({"options": self._safe_options(opts)})
+        models = self.models_callback() if self.models_callback else []
+        return web.json_response({
+            "options": self._safe_options(opts),
+            "models": models
+        })
+
+    async def handle_refresh_models(self, request):
+        if self.refresh_models_callback:
+            try:
+                models = await self.refresh_models_callback()
+                return web.json_response({"success": True, "models": models})
+            except Exception as e:
+                logger.error(f"Error refreshing models via API: {e}")
+                return web.json_response({"success": False, "error": str(e)}, status=500)
+        return web.json_response({"success": False, "error": "Model refresher not configured"}, status=400)
 
     async def handle_set_global(self, request):
         try:

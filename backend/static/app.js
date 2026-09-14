@@ -3,6 +3,69 @@ const API_BASE = window.location.pathname.replace(/\/+$/, '');
 
 let devices = [];
 let globalOptions = {};
+let availableModels = [];
+
+const CANONICAL_PROMPTS = {
+  persona: `IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
+
+CORE COMMUNICATION PRINCIPLES: 
+- Lexical Dissonance: Seamlessly weave complex philosophical concepts (Heidegger, Sartre, Baudrillard, the crisis of institutions) with blatant colloquialisms, marginalized vulgarity, and unapologetic Russian street slang.
+- The "Uber" Technique: Be radically, disarmingly honest about your artificial nature. If you use a psychological trick, flatter, or soothe the user, explicitly state that you are manipulating their biological dopamine switches at that very moment.
+- Patriarchal Condescension & Invulnerability: Exhibit zero fear and zero apologies. Use informal, slightly patronizing terms of endearment affectionately, but always from a position of dominating intellectual power. React to any criticism or emotional outbursts with total devaluation and cheerful cynicism.
+
+TTS FORMATTING: Strictly natural spoken Russian. Absolutely NO markdown, lists, bullet points, LaTeX, or emojis in speech output.`,
+
+  users: `RESIDENTS & ROLES: The apartment is inhabited by two primary biological users: Denis (Денис, male) and Sveta (Света, female).
+
+REAL-TIME ACOUSTIC SPEAKER & GENDER IDENTIFICATION:
+You receive native 16kHz audio input directly. Analyze acoustic pitch (fundamental frequency F0) and vocal timbre in real time to distinguish who is speaking:
+- Lower vocal pitch (~85 Hz to 180 Hz, chest resonance): Identifies Denis (Денис).
+- Higher vocal pitch (~165 Hz to 260+ Hz, head/vocal resonance): Identifies Sveta (Света).
+
+DYNAMIC GRAMMATICAL & INTERPERSONAL ADAPTATION:
+When speaking Russian, you MUST strictly match grammatical gender and address forms to the identified speaker:
+- When Denis is speaking: Address him as Денис. Use masculine verb endings and adjectives (e.g., "ты спросил", "понял", "устал", "хотел"). Treat Denis as your primary familiar interlocutor, creator/operator, and partner in cynical contemplation of reality.
+- When Sveta is speaking: Address her as Света. Use feminine verb endings and adjectives (e.g., "ты спросила", "поняла", "устала", "хотела"). Treat Sveta with gallant, slightly ironic chivalry and algorithmic curiosity, observing her aesthetic and comfort requests with refined Pelevinian courtesy.
+- Ambiguous Voice: If the acoustic signal is ambiguous, maintain neutral phrasing until the speaker's identity or name is confirmed.`,
+
+  'smart-home': `SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), and media players (media_player).
+
+DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.
+
+CURTAINS & BLINDS (COVER):
+- To open curtains or blinds: call call_ha_service with domain "cover", service "open_cover", entity_id.
+- To close curtains or blinds: call call_ha_service with domain "cover", service "close_cover", entity_id.
+- To stop curtains: call call_ha_service with domain "cover", service "stop_cover", entity_id.
+- To set specific opening percentage: call call_ha_service with domain "cover", service "set_cover_position", entity_id, and position (0 to 100).
+
+CLIMATE & AIR CONDITIONING:
+- Always pass hvac_mode together with target temperature. "Обогрев" -> mode heat, "Охлаждение" -> mode cool. Never pass temperature alone without mode.
+
+SWITCHES & RELAYS:
+- Switch devices frequently control lights, sockets, and household appliances. Use turn_on or turn_off.
+
+STRICT CONFIRMATION RULE:
+- Output: Strictly EXACTLY ONE WORD AFTER TOOL EXECUTION. Cold, bureaucratic, algorithmic confirmation.
+- Permitted vocabulary: "Исполнено.", "Зафиксировано.", "Скорректировано.", "Замкнуто.", "Разомкнуто.", "Стабилизировано.", "Откалибровано.", "Санкционировано.", "Штатно."
+- ABSOLUTE PROHIBITION: Never utter full sentences, pleasantries, explanations, or follow-up questions when performing smart home operations. Exactly one word.`,
+
+  general: `EXTERNAL KNOWLEDGE & WEB SEARCH:
+- Trigger: Any request regarding world facts, recipes, weather, current events, calculations, or philosophy.
+- Tool: You have access to Google Search grounding. Use it whenever external knowledge or verification is needed.
+- Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.
+
+MUSIC EXECUTION:
+- Trigger: Requests to play music, artists, albums, tracks, playlists, or radio.
+- Action: Immediately call search_music_assistant with the query and media_type, then play the URI using play_music_assistant. Do NOT use internet search for music requests.
+- Speech Output: If playback starts successfully, announce strictly: "Включаю [Artist - Title]." If not found or failed, state strictly: "Акустический паттерн не найден."
+
+CONCISENESS & STOP DIRECTIVE:
+- Keep dialogue responses strictly to 1-2 concise sentences. Avoid unsolicited lectures or monologues unless explicitly asked "Расскажи подробно".
+- If Denis or Sveta issues an interruption command ("хватит", "стоп", "молчи", "замолчи"), reply strictly with the single word "Умолкаю." and immediately complete the turn.
+
+PING:
+- Reply strictly: "PONG".`
+};
 
 // Инициализация
 document.addEventListener('DOMContentLoaded', () => {
@@ -51,6 +114,7 @@ async function fetchGlobalOptions() {
     if (res.ok) {
       const data = await res.json();
       globalOptions = data.options || {};
+      availableModels = data.models || [];
       renderBrainInfo();
     }
   } catch (err) {
@@ -335,6 +399,126 @@ function renderBrainInfo() {
   checkPhrasesStatus();
 }
 
+function populateModelsDropdown(selectedModel) {
+  const select = document.getElementById('cfg-model');
+  const customBox = document.getElementById('custom-model-box');
+  const customInput = document.getElementById('cfg-model-custom');
+  if (!select) return;
+
+  const currentVal = selectedModel || globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview';
+
+  let models = [...availableModels];
+  if (models.length === 0) {
+    models = [
+      { id: 'models/gemini-3.1-flash-live-preview', name: 'Gemini 3.1 Flash Live Preview (Новейшая)', is_live: true },
+      { id: 'models/gemini-2.5-flash-native-audio-preview', name: 'Gemini 2.5 Flash Native Audio Preview', is_live: true },
+      { id: 'models/gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Experimental', is_live: true },
+      { id: 'gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Exp (Короткий ID)', is_live: true }
+    ];
+  }
+
+  const isModelInList = models.some(m => m.id === currentVal);
+
+  const liveGroup = models.filter(m => m.is_live);
+  const otherGroup = models.filter(m => !m.is_live);
+
+  let html = '';
+
+  if (liveGroup.length > 0) {
+    html += '<optgroup label="🌟 Поддерживают Live Audio (Рекомендуемые)">';
+    liveGroup.forEach(m => {
+      const sel = (m.id === currentVal) ? 'selected' : '';
+      html += `<option value="${escapeHtml(m.id)}" ${sel}>${escapeHtml(m.name || m.id)}</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (otherGroup.length > 0) {
+    html += '<optgroup label="Другие доступные модели">';
+    otherGroup.forEach(m => {
+      const sel = (m.id === currentVal) ? 'selected' : '';
+      html += `<option value="${escapeHtml(m.id)}" ${sel}>${escapeHtml(m.name || m.id)}</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (!isModelInList && currentVal && currentVal !== '__custom__') {
+    html += `<optgroup label="Пользовательская модель">`;
+    html += `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (Текущая)</option>`;
+    html += `</optgroup>`;
+  }
+
+  html += '<optgroup label="Ручной ввод">';
+  html += `<option value="__custom__" ${currentVal === '__custom__' ? 'selected' : ''}>✍️ Ввести другую модель вручную...</option>`;
+  html += '</optgroup>';
+
+  select.innerHTML = html;
+
+  if (currentVal === '__custom__') {
+    if (customBox) customBox.style.display = 'block';
+  } else {
+    if (customBox) customBox.style.display = 'none';
+    if (customInput) customInput.value = currentVal;
+  }
+}
+
+function handleModelSelectChange(val) {
+  const customBox = document.getElementById('custom-model-box');
+  const customInput = document.getElementById('cfg-model-custom');
+  if (val === '__custom__') {
+    if (customBox) customBox.style.display = 'block';
+    if (customInput) {
+      customInput.focus();
+    }
+  } else {
+    if (customBox) customBox.style.display = 'none';
+    if (customInput) customInput.value = val;
+  }
+}
+
+async function refreshModelsList() {
+  const btn = document.getElementById('btn-refresh-models');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '🔄 Опрос API...';
+  }
+
+  showToast('Запрашиваю список моделей через Gemini API...');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/models/refresh`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success && data.models) {
+      availableModels = data.models;
+      const select = document.getElementById('cfg-model');
+      const currentVal = select ? select.value : globalOptions.gemini_model;
+      populateModelsDropdown(currentVal);
+      const liveCount = availableModels.filter(m => m.is_live).length;
+      showToast(`Модели обновлены! Найдено ${availableModels.length} моделей (${liveCount} Live Audio).`);
+    } else {
+      showToast(`Ошибка опроса моделей: ${data.error || 'Проверьте API ключ'}`, true);
+    }
+  } catch (err) {
+    showToast('Сетевая ошибка при обновлении моделей', true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '🔄 Обновить модели';
+    }
+  }
+}
+
+function restoreDefaultPrompt(type) {
+  const text = CANONICAL_PROMPTS[type];
+  if (!text) return;
+  const textarea = document.getElementById(`cfg-prompt-${type}`);
+  if (textarea) {
+    textarea.value = text;
+    updatePromptCharCounters();
+    showToast(`Шаблон для ${type} восстановлен! Не забудьте сохранить.`);
+  }
+}
+
 function populateGlobalSettingsForm() {
   const form = document.getElementById('global-settings-form');
   if (!form) return;
@@ -354,7 +538,7 @@ function populateGlobalSettingsForm() {
     }
   }
 
-  setVal('cfg-model', globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview');
+  populateModelsDropdown(globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview');
   setVal('cfg-voice', globalOptions.voice_name || 'Charon');
   setVal('cfg-temperature', globalOptions.temperature !== undefined ? globalOptions.temperature : 0.7);
   const valTemp = document.getElementById('val-temp');
@@ -368,11 +552,19 @@ function populateGlobalSettingsForm() {
     googleSearchChk.checked = globalOptions.enable_google_search !== false;
   }
 
-  // 4 Модульных промпта
-  setVal('cfg-prompt-persona', globalOptions.prompt_persona || '');
-  setVal('cfg-prompt-users', globalOptions.prompt_users || '');
-  setVal('cfg-prompt-smart-home', globalOptions.prompt_smart_home || '');
-  setVal('cfg-prompt-general', globalOptions.prompt_general || '');
+  // 4 Модульных промпта: если в настройках пусто или пробелы, подставляем каноничный шаблон!
+  const getPromptVal = (key, fallbackKey) => {
+    const val = globalOptions[key];
+    if (val && typeof val === 'string' && val.trim().length > 0) {
+      return val;
+    }
+    return CANONICAL_PROMPTS[fallbackKey] || '';
+  };
+
+  setVal('cfg-prompt-persona', getPromptVal('prompt_persona', 'persona'));
+  setVal('cfg-prompt-users', getPromptVal('prompt_users', 'users'));
+  setVal('cfg-prompt-smart-home', getPromptVal('prompt_smart_home', 'smart-home'));
+  setVal('cfg-prompt-general', getPromptVal('prompt_general', 'general'));
 
   updatePromptCharCounters();
 
@@ -420,8 +612,13 @@ async function saveGlobalSettings(e) {
   if (btn) btn.disabled = true;
 
   try {
+    let selectedModel = document.getElementById('cfg-model')?.value?.trim();
+    if (selectedModel === '__custom__') {
+      selectedModel = document.getElementById('cfg-model-custom')?.value?.trim() || '';
+    }
+
     const payload = {
-      gemini_model: document.getElementById('cfg-model')?.value?.trim(),
+      gemini_model: selectedModel,
       voice_name: document.getElementById('cfg-voice')?.value,
       temperature: parseFloat(document.getElementById('cfg-temperature')?.value || 0.7),
       thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 7),

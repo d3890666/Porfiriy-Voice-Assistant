@@ -8,7 +8,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from ha_api import HomeAssistantAPI
-from gemini_client import GeminiProxyClient
+from gemini_client import GeminiProxyClient, fetch_available_gemini_models
 from google.genai import types
 from phrase_manager import PhraseManager
 from device_manager import DeviceManager
@@ -114,6 +114,20 @@ DEFAULT_GENERAL = (
     "- Reply strictly: \"PONG\"."
 )
 
+_available_models = []
+
+async def refresh_available_models():
+    global _available_models
+    opts = get_options()
+    api_key = opts.get("gemini_api_key", "")
+    try:
+        _available_models = await fetch_available_gemini_models(api_key)
+        live_count = sum(1 for m in _available_models if m.get("is_live"))
+        logger.info(f"Refreshed Gemini models list: {len(_available_models)} models discovered ({live_count} live-capable).")
+    except Exception as e:
+        logger.warning(f"Error during refresh_available_models: {e}")
+    return _available_models
+
 def get_options():
     global _runtime_options
     if _runtime_options is not None:
@@ -128,6 +142,11 @@ def get_options():
             opts = {}
     else:
         opts = {}
+
+    # Если пользователь ранее настраивал единый system_prompt в старых версиях,
+    # переносим его в prompt_persona если prompt_persona еще пустой
+    if opts.get("system_prompt", "").strip() and not opts.get("prompt_persona", "").strip():
+        opts["prompt_persona"] = opts["system_prompt"].strip()
 
     # Заполняем дефолтными значениями если они не указаны или пустые
     defaults = {
@@ -157,6 +176,7 @@ def get_options():
 def save_options(new_options: dict):
     global _runtime_options
     opts = get_options()
+    old_key = opts.get("gemini_api_key", "")
     opts.update(new_options)
     _runtime_options = opts
     try:
@@ -166,6 +186,15 @@ def save_options(new_options: dict):
         logger.info("Saved updated options to /data/options.json")
     except Exception as e:
         logger.warning(f"Failed to persist options to file: {e}")
+
+    # Если API ключ был обновлен — обновляем список моделей
+    new_key = opts.get("gemini_api_key", "")
+    if new_key and new_key != old_key:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(refresh_available_models())
+        except RuntimeError:
+            pass
 
 async def handle_client(websocket):
     options = get_options()
@@ -707,6 +736,9 @@ async def main():
     phrase_manager.load_from_cache()
     asyncio.create_task(phrase_manager.initialize(options))
     
+    # 0. Запуск динамического обнаружения доступных моделей Gemini
+    asyncio.create_task(refresh_available_models())
+
     # 1. Запуск MQTT Discovery Manager
     ha_api = HomeAssistantAPI()
     mqtt_manager = MQTTDiscoveryManager(device_manager, options)
@@ -719,6 +751,8 @@ async def main():
         get_options, 
         options_save_callback=save_options, 
         phrase_manager=phrase_manager, 
+        models_callback=lambda: _available_models,
+        refresh_models_callback=refresh_available_models,
         port=8099
     )
     asyncio.create_task(web_server.start())

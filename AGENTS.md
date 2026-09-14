@@ -18,6 +18,11 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.56 (Dynamic Models Discovery, Prompt Defaults & Restoration)
+*   **Dynamic Gemini Models Discovery**: Реализовано автоматическое обнаружение доступных моделей Gemini на базе API-ключа пользователя (`fetch_available_gemini_models`) при старте аддона и при обновлении ключа. Включает сортировку с разделением моделей на группу Live Audio (нативный звук / `bidiGenerateContent`) и общие модели, кнопку `🔄 Обновить модели` в UI и возможность ручного ввода кастомных экспериментальных ID.
+*   **Prompt Defaults & One-Click Restoration**: В веб-интерфейс добавлены кнопки «↺ Сбросить к шаблону» для каждого из 4 модульных промптов (Persona, Users, Smart Home, General) для мгновенного восстановления каноничных текстов из повести Пелевина. Если при загрузке страницы или в `options.json` поля оказываются пустыми, они автоматически подтягивают каноничные тексты.
+*   **Legacy Prompt Migration**: Добавлена плавная миграция старого поля `system_prompt` в `prompt_persona` для пользователей, обновляющихся с ранних версий аддона.
+
 ### Версия 0.0.55 (Fix UI Caching, Embed Form Styles & Restore Default Prompts)
 *   **Fix UI Caching**: Добавлены строгие заголовки `Cache-Control: no-cache, no-store, must-revalidate` для `index.html` и `/static/*`, а также версионированные query-параметры `?v=0.0.55` для устранения залипания старого CSS в браузере Ingress.
 *   **Embedded Form Styles**: Стили конфигуратора продублированы непосредственно в тег `<style>` внутри `index.html` для 100% гарантированного применения темной темы, сетки параметров и редакторов промптов.
