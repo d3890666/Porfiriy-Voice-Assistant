@@ -7,6 +7,9 @@
 #include <driver/i2s.h>
 #include <FastLED.h>
 #include <nvs_flash.h>
+#include <Update.h>
+
+#define FIRMWARE_VERSION "0.0.61"
 
 #include "model.h"
 // TFLite
@@ -72,7 +75,8 @@ enum DeviceState {
     STATE_IDLE,       // 0: Ожидание вейкворда (микрофон идет только в TFLite)
     STATE_LISTENING,  // 1: Запись команды (микрофон стримится в WebSocket)
     STATE_THINKING,   // 2: Ожидание ответа от сервера (микрофон заглушен)
-    STATE_SPEAKING    // 3: Воспроизведение звука динамиком (микрофон заглушен)
+    STATE_SPEAKING,   // 3: Воспроизведение звука динамиком (микрофон заглушен)
+    STATE_OTA         // 4: Прием и запись прошивки по воздуху (все аудио заглушено)
 };
 DeviceState current_state = STATE_IDLE;
 unsigned long state_enter_time = 0;
@@ -90,6 +94,7 @@ inline bool is_listening() { return current_state == STATE_LISTENING; }
 inline bool is_thinking() { return current_state == STATE_THINKING; }
 inline bool is_speaking() { return current_state == STATE_SPEAKING; }
 inline bool is_idle() { return current_state == STATE_IDLE; }
+inline bool is_ota() { return current_state == STATE_OTA; }
 
 bool is_connected = false;
 bool user_has_spoken = false;
@@ -98,6 +103,11 @@ unsigned long last_reconnect_time = 0;
 unsigned long listening_start_time = 0;
 unsigned long last_speech_time = 0;
 unsigned long last_sleep_time = 0;
+
+// OTA переменные
+size_t ota_total_size = 0;
+size_t ota_written_size = 0;
+unsigned long ota_last_packet_time = 0;
 
 // --- Буферы для микрофона ---
 #define SAMPLE_RATE 16000
@@ -149,6 +159,16 @@ void update_led() {
     String active_color = led_color_idle;
     
     switch (current_state) {
+        case STATE_OTA:
+            {
+                // Быстрое дыхание бирюзовым цветом во время OTA прошивки
+                float fast_breathe = (exp(sin(millis() / 400.0 * PI)) - 0.36787944) * 108.0;
+                int b = (int)((fast_breathe / 255.0) * 80);
+                leds[0] = CRGB::Cyan;
+                FastLED.setBrightness(b > 10 ? (b > 255 ? 255 : b) : 10);
+                FastLED.show();
+                return;
+            }
         case STATE_SPEAKING:
             active_mode = led_mode_speak;
             active_color = led_color_speak;
@@ -622,6 +642,18 @@ void setup_tflite() {
 
 void onMessageCallback(WebsocketsMessage message) {
     if (message.isBinary()) {
+        if (current_state == STATE_OTA) {
+            size_t len = message.length();
+            if (len > 0) {
+                size_t written = Update.write((uint8_t*)message.c_str(), len);
+                if (written != len) {
+                    Serial.printf("[OTA] Write mismatch: expected %u, wrote %u\n", (unsigned int)len, (unsigned int)written);
+                }
+                ota_written_size += written;
+                ota_last_packet_time = millis();
+            }
+            return;
+        }
         if (current_state == STATE_LISTENING || current_state == STATE_IDLE) {
             return;
         }
@@ -647,7 +679,56 @@ void onMessageCallback(WebsocketsMessage message) {
     } else if (message.isText()) {
         Serial.println("Server text: " + message.data());
         
-        if (message.data().indexOf("\"type\":\"sleep\"") >= 0 || message.data().indexOf("\"type\": \"sleep\"") >= 0) {
+        if (message.data().indexOf("\"type\":\"ota_start\"") >= 0 || message.data().indexOf("\"type\": \"ota_start\"") >= 0) {
+            Serial.println("[OTA] Server commanded OTA_START.");
+            int size_idx = message.data().indexOf("\"size\":");
+            size_t total_size = 0;
+            if (size_idx >= 0) {
+                total_size = (size_t)message.data().substring(size_idx + 7).toInt();
+            }
+            if (total_size == 0) {
+                total_size = UPDATE_SIZE_UNKNOWN;
+            }
+            
+            // Глушим I2S DMA буферы перед стартом OTA
+            i2s_zero_dma_buffer(I2S_NUM_1);
+            i2s_zero_dma_buffer(I2S_NUM_0);
+            
+            if (Update.begin(total_size, U_FLASH)) {
+                set_state(STATE_OTA);
+                ota_total_size = total_size;
+                ota_written_size = 0;
+                ota_last_packet_time = millis();
+                Serial.printf("[OTA] Update.begin success. Target size: %u bytes\n", (unsigned int)total_size);
+                client.send("{\"type\":\"ota_ready\"}");
+            } else {
+                Serial.printf("[OTA] Update.begin failed! Error: %d\n", Update.getError());
+                client.send("{\"type\":\"ota_error\",\"error\":\"Update.begin failed\"}");
+            }
+        }
+        else if (message.data().indexOf("\"type\":\"ota_end\"") >= 0 || message.data().indexOf("\"type\": \"ota_end\"") >= 0) {
+            Serial.println("[OTA] Server commanded OTA_END.");
+            if (current_state == STATE_OTA) {
+                if (Update.end(true)) {
+                    Serial.println("[OTA] Firmware successfully written and verified! Sending success and rebooting...");
+                    client.send("{\"type\":\"ota_success\"}");
+                    delay(800);
+                    ESP.restart();
+                } else {
+                    Serial.printf("[OTA] Update.end failed! Error code: %d\n", Update.getError());
+                    client.send("{\"type\":\"ota_error\",\"error\":\"Update.end verification failed\"}");
+                    set_state(STATE_IDLE);
+                }
+            }
+        }
+        else if (message.data().indexOf("\"type\":\"ota_abort\"") >= 0 || message.data().indexOf("\"type\": \"ota_abort\"") >= 0) {
+            Serial.println("[OTA] Server commanded OTA_ABORT.");
+            if (current_state == STATE_OTA) {
+                Update.abort();
+                set_state(STATE_IDLE);
+            }
+        }
+        else if (message.data().indexOf("\"type\":\"sleep\"") >= 0 || message.data().indexOf("\"type\": \"sleep\"") >= 0) {
             Serial.println("Server commanded SLEEP.");
             set_state(STATE_IDLE);
             last_sleep_time = millis();
@@ -793,7 +874,7 @@ void send_registration() {
     json += "\"rssi\":" + String(rssi) + ",";
     json += "\"uptime\":" + String(millis() / 1000) + ",";
     json += "\"device_type\":\"esp32\",";
-    json += "\"firmware\":\"0.0.54\",";
+    json += "\"firmware\":\"" FIRMWARE_VERSION "\",";
     json += "\"config\":{";
     json += "\"mic_gain\":" + String(mic_gain) + ",";
     json += "\"speaker_volume\":" + String(speaker_volume, 2) + ",";
@@ -914,6 +995,20 @@ void loop() {
     
     if (captive_portal) {
         delay(10);
+        return;
+    }
+
+    // Если идет процесс OTA обновления прошивки - изолируем микрофон, TFLite и аудио
+    if (current_state == STATE_OTA) {
+        client.poll();
+        // Сторожевой таймер: если пакеты не приходили более 20 секунд - прерываем
+        if (millis() - ota_last_packet_time > 20000) {
+            Serial.println("[OTA] Timeout waiting for firmware chunks! Aborting...");
+            Update.abort();
+            set_state(STATE_IDLE);
+            client.send("{\"type\":\"ota_error\",\"error\":\"Packet timeout\"}");
+        }
+        delay(1);
         return;
     }
 

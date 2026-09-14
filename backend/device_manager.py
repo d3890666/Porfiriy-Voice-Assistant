@@ -7,6 +7,8 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
+TARGET_FIRMWARE_VERSION = "0.0.61"
+
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 2,
     "speaker_volume": 1.0,
@@ -119,6 +121,11 @@ class DeviceManager:
             }
             self.devices[clean_mac] = dev
             
+        dev["target_firmware"] = TARGET_FIRMWARE_VERSION
+        dev["has_update"] = (
+            dev.get("device_type") == "esp32" and 
+            dev.get("firmware") != TARGET_FIRMWARE_VERSION
+        )
         dev["is_online"] = True
         dev["state"] = "idle"
         dev["last_seen"] = now
@@ -128,7 +135,7 @@ class DeviceManager:
             
         self._save()
         self._notify("registered", dev)
-        logger.info(f"Device registered: {clean_mac} ({dev['name']}) @ {dev['ip']}")
+        logger.info(f"Device registered: {clean_mac} ({dev['name']}) @ {dev['ip']} (firmware: {dev['firmware']}, update: {dev['has_update']})")
         return dev
 
     def update_heartbeat(self, mac: str, rssi: int, uptime: int, state: Optional[str] = None):
@@ -169,8 +176,54 @@ class DeviceManager:
     def get_device(self, mac: str) -> Optional[Dict[str, Any]]:
         return self.devices.get(mac.strip().lower())
 
+    def get_firmware_path(self) -> Optional[str]:
+        """Поиск пути к бинарнику прошивки."""
+        candidates = [
+            "/backend/firmware/firmware.bin",
+            os.path.join(os.path.dirname(__file__), "firmware", "firmware.bin"),
+            os.path.join(os.path.dirname(__file__), "..", "esp32_firmware", ".pio", "build", "esp32-s3-devkitc-1", "firmware.bin"),
+            "/data/firmware.bin"
+        ]
+        for c in candidates:
+            if os.path.exists(c) and os.path.isfile(c):
+                return os.path.abspath(c)
+        return None
+
+    def get_firmware_info(self) -> Dict[str, Any]:
+        """Информация об актуальной серверной прошивке."""
+        path = self.get_firmware_path()
+        exists = bool(path and os.path.exists(path))
+        size = os.path.getsize(path) if exists else 0
+        outdated = self.get_outdated_devices()
+        return {
+            "target_version": TARGET_FIRMWARE_VERSION,
+            "available": exists,
+            "size": size,
+            "path": path,
+            "outdated_count": len(outdated)
+        }
+
+    def get_outdated_devices(self) -> List[Dict[str, Any]]:
+        """Список подключенных ESP32 с устаревшей прошивкой."""
+        outdated = []
+        for d in self.get_all_devices():
+            if d.get("device_type") == "esp32" and d.get("is_online", False):
+                if d.get("firmware") != TARGET_FIRMWARE_VERSION:
+                    outdated.append(d)
+        return outdated
+
     def get_all_devices(self) -> List[Dict[str, Any]]:
-        return list(self.devices.values())
+        result = []
+        for d in self.devices.values():
+            dev_copy = dict(d)
+            dev_copy["target_firmware"] = TARGET_FIRMWARE_VERSION
+            dev_copy["has_update"] = (
+                dev_copy.get("device_type") == "esp32" and 
+                dev_copy.get("is_online", False) and 
+                dev_copy.get("firmware") != TARGET_FIRMWARE_VERSION
+            )
+            result.append(dev_copy)
+        return result
 
     async def send_command(self, mac: str, command: Dict[str, Any]) -> bool:
         """Отправка JSON-команды на подключенное устройство по WebSocket."""
@@ -232,3 +285,114 @@ class DeviceManager:
         clean_mac = mac.strip().lower()
         if clean_mac in self.devices:
             self.devices[clean_mac]["area_name"] = area_name
+
+    async def start_ota_update(self, mac: str) -> bool:
+        """Запуск асинхронной передачи прошивки по WebSocket."""
+        clean_mac = mac.strip().lower()
+        ws = self.active_sockets.get(clean_mac)
+        if not ws or getattr(ws, "closed", False):
+            logger.error(f"[OTA] Device {clean_mac} is not connected to WebSocket")
+            return False
+            
+        fw_path = self.get_firmware_path()
+        if not fw_path or not os.path.exists(fw_path):
+            logger.error(f"[OTA] Firmware binary not found for OTA update")
+            return False
+            
+        asyncio.create_task(self._ota_worker(clean_mac, ws, fw_path))
+        return True
+
+    async def _ota_worker(self, mac: str, ws, fw_path: str):
+        total_size = os.path.getsize(fw_path)
+        logger.info(f"[OTA] Starting OTA stream for {mac}: size {total_size} bytes, target version {TARGET_FIRMWARE_VERSION}")
+        
+        dev = self.devices.get(mac, {})
+        dev["ota_progress"] = 0
+        dev["ota_status"] = "starting"
+        self._notify("ota_progress", {
+            "mac": mac, 
+            "percent": 0, 
+            "status": "starting", 
+            "total": total_size
+        })
+        
+        try:
+            # 1. Отправляем команду ota_start
+            await ws.send(json.dumps({
+                "type": "ota_start",
+                "size": total_size,
+                "version": TARGET_FIRMWARE_VERSION
+            }))
+            
+            # Даем ESP32 300мс на переход в STATE_OTA, сброс DMA и Update.begin()
+            await asyncio.sleep(0.3)
+            
+            # 2. Потоковая передача файла чанками по 2048 байт (2 КБ)
+            chunk_size = 2048
+            sent_bytes = 0
+            last_notify_percent = 0
+            
+            with open(fw_path, "rb") as f:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    await ws.send(chunk)
+                    sent_bytes += len(chunk)
+                    
+                    percent = int((sent_bytes / total_size) * 100)
+                    if percent >= last_notify_percent + 4 or sent_bytes == total_size:
+                        last_notify_percent = percent
+                        dev["ota_progress"] = percent
+                        dev["ota_status"] = "flashing"
+                        self._notify("ota_progress", {
+                            "mac": mac, 
+                            "percent": percent, 
+                            "status": "flashing",
+                            "sent": sent_bytes, 
+                            "total": total_size
+                        })
+                    # Темп передачи: ~15мс между чанками 2 КБ = ~130 КБ/с (весь бинарник за ~8-9 сек)
+                    await asyncio.sleep(0.015)
+                    
+            logger.info(f"[OTA] All bytes sent ({sent_bytes}/{total_size}). Sending ota_end to {mac}...")
+            
+            # 3. Отправляем ota_end для финализации и перезагрузки ESP32
+            await ws.send(json.dumps({"type": "ota_end"}))
+            
+            dev["ota_progress"] = 100
+            dev["ota_status"] = "rebooting"
+            self._notify("ota_progress", {
+                "mac": mac, 
+                "percent": 100, 
+                "status": "rebooting",
+                "total": total_size
+            })
+            
+        except Exception as e:
+            logger.error(f"[OTA] Error during OTA update for {mac}: {e}")
+            dev["ota_status"] = "error"
+            self._notify("ota_progress", {
+                "mac": mac, 
+                "percent": 0, 
+                "status": "error", 
+                "error": str(e)
+            })
+
+    async def start_bulk_ota(self, target_macs: Optional[List[str]] = None) -> List[str]:
+        """Последовательное OTA-обновление выбранных (или всех устаревших) ESP32."""
+        if not target_macs or "all" in target_macs or "all_outdated" in target_macs:
+            outdated = self.get_outdated_devices()
+            target_macs = [d["mac"] for d in outdated]
+            
+        started = []
+        for mac in target_macs:
+            clean_mac = mac.strip().lower()
+            dev = self.devices.get(clean_mac)
+            if dev and dev.get("is_online") and clean_mac in self.active_sockets:
+                ok = await self.start_ota_update(clean_mac)
+                if ok:
+                    started.append(clean_mac)
+                    # Пауза между стартами обновлений устройств
+                    await asyncio.sleep(0.5)
+        return started

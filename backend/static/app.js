@@ -106,6 +106,7 @@ async function fetchDevices() {
       devices = data.devices || [];
       renderDevicesGrid();
       renderBulkTargets();
+      renderOtaBanner();
       updateHeaderStats();
     }
   } catch (err) {
@@ -205,7 +206,22 @@ function renderDevicesGrid() {
           <div>MAC: ${dev.mac}</div>
           <div>Аптайм: ${formatUptime(dev.uptime)}</div>
           <div>Тип: ${dev.device_type || 'ESP32'}</div>
+          <div>Прошивка: <strong>v${escapeHtml(dev.firmware || '0.0.54')}</strong>
+            ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая прошивка v${dev.target_firmware}">➔ v${dev.target_firmware}</span>` : ''}
+          </div>
         </div>
+
+        ${dev.ota_status && dev.ota_status !== 'error' ? `
+          <div class="ota-progress-box">
+            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;">
+              <span>⚡ OTA: <strong>${dev.ota_status === 'rebooting' ? 'Перезагрузка...' : (dev.ota_status === 'starting' ? 'Подготовка...' : 'Прошивка...')}</strong></span>
+              <span style="font-family: monospace; font-weight:700;">${dev.ota_progress || 0}%</span>
+            </div>
+            <div class="ota-progress-bar-wrap">
+              <div class="ota-progress-bar" style="width: ${dev.ota_progress || 0}%;"></div>
+            </div>
+          </div>
+        ` : ''}
 
         <div class="quick-controls">
           <div class="slider-row">
@@ -234,6 +250,11 @@ function renderDevicesGrid() {
             <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'reboot')" title="Перезагрузить плату">
               🔄 Рестарт
             </button>
+            ${dev.has_update && dev.is_online ? `
+              <button class="btn btn-secondary btn-icon" onclick="triggerDeviceOta('${dev.mac}')" style="color: var(--accent-blue); border-color: rgba(0, 210, 255, 0.4);" title="Обновить прошивку по воздуху">
+                ⚡ OTA
+              </button>
+            ` : ''}
             ${dev.ip && dev.ip !== '---' ? `
               <a href="http://${dev.ip}" target="_blank" class="btn btn-secondary btn-icon dev-web-btn" title="Встроенный Web UI колонки">
                 🌐 Web UI
@@ -290,6 +311,88 @@ function renderBulkTargets() {
   `).join('');
 
   container.innerHTML = selectAllHtml + itemsHtml;
+  renderOtaBanner();
+}
+
+// Отрисовка баннера OTA-обновления на странице групповых настроек
+function renderOtaBanner() {
+  const container = document.getElementById('ota-bulk-banner-container');
+  if (!container) return;
+
+  const outdated = devices.filter(dev => dev.device_type === 'esp32' && dev.is_online && dev.has_update);
+  const targetVer = (devices.find(d => d.target_firmware) || {}).target_firmware || '0.0.61';
+
+  if (outdated.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="ota-banner" id="ota-bulk-banner">
+      <div class="ota-info">
+        <span class="ota-badge">🚀 Доступно обновление ПО</span>
+        <h3 class="ota-title">Новая прошивка v${escapeHtml(targetVer)} готова к установке</h3>
+        <p class="ota-desc">
+          Обнаружено <strong>${outdated.length}</strong> онлайн-колонок с устаревшей версией: 
+          ${outdated.map(d => `<code>${escapeHtml(d.name)} (${escapeHtml(d.firmware || 'старая')})</code>`).join(', ')}
+        </p>
+      </div>
+      <button class="btn-ota-bulk" id="btn-start-bulk-ota" onclick="handleBulkOta()">
+        ⚡ Обновить все устаревшие ESP32 (${outdated.length})
+      </button>
+    </div>
+  `;
+}
+
+async function handleBulkOta() {
+  const btn = document.getElementById('btn-start-bulk-ota');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = '⏳ Запуск обновления...';
+  }
+  showToast('Запущено обновление прошивок по воздуху...');
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/bulk_ota`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_macs: ['all_outdated'] })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Обновление запущено для ${data.started_count || 0} устройств`);
+    } else {
+      showToast(data.error || 'Ошибка старта OTA', true);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerText = '⚡ Обновить все устаревшие ESP32';
+      }
+    }
+  } catch (err) {
+    showToast('Ошибка сети при вызове OTA: ' + err.message, true);
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '⚡ Обновить все устаревшие ESP32';
+    }
+  }
+}
+
+async function triggerDeviceOta(mac) {
+  if (!confirm(`Обновить прошивку по воздуху для устройства ${mac}?`)) return;
+  showToast(`Запуск OTA для ${mac}...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/${mac}/ota`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('OTA обновление началось');
+    } else {
+      showToast('Ошибка: ' + (data.error || 'Не удалось запустить OTA'), true);
+    }
+  } catch (err) {
+    showToast('Ошибка сети: ' + err.message, true);
+  }
 }
 
 function setupSelectAll() {
@@ -746,15 +849,29 @@ function setupSSE() {
       try {
         const data = JSON.parse(e.data);
         if (data.device) {
-          // Обновляем устройство в локальном массиве
-          const idx = devices.findIndex(d => d.mac === data.device.mac);
-          if (idx >= 0) {
-            devices[idx] = data.device;
+          // Обработка специального прогресса OTA
+          if (data.event === 'ota_progress') {
+            const info = data.device;
+            const dev = devices.find(d => d.mac === info.mac);
+            if (dev) {
+              dev.ota_progress = info.percent;
+              dev.ota_status = info.status;
+              renderDevicesGrid();
+              renderOtaBanner();
+            }
           } else {
-            devices.push(data.device);
+            // Обновляем устройство в локальном массиве
+            const idx = devices.findIndex(d => d.mac === data.device.mac);
+            if (idx >= 0) {
+              devices[idx] = data.device;
+            } else {
+              devices.push(data.device);
+            }
+            renderDevicesGrid();
+            renderBulkTargets();
+            renderOtaBanner();
+            updateHeaderStats();
           }
-          renderDevicesGrid();
-          updateHeaderStats();
         }
       } catch (err) {}
     };
@@ -807,4 +924,7 @@ window.toggleKeyVisibility = toggleKeyVisibility;
 window.saveGlobalSettings = saveGlobalSettings;
 window.regeneratePhrases = regeneratePhrases;
 window.checkPhrasesStatus = checkPhrasesStatus;
+window.renderOtaBanner = renderOtaBanner;
+window.handleBulkOta = handleBulkOta;
+window.triggerDeviceOta = triggerDeviceOta;
 window.showToast = showToast;

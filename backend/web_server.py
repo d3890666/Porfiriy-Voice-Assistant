@@ -42,6 +42,9 @@ class WebServer:
         self.app.router.add_post("/api/models/refresh", self.handle_refresh_models)
         self.app.router.add_post("/api/phrases/regenerate", self.handle_regenerate_phrases)
         self.app.router.add_get("/api/phrases/status", self.handle_phrases_status)
+        self.app.router.add_get("/api/firmware/info", self.handle_firmware_info)
+        self.app.router.add_post("/api/devices/{mac}/ota", self.handle_device_ota)
+        self.app.router.add_post("/api/devices/bulk_ota", self.handle_bulk_ota)
         self.app.router.add_get("/api/events", self.handle_events)
         self.app.router.add_get("/static/{filename:.*}", self.handle_static)
 
@@ -150,6 +153,24 @@ class WebServer:
         mac = request.match_info["mac"]
         success = await self.device_manager.send_command(mac, {"type": "reboot"})
         return web.json_response({"success": success})
+
+    async def handle_firmware_info(self, request):
+        info = self.device_manager.get_firmware_info()
+        return web.json_response(info)
+
+    async def handle_device_ota(self, request):
+        mac = request.match_info["mac"]
+        success = await self.device_manager.start_ota_update(mac)
+        return web.json_response({"success": success})
+
+    async def handle_bulk_ota(self, request):
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        target_macs = body.get("target_macs", ["all_outdated"])
+        started = await self.device_manager.start_bulk_ota(target_macs)
+        return web.json_response({"success": True, "started_count": len(started), "devices": started})
 
     async def handle_get_areas(self, request):
         if self.ha_api:

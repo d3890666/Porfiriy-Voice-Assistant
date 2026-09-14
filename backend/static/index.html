@@ -265,6 +265,106 @@
     }
     .phrase-status-badge.ready .status-dot { background: #00e676; }
     .phrase-status-badge.generating .status-dot { background: #ffaa00; }
+
+    /* OTA Banner & Progress */
+    .ota-banner {
+      background: linear-gradient(135deg, rgba(0, 210, 255, 0.12) 0%, rgba(58, 123, 213, 0.15) 100%);
+      border: 1px solid rgba(0, 210, 255, 0.4);
+      border-radius: 12px;
+      padding: 18px 22px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      box-shadow: 0 4px 20px rgba(0, 210, 255, 0.1);
+      animation: fadeIn 0.3s ease;
+    }
+    .ota-info {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .ota-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(0, 210, 255, 0.2);
+      color: #00d2ff;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      width: fit-content;
+    }
+    .ota-title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      color: #f0f3f6;
+    }
+    .ota-desc {
+      margin: 0;
+      font-size: 13px;
+      color: #8b949e;
+    }
+    .btn-ota-bulk {
+      background: linear-gradient(135deg, #00d2ff 0%, #0077ff 100%);
+      color: #0d1117;
+      font-weight: 700;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      box-shadow: 0 4px 15px rgba(0, 210, 255, 0.3);
+      transition: all 0.2s ease;
+      white-space: nowrap;
+      font-size: 14px;
+    }
+    .btn-ota-bulk:hover {
+      filter: brightness(1.15);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(0, 210, 255, 0.4);
+    }
+    .btn-ota-bulk:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .ota-progress-box {
+      width: 100%;
+      margin-top: 12px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .ota-progress-bar-wrap {
+      width: 100%;
+      height: 8px;
+      background: #21262d;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .ota-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #00d2ff, #00ff88);
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+    .ota-device-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      font-size: 11px;
+      border-radius: 4px;
+      font-weight: 600;
+      background: rgba(255, 170, 0, 0.2);
+      color: #ffaa00;
+      border: 1px solid rgba(255, 170, 0, 0.4);
+      margin-left: 6px;
+    }
   </style>
   <script>
     window.CANONICAL_PROMPTS = {
@@ -354,7 +454,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.60</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.61</p>
         </div>
       </div>
       
@@ -407,6 +507,9 @@ PING:
     <!-- Вкладка 2: Групповая настройка -->
     <main id="tab-bulk" class="tab-content">
       <div class="card bulk-card">
+        <!-- Контейнер баннера обновления OTA (появляется только если есть устаревшие прошивки) -->
+        <div id="ota-bulk-banner-container"></div>
+
         <h2>Пакетное применение настроек</h2>
         <p class="section-desc">
           Отметьте галочками нужные колонки, затем включите только те параметры, которые хотите обновить. 
