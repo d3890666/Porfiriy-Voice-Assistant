@@ -386,7 +386,14 @@ async def handle_client(websocket):
                                 session_state["echo_baseline_rms"] = baseline * 0.90 + rms * 0.10
                                 
                                 # Голос человека должен превышать адаптивное эхо и минимальный порог
-                                barge_thresh = max(float(options.get("barge_in_threshold_rms", 600)), baseline * 2.2)
+                                dev_obj = device_manager.get_device(client_mac) or {}
+                                dev_cfg = dev_obj.get("config", {})
+                                indiv_rms = dev_cfg.get("barge_in_threshold_rms")
+                                if indiv_rms is not None and str(indiv_rms).isdigit() and int(indiv_rms) > 0:
+                                    base_thresh = float(indiv_rms)
+                                else:
+                                    base_thresh = float(options.get("barge_in_threshold_rms", 600))
+                                barge_thresh = max(base_thresh, baseline * 2.2)
                                 
                                 barge_buf = session_state.setdefault("barge_in_buffer", collections.deque(maxlen=6))
                                 barge_buf.append(message)

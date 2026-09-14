@@ -233,13 +233,28 @@ function renderDevicesGrid() {
           </div>
           ${isEsp ? `
             <div class="slider-row">
-              <span>🎯 Чувств. вейкворда:</span>
+              <span>🎙️ Усиление (Gain):</span>
+              <input type="number" step="0.1" min="0.5" max="5.0" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
+                value="${cfg.mic_gain !== undefined ? cfg.mic_gain : 1.3}"
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))"
+                title="Усиление микрофона (по умолчанию 1.3)">
+            </div>
+            <div class="slider-row">
+              <span>🎯 Вейкворд:</span>
               <input type="range" min="0.80" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
                 onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
                 oninput="this.nextElementSibling.innerText = this.value">
               <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
             </div>
           ` : ''}
+          <div class="slider-row">
+            <span>🛑 RMS порог:</span>
+            <input type="number" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
+              placeholder="${globalOptions.barge_in_threshold_rms || 600} (общ)" 
+              value="${cfg.barge_in_threshold_rms !== undefined && cfg.barge_in_threshold_rms !== null ? cfg.barge_in_threshold_rms : ''}"
+              onchange="updateSingleDeviceConfig('${dev.mac}', 'barge_in_threshold_rms', this.value ? parseInt(this.value, 10) : null)"
+              title="Индивидуальный порог RMS перебивания. Пустое поле = использовать общий (${globalOptions.barge_in_threshold_rms || 600})">
+          </div>
         </div>
 
         ${isEsp ? `
@@ -431,23 +446,34 @@ async function handleBulkSubmit(e) {
   if (form.apply_wake_word_window_mode && form.apply_wake_word_window_mode.checked) {
     fields.wake_word_window_mode = parseInt(form.wake_word_window_mode.value, 10);
   }
-  if (form.apply_mic_gain.checked) {
-    fields.mic_gain = parseInt(form.mic_gain.value, 10);
+  if (form.apply_mic_gain && form.apply_mic_gain.checked) {
+    fields.mic_gain = parseFloat(form.mic_gain.value);
   }
-  if (form.apply_enable_barge_in.checked) {
-    fields.enable_barge_in = form.enable_barge_in.value === 'true';
+  if (form.apply_barge_in_threshold_rms && form.apply_barge_in_threshold_rms.checked) {
+    const val = parseInt(form.barge_in_threshold_rms.value, 10);
+    fields.barge_in_threshold_rms = isNaN(val) || val <= 0 ? null : val;
   }
-  if (form.apply_silence_timeout_ms.checked) {
+  if (form.apply_silence_timeout_ms && form.apply_silence_timeout_ms.checked) {
     fields.silence_timeout_ms = parseInt(form.silence_timeout_ms.value, 10);
   }
-  if (form.apply_led_brightness.checked) {
+  if (form.apply_led_brightness && form.apply_led_brightness.checked) {
     fields.led_brightness = parseInt(form.led_brightness.value, 10);
   }
-  if (form.apply_led_color_idle.checked) {
+  if (form.apply_led_mode_idle && form.apply_led_mode_idle.checked) {
+    fields.led_mode_idle = parseInt(form.led_mode_idle.value, 10);
     fields.led_color_idle = form.led_color_idle.value;
   }
-  if (form.apply_led_color_listen.checked) {
+  if (form.apply_led_mode_listen && form.apply_led_mode_listen.checked) {
+    fields.led_mode_listen = parseInt(form.led_mode_listen.value, 10);
     fields.led_color_listen = form.led_color_listen.value;
+  }
+  if (form.apply_led_mode_think && form.apply_led_mode_think.checked) {
+    fields.led_mode_think = parseInt(form.led_mode_think.value, 10);
+    fields.led_color_think = form.led_color_think.value;
+  }
+  if (form.apply_led_mode_speak && form.apply_led_mode_speak.checked) {
+    fields.led_mode_speak = parseInt(form.led_mode_speak.value, 10);
+    fields.led_color_speak = form.led_color_speak.value;
   }
 
   if (Object.keys(fields).length === 0) {

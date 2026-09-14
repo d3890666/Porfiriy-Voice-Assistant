@@ -9,7 +9,7 @@
 #include <nvs_flash.h>
 #include <Update.h>
 
-#define FIRMWARE_VERSION "0.0.65"
+#define FIRMWARE_VERSION "0.0.66"
 
 #include "model.h"
 // TFLite
@@ -37,7 +37,7 @@ String ssid = "";
 String password = "";
 String ws_host = "192.168.1.50";
 uint16_t ws_port = 8765;
-int mic_gain = 2;
+float mic_gain = 1.3f;
 float speaker_volume = 1.0;
 float wake_word_threshold = 0.93;
 int silence_timeout_ms = 700;        // таймаут тишины после фразы (мс)
@@ -276,8 +276,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   <label style="color:#ff5555; font-size:12px;">* Изменение сети/сервера требует перезагрузки платы</label>
 
   <h2 style="margin-top:30px;">Тонкая настройка (На лету)</h2>
-  <label>Усиление микрофона (x1-x10)</label>
-  <input type="number" name="mic_gain" value="%MIC_GAIN%" min="1" max="10">
+  <label>Усиление микрофона (0.5 - 5.0, по умолч. 1.3)</label>
+  <input type="number" step="0.1" name="mic_gain" value="%MIC_GAIN%" min="0.5" max="5.0">
   <label>Таймаут тишины после фразы (мс, 300-3000)</label>
   <input type="number" name="silence_timeout_ms" value="%SILENCE_MS%" min="300" max="3000" step="50">
   <label>Макс. ожидание команды (сек, 3-15)</label>
@@ -288,10 +288,6 @@ const char index_html[] PROGMEM = R"rawliteral(
   <input type="number" step="0.1" name="speaker_volume" value="%SPK_VOL%">
   <label>Порог вейкворда (0.0 - 1.0)</label>
   <input type="number" step="0.01" name="wake_word_threshold" value="%WW_THRES%">
-  <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:14px; background:#2b3035; padding:10px 14px; border-radius:6px; font-weight:bold;">
-    <input type="checkbox" name="enable_barge_in" %BARGE_IN_CHECKED% style="width:20px; height:20px; margin:0;">
-    <span>Разрешить прерывание речи вейквордом (Barge-in)</span>
-  </label>
   
   <h2 style="margin-top:30px;">Настройки Подсветки (На лету)</h2>
   <label>Яркость (0 - 255)</label>
@@ -405,13 +401,12 @@ void handleRoot() {
     html.replace("%HOST%", ws_host);
     html.replace("%PORT%", String(ws_port));
     html.replace("%RECONNECT%", String(reconnect_interval));
-    html.replace("%MIC_GAIN%", String(mic_gain));
+    html.replace("%MIC_GAIN%", String(mic_gain, 1));
     html.replace("%SILENCE_MS%", String(silence_timeout_ms));
     html.replace("%LISTEN_TO%", String(listen_timeout_s));
     html.replace("%SIL_THRES%", String(silence_threshold_energy));
     html.replace("%SPK_VOL%", String(speaker_volume, 1));
     html.replace("%WW_THRES%", String(wake_word_threshold, 2));
-    html.replace("%BARGE_IN_CHECKED%", enable_barge_in ? "checked" : "");
     
     html.replace("%LED_BRIGHT%", String(led_brightness));
 
@@ -479,7 +474,7 @@ void handleSave() {
     if (server.hasArg("port") && server.arg("port").toInt() != ws_port) { network_changed = true; ws_port = server.arg("port").toInt(); preferences.putUInt("port", ws_port); }
     
     // Тонкие настройки (На лету)
-    if (server.hasArg("mic_gain")) { mic_gain = server.arg("mic_gain").toInt(); preferences.putInt("mic_gain", mic_gain); }
+    if (server.hasArg("mic_gain")) { mic_gain = server.arg("mic_gain").toFloat(); preferences.putFloat("mic_gain_f", mic_gain); }
     if (server.hasArg("silence_timeout_ms")) { silence_timeout_ms = server.arg("silence_timeout_ms").toInt(); preferences.putInt("sil_ms", silence_timeout_ms); }
     if (server.hasArg("listen_timeout_s")) { listen_timeout_s = server.arg("listen_timeout_s").toInt(); preferences.putInt("listen_to", listen_timeout_s); }
     if (server.hasArg("silence_threshold_energy")) { silence_threshold_energy = server.arg("silence_threshold_energy").toInt(); preferences.putInt("sil_thres", silence_threshold_energy); }
@@ -488,7 +483,6 @@ void handleSave() {
     if (server.hasArg("reconnect_interval")) { reconnect_interval = server.arg("reconnect_interval").toInt(); preferences.putInt("reconn_int", reconnect_interval); }
     // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
     enable_barge_in = false;
-    preferences.putBool("barge_in", false);
     
     // Настройки LED
     if (server.hasArg("led_brightness")) { led_brightness = server.arg("led_brightness").toInt(); preferences.putInt("led_bright", led_brightness); }
@@ -518,7 +512,7 @@ void load_preferences() {
     password = preferences.getString("password", "");
     ws_host = preferences.getString("host", "192.168.1.50");
     ws_port = preferences.getUInt("port", 8765);
-    mic_gain = preferences.getInt("mic_gain", 2);
+    mic_gain = preferences.getFloat("mic_gain_f", 1.3f);
     silence_timeout_ms = preferences.getInt("sil_ms", 700);
     listen_timeout_s = preferences.getInt("listen_to", 6);
     silence_threshold_energy = preferences.getInt("sil_thres", 180);
@@ -891,7 +885,7 @@ void handle_remote_config(String json) {
         }
     };
 
-    parse_int("mic_gain", mic_gain, "mic_gain");
+    parse_float("mic_gain", mic_gain, "mic_gain_f");
     parse_float("speaker_volume", speaker_volume, "spk_vol");
     parse_float("wake_word_threshold", wake_word_threshold, "ww_thres");
     parse_int("wake_word_window_size", wake_word_window_size, "ww_win");
@@ -904,9 +898,13 @@ void handle_remote_config(String json) {
     // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
     enable_barge_in = false;
     parse_int("led_brightness", led_brightness, "led_bright");
+    parse_int("led_mode_idle", led_mode_idle, "led_m_idle");
     parse_string("led_color_idle", led_color_idle, "led_cidle");
+    parse_int("led_mode_listen", led_mode_listen, "led_m_listen");
     parse_string("led_color_listen", led_color_listen, "led_clisten");
+    parse_int("led_mode_think", led_mode_think, "led_m_think");
     parse_string("led_color_think", led_color_think, "led_cthink");
+    parse_int("led_mode_speak", led_mode_speak, "led_m_speak");
     parse_string("led_color_speak", led_color_speak, "led_cspeak");
     
     preferences.end();
@@ -926,7 +924,7 @@ void send_registration() {
     json += "\"device_type\":\"esp32\",";
     json += "\"firmware\":\"" FIRMWARE_VERSION "\",";
     json += "\"config\":{";
-    json += "\"mic_gain\":" + String(mic_gain) + ",";
+    json += "\"mic_gain\":" + String(mic_gain, 1) + ",";
     json += "\"speaker_volume\":" + String(speaker_volume, 2) + ",";
     json += "\"wake_word_threshold\":" + String(wake_word_threshold, 2) + ",";
     json += "\"wake_word_window_size\":" + String(wake_word_window_size) + ",";
@@ -934,10 +932,15 @@ void send_registration() {
     json += "\"silence_timeout_ms\":" + String(silence_timeout_ms) + ",";
     json += "\"listen_timeout_s\":" + String(listen_timeout_s) + ",";
     json += "\"silence_threshold_energy\":" + String(silence_threshold_energy) + ",";
-    json += "\"enable_barge_in\":" + String(enable_barge_in ? "true" : "false") + ",";
     json += "\"led_brightness\":" + String(led_brightness) + ",";
+    json += "\"led_mode_idle\":" + String(led_mode_idle) + ",";
     json += "\"led_color_idle\":\"" + led_color_idle + "\",";
-    json += "\"led_color_listen\":\"" + led_color_listen + "\"";
+    json += "\"led_mode_listen\":" + String(led_mode_listen) + ",";
+    json += "\"led_color_listen\":\"" + led_color_listen + "\",";
+    json += "\"led_mode_think\":" + String(led_mode_think) + ",";
+    json += "\"led_color_think\":\"" + led_color_think + "\",";
+    json += "\"led_mode_speak\":" + String(led_mode_speak) + ",";
+    json += "\"led_color_speak\":\"" + led_color_speak + "\"";
     json += "}}";
     
     client.send(json);
@@ -1166,7 +1169,7 @@ void loop() {
     
     int32_t sum_amp = 0;
     for (int i = 0; i < samples_read; i++) {
-        int32_t val = (mic_buffer_32[i] >> 16) * mic_gain;
+        int32_t val = (int32_t)((mic_buffer_32[i] >> 16) * mic_gain);
         if (val > 32767) val = 32767;
         if (val < -32768) val = -32768;
         mic_buffer_16[i] = (int16_t)val;

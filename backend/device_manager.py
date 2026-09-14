@@ -7,10 +7,10 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.65"
+TARGET_FIRMWARE_VERSION = "0.0.66"
 
 DEFAULT_DEVICE_CONFIG = {
-    "mic_gain": 2,
+    "mic_gain": 1.3,
     "speaker_volume": 1.0,
     "wake_word_threshold": 0.93,
     "wake_word_window_size": 3,
@@ -18,7 +18,7 @@ DEFAULT_DEVICE_CONFIG = {
     "silence_timeout_ms": 700,
     "listen_timeout_s": 6,
     "silence_threshold_energy": 180,
-    "enable_barge_in": False,
+    "barge_in_threshold_rms": None,
     "led_brightness": 50,
     "led_color_idle": "#000000",
     "led_color_listen": "#0000ff",

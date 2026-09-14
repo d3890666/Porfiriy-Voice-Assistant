@@ -22,6 +22,26 @@
       gap: 8px;
     }
 
+    .settings-group-card {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 16px 20px 20px 20px;
+      margin-bottom: 20px;
+    }
+
+    .settings-group-subtitle {
+      font-size: 14px;
+      font-weight: 700;
+      color: #58a6ff;
+      margin: 0 0 16px 0;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(88, 166, 255, 0.2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     .settings-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -454,7 +474,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.65</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.66</p>
         </div>
       </div>
       
@@ -530,146 +550,200 @@ PING:
         <div class="bulk-section">
           <h3>2. Параметры для изменения:</h3>
           <form id="bulk-form" onsubmit="handleBulkSubmit(event)">
-            <div class="form-grid">
-              
-              <!-- Громкость динамика -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_speaker_volume" id="chk-vol">
-                  <span class="toggle-slider"></span>
-                  <strong>Громкость динамика</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="range" name="speaker_volume" min="0.1" max="2.0" step="0.05" value="1.0" oninput="document.getElementById('val-vol').innerText = Math.round(this.value * 100) + '%'">
-                  <span class="range-val" id="val-vol">100%</span>
+            <!-- ГРУППА 1: АУДИО И МИКРОФОН -->
+            <div class="settings-group-card">
+              <h4 class="settings-group-subtitle">🔊 Аудио и микрофон</h4>
+              <div class="form-grid">
+                
+                <!-- Громкость динамика -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_speaker_volume" id="chk-vol">
+                    <span class="toggle-slider"></span>
+                    <strong>Громкость динамика</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="range" name="speaker_volume" min="0.1" max="2.0" step="0.05" value="1.0" oninput="document.getElementById('val-vol').innerText = Math.round(this.value * 100) + '%'">
+                    <span class="range-val" id="val-vol">100%</span>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Чувствительность вейкворда -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_wake_word_threshold" id="chk-ww">
-                  <span class="toggle-slider"></span>
-                  <strong>Порог вейкворда (0.80 - 0.99)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="range" name="wake_word_threshold" min="0.80" max="0.99" step="0.01" value="0.93" oninput="document.getElementById('val-ww').innerText = this.value">
-                  <span class="range-val" id="val-ww">0.93</span>
+                <!-- Усиление микрофона (Gain) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_mic_gain" id="chk-gain">
+                    <span class="toggle-slider"></span>
+                    <strong>Усиление микрофона (Gain)</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="number" step="0.1" min="0.5" max="5.0" name="mic_gain" value="1.3" style="width: 100%;">
+                  </div>
                 </div>
-              </div>
 
-              <!-- Окно скольжения вейкворда (Sliding Window) -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_wake_word_window_size" id="chk-ww-win">
-                  <span class="toggle-slider"></span>
-                  <strong>Окно скольжения (1 - 8 срезов)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="range" name="wake_word_window_size" min="1" max="8" step="1" value="3" oninput="document.getElementById('val-ww-win').innerText = this.value + ' (~' + (this.value*10) + ' мс)'">
-                  <span class="range-val" id="val-ww-win">3 (~30 мс)</span>
+                <!-- Пауза после речи (VAD) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_silence_timeout_ms" id="chk-sil">
+                    <span class="toggle-slider"></span>
+                    <strong>Пауза после речи (VAD, мс)</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="number" name="silence_timeout_ms" value="700" min="300" max="3000" step="50" style="width: 100%;">
+                  </div>
                 </div>
-              </div>
 
-              <!-- Режим скользящего окна -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_wake_word_window_mode" id="chk-ww-mode">
-                  <span class="toggle-slider"></span>
-                  <strong>Режим окна вейкворда</strong>
-                </label>
-                <div class="field-wrapper">
-                  <select name="wake_word_window_mode">
-                    <option value="1" selected>⚡ Пиковый (Peak Hold) — для слитной речи</option>
-                    <option value="0">📊 Скользящее среднее — требует паузы</option>
-                    <option value="2">⚖️ Большинство срезов (Majority)</option>
-                  </select>
+                <!-- Индивидуальный порог перебивания RMS -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_barge_in_threshold_rms" id="chk-barge-rms">
+                    <span class="toggle-slider"></span>
+                    <strong>Порог RMS перебивания</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="number" name="barge_in_threshold_rms" value="600" min="100" max="2500" step="50" placeholder="600 (по умолч.)" style="width: 100%;">
+                  </div>
                 </div>
-              </div>
 
-              <!-- Усиление микрофона -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_mic_gain" id="chk-gain">
-                  <span class="toggle-slider"></span>
-                  <strong>Усиление микрофона (Gain)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <select name="mic_gain">
-                    <option value="1">x1 (Низкое)</option>
-                    <option value="2" selected>x2 (Обычное)</option>
-                    <option value="3">x3 (Высокое)</option>
-                    <option value="4">x4</option>
-                    <option value="5">x5</option>
-                    <option value="8">x8</option>
-                  </select>
+              </div>
+            </div>
+
+            <!-- ГРУППА 2: РАСПОЗНАВАНИЕ ВЕЙКВОРДА -->
+            <div class="settings-group-card">
+              <h4 class="settings-group-subtitle">🧠 Распознавание вейкворда («Порфирий»)</h4>
+              <div class="form-grid">
+
+                <!-- Порог вейкворда -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_wake_word_threshold" id="chk-ww">
+                    <span class="toggle-slider"></span>
+                    <strong>Порог нейросети (0.80 - 0.99)</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="range" name="wake_word_threshold" min="0.80" max="0.99" step="0.01" value="0.93" oninput="document.getElementById('val-ww').innerText = this.value">
+                    <span class="range-val" id="val-ww">0.93</span>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Разрешить Barge-in -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_enable_barge_in" id="chk-barge">
-                  <span class="toggle-slider"></span>
-                  <strong>Прерывание речи вейквордом (Barge-in)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <select name="enable_barge_in">
-                    <option value="true">Включено</option>
-                    <option value="false" selected>Выключено</option>
-                  </select>
+                <!-- Окно скольжения вейкворда -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_wake_word_window_size" id="chk-ww-win">
+                    <span class="toggle-slider"></span>
+                    <strong>Окно скольжения (1 - 8)</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="range" name="wake_word_window_size" min="1" max="8" step="1" value="3" oninput="document.getElementById('val-ww-win').innerText = this.value + ' (~' + (this.value*10) + ' мс)'">
+                    <span class="range-val" id="val-ww-win">3 (~30 мс)</span>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Таймаут тишины -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_silence_timeout_ms" id="chk-sil">
-                  <span class="toggle-slider"></span>
-                  <strong>Пауза после речи (мс)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="number" name="silence_timeout_ms" value="700" min="300" max="3000" step="50">
+                <!-- Режим скользящего окна -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_wake_word_window_mode" id="chk-ww-mode">
+                    <span class="toggle-slider"></span>
+                    <strong>Режим окна вейкворда</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <select name="wake_word_window_mode">
+                      <option value="1" selected>⚡ Пиковый (Peak Hold) — слитная речь</option>
+                      <option value="0">📊 Скользящее среднее</option>
+                      <option value="2">⚖️ Большинство срезов</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Яркость подсветки -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_led_brightness" id="chk-led-b">
-                  <span class="toggle-slider"></span>
-                  <strong>Яркость диода (0 - 255)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="range" name="led_brightness" min="0" max="255" value="50" oninput="document.getElementById('val-led-b').innerText = this.value">
-                  <span class="range-val" id="val-led-b">50</span>
+              </div>
+            </div>
+
+            <!-- ГРУППА 3: СВЕТОДИОДНАЯ LED-ИНДИКАЦИЯ -->
+            <div class="settings-group-card">
+              <h4 class="settings-group-subtitle">💡 Светодиодная LED-индикация</h4>
+              <div class="form-grid">
+
+                <!-- Яркость подсветки -->
+                <div class="form-group-toggle" style="grid-column: 1 / -1;">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_led_brightness" id="chk-led-b">
+                    <span class="toggle-slider"></span>
+                    <strong>Яркость диода (0 - 255)</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <input type="range" name="led_brightness" min="0" max="255" value="50" oninput="document.getElementById('val-led-b').innerText = this.value">
+                    <span class="range-val" id="val-led-b">50</span>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Цвет ожидания -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_led_color_idle" id="chk-col-idle">
-                  <span class="toggle-slider"></span>
-                  <strong>Цвет покоя (Idle)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="color" name="led_color_idle" value="#000000">
+                <!-- Покой (Idle) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_led_mode_idle" id="chk-led-idle">
+                    <span class="toggle-slider"></span>
+                    <strong>1. Покой (Idle)</strong>
+                  </label>
+                  <div class="field-wrapper" style="display: flex; gap: 8px;">
+                    <select name="led_mode_idle" style="flex: 1;">
+                      <option value="0" selected>Выключен</option>
+                      <option value="1">Светит</option>
+                      <option value="2">Дышит</option>
+                    </select>
+                    <input type="color" name="led_color_idle" value="#000000" style="width: 44px; height: 38px; padding: 2px;">
+                  </div>
                 </div>
-              </div>
 
-              <!-- Цвет прослушивания -->
-              <div class="form-group-toggle">
-                <label class="toggle-control">
-                  <input type="checkbox" name="apply_led_color_listen" id="chk-col-listen">
-                  <span class="toggle-slider"></span>
-                  <strong>Цвет внимания (Listening)</strong>
-                </label>
-                <div class="field-wrapper">
-                  <input type="color" name="led_color_listen" value="#0000ff">
+                <!-- Внимание (Listening) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_led_mode_listen" id="chk-led-listen">
+                    <span class="toggle-slider"></span>
+                    <strong>2. Внимание (Listening)</strong>
+                  </label>
+                  <div class="field-wrapper" style="display: flex; gap: 8px;">
+                    <select name="led_mode_listen" style="flex: 1;">
+                      <option value="0">Выключен</option>
+                      <option value="1" selected>Светит</option>
+                      <option value="2">Дышит</option>
+                    </select>
+                    <input type="color" name="led_color_listen" value="#0000ff" style="width: 44px; height: 38px; padding: 2px;">
+                  </div>
                 </div>
-              </div>
 
+                <!-- Думает (Thinking) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_led_mode_think" id="chk-led-think">
+                    <span class="toggle-slider"></span>
+                    <strong>3. Думает (Thinking)</strong>
+                  </label>
+                  <div class="field-wrapper" style="display: flex; gap: 8px;">
+                    <select name="led_mode_think" style="flex: 1;">
+                      <option value="0">Выключен</option>
+                      <option value="1">Светит</option>
+                      <option value="2" selected>Дышит</option>
+                    </select>
+                    <input type="color" name="led_color_think" value="#ffaa00" style="width: 44px; height: 38px; padding: 2px;">
+                  </div>
+                </div>
+
+                <!-- Говорит (Speaking) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_led_mode_speak" id="chk-led-speak">
+                    <span class="toggle-slider"></span>
+                    <strong>4. Говорит (Speaking)</strong>
+                  </label>
+                  <div class="field-wrapper" style="display: flex; gap: 8px;">
+                    <select name="led_mode_speak" style="flex: 1;">
+                      <option value="0">Выключен</option>
+                      <option value="1" selected>Светит</option>
+                      <option value="2">Дышит</option>
+                    </select>
+                    <input type="color" name="led_color_speak" value="#00ff00" style="width: 44px; height: 38px; padding: 2px;">
+                  </div>
+                </div>
+
+              </div>
             </div>
 
             <div class="form-actions">
@@ -785,18 +859,18 @@ PING:
               <small class="field-hint">Разрешает перебивать Порфирия голосом во время его ответа</small>
             </div>
 
-            <!-- Порог громкости прерывания (RMS) -->
+            <!-- Порог громкости перебивания по умолчанию (RMS) -->
             <div class="form-field">
-              <label for="cfg-barge-rms">Порог громкости прерывания (RMS: <span id="val-barge-rms">600</span>)</label>
+              <label for="cfg-barge-rms">Порог громкости перебивания по умолчанию (RMS: <span id="val-barge-rms">600</span>)</label>
               <input type="range" id="cfg-barge-rms" name="barge_in_threshold_rms" min="100" max="2500" step="50" value="600" oninput="document.getElementById('val-barge-rms').innerText = this.value">
-              <small class="field-hint">Чувствительность к голосу: 300–600 для ПК и тихих комнат, 1000–1800 для громких колонок</small>
+              <small class="field-hint">Базовый порог для всех устройств (дефолт 600). В настройках конкретной колонки можно задать индивидуальный порог под акустику комнаты</small>
             </div>
 
             <!-- VAD Silence Duration -->
             <div class="form-field">
-              <label for="cfg-vad-silence">VAD пауза тишины (мс)</label>
-              <input type="number" id="cfg-vad-silence" name="vad_silence_duration_ms" min="200" max="2000" step="50" value="600">
-              <small class="field-hint">Длительность тишины после фразы пользователя</small>
+              <label for="cfg-vad-silence">Облачная пауза тишины Gemini (мс)</label>
+              <input type="number" id="cfg-vad-silence" name="vad_silence_duration_ms" min="400" max="2000" step="50" value="600">
+              <small class="field-hint">Таймаут тишины в облаке Gemini Live перед началом ответа (по умолчанию 600 мс, диапазон 400–1500 мс)</small>
             </div>
 
           </div>
