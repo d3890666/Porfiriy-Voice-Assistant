@@ -3,7 +3,7 @@ import aiohttp
 import websockets
 import json
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
