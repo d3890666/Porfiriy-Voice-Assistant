@@ -11,8 +11,12 @@ from ha_api import HomeAssistantAPI
 from gemini_client import GeminiProxyClient
 from google.genai import types
 from phrase_manager import PhraseManager
+from device_manager import DeviceManager
+from mqtt_discovery import MQTTDiscoveryManager
+from web_server import WebServer
 
 phrase_manager = PhraseManager()
+device_manager = DeviceManager()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("server")
@@ -73,9 +77,17 @@ async def handle_client(websocket):
     else:
         audio_logger.setLevel(logging.INFO)
         
-    logger.info(f"Client connected from {websocket.remote_address}")
+    remote_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
+    client_mac = f"esp32_{remote_ip.replace('.', '_')}"
+    logger.info(f"Client connected from {websocket.remote_address} (session id: {client_mac})")
     
     ha_api = HomeAssistantAPI()
+    
+    # Проверяем, привязана ли уже эта колонка к комнате в HA
+    area_name = await ha_api.get_device_area_name(client_mac)
+    if area_name:
+        device_manager.set_device_area(client_mac, area_name)
+        logger.info(f"Connected device {client_mac} belongs to area: '{area_name}'")
     
     # 1. Формируем контекст устройств
     devices_text = await ha_api.get_filtered_entities()
@@ -101,6 +113,8 @@ async def handle_client(websocket):
         "Devices under domain 'switch' can also control lights or appliances; use them when appropriate."
     )
     full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
+    if area_name:
+        full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: The user is speaking through the device in room '{area_name}'. When handling ambiguous smart home requests (e.g. 'turn on light', 'close curtains'), ALWAYS prioritize devices located in '{area_name}'."
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
     gemini_client = GeminiProxyClient(
@@ -125,7 +139,8 @@ async def handle_client(websocket):
                 "is_tool_pending": False,
                 "is_thinking": False,
                 "thinking_watchdog_task": None,
-                "ducked_media_players": {}
+                "ducked_media_players": {},
+                "area_name": area_name
             }
 
             def start_thinking_watchdog():
@@ -200,6 +215,7 @@ async def handle_client(websocket):
             
             async def receive_from_client():
                 """Слушает входящие аудио-чанки (PCM) от WebSocket клиента (ПК/ESP32) и шлет их в Gemini."""
+                nonlocal client_mac
                 try:
                     async for message in websocket:
                         if isinstance(message, bytes):
@@ -212,8 +228,9 @@ async def handle_client(websocket):
                                 continue
                                 
                             if not session_state.get("first_audio_received"):
-                                logger.info("Started receiving audio stream from microphone...")
+                                logger.info(f"Started receiving audio stream from microphone ({client_mac})...")
                                 session_state["first_audio_received"] = True
+                                device_manager.set_device_state(client_mac, "listening")
                                 
                             audio_logger.debug(f"Received {len(message)} bytes audio chunk from WS Client, sending to Gemini")
                             async with gemini_send_lock:
@@ -228,21 +245,57 @@ async def handle_client(websocket):
                             try:
                                 data = json.loads(message)
                                 msg_type = data.get("type")
-                                if "text" in data:
-                                    logger.info(f"Received text input from WS Client: {data['text']}")
+                                
+                                if msg_type == "register":
+                                    client_mac = data.get("mac", client_mac).lower()
+                                    device_manager.register_device(client_mac, data, ws=websocket)
+                                    area = await ha_api.get_device_area_name(client_mac)
+                                    if area:
+                                        device_manager.set_device_area(client_mac, area)
+                                        session_state["area_name"] = area
+                                        logger.info(f"Resolved room for {client_mac}: '{area}'")
+                                elif msg_type == "heartbeat":
+                                    device_manager.update_heartbeat(
+                                        client_mac,
+                                        rssi=data.get("rssi", -60),
+                                        uptime=data.get("uptime", 0),
+                                        state=data.get("state")
+                                    )
+                                elif "text" in data:
+                                    logger.info(f"Received text input from WS Client ({client_mac}): {data['text']}")
                                     async with gemini_send_lock:
                                         await session.send_client_content(
-                                            turns=[types.Content(parts=[types.Part.from_text(text=data['text'])])],
+                                            turns=[types.Content(parts=[types.Part(text=data['text'])])],
                                             turn_complete=True
                                         )
                                 elif msg_type == "wake_word_detected":
-                                    logger.info("Wake word received from ESP32. Resetting session state.")
+                                    logger.info(f"Wake word received from {client_mac}. Resetting session state.")
+                                    device_manager.set_device_state(client_mac, "listening")
                                     cancel_thinking_watchdog()
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
                                     session_state["first_audio_received"] = False
                                     await duck_media()
+                                    
+                                    # Инжектируем контекст комнаты вызова в Gemini
+                                    if session_state.get("area_name"):
+                                        room_name = session_state["area_name"]
+                                        room_ctx = (
+                                            f"[КОНТЕКСТ ВЫЗОВА]: Тебя вызвали из комнаты: «{room_name}». "
+                                            f"Если запрос касается устройств без явного указания комнаты (например 'включи свет' или 'закрой шторы'), "
+                                            f"приоритетно управляй устройствами именно в комнате «{room_name}»."
+                                        )
+                                        try:
+                                            async with gemini_send_lock:
+                                                await session.send_client_content(
+                                                    turns=[types.Content(parts=[types.Part(text=room_ctx)], role="user")],
+                                                    turn_complete=False
+                                                )
+                                            logger.info(f"Injected room context to Gemini: '{room_name}'")
+                                        except Exception as e_ctx:
+                                            logger.warning(f"Could not inject room context: {e_ctx}")
+                                            
                                 elif msg_type == "interrupted":
                                     logger.info("Interrupted signal received from ESP32. Stopping playback.")
                                     session_state["is_gemini_speaking"] = False
@@ -250,6 +303,7 @@ async def handle_client(websocket):
                                     session_state["first_audio_sent"] = False
                                     session_state["first_audio_received"] = False
                                 elif msg_type == "end_of_speech":
+                                    device_manager.set_device_state(client_mac, "thinking")
                                     vad_ms = options.get("vad_silence_duration_ms", 600)
                                     needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)
                                     logger.info(f"Received end_of_speech from ESP32. Sending {needed_chunks} silence chunks (~{needed_chunks*32}ms) to trigger Gemini VAD.")
@@ -266,6 +320,7 @@ async def handle_client(websocket):
                                     start_thinking_watchdog()
                                 elif msg_type == "timeout":
                                     logger.info("Received timeout from ESP32. Returning client to sleep.")
+                                    device_manager.set_device_state(client_mac, "idle")
                                     cancel_thinking_watchdog()
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
@@ -302,6 +357,7 @@ async def handle_client(websocket):
                                             logger.info("Started receiving audio stream from Gemini (Speaker active)...")
                                             session_state["first_audio_sent"] = True
                                             cancel_thinking_watchdog()
+                                            device_manager.set_device_state(client_mac, "speaking")
                                             await websocket.send(json.dumps({"type": "speaking"}))
                                         
                                         pcm_audio = part.inline_data.data
@@ -322,6 +378,7 @@ async def handle_client(websocket):
                                     session_state["is_gemini_speaking"] = False
                                     # Сбрасываем флаг отправки аудио для следующего ответа
                                     session_state["first_audio_sent"] = False
+                                    device_manager.set_device_state(client_mac, "idle")
                                     # Отправляем команду на засыпание (чтобы колонка снова ждала вейкворд)
                                     await websocket.send(json.dumps({"type": "sleep"}))
                                 
@@ -536,6 +593,8 @@ async def handle_client(websocket):
         except Exception:
             pass
         await websocket.close()
+    finally:
+        device_manager.set_device_offline(client_mac)
 
 async def main():
     port = 8765
@@ -546,7 +605,16 @@ async def main():
     phrase_manager.load_from_cache()
     asyncio.create_task(phrase_manager.initialize(options))
     
-    # Поднимаем WebSocket сервер
+    # 1. Запуск MQTT Discovery Manager
+    ha_api = HomeAssistantAPI()
+    mqtt_manager = MQTTDiscoveryManager(device_manager, options)
+    asyncio.create_task(mqtt_manager.start())
+    
+    # 2. Запуск Ingress Web Server (порт 8099)
+    web_server = WebServer(device_manager, ha_api, get_options, port=8099)
+    asyncio.create_task(web_server.start())
+    
+    # 3. Поднимаем WebSocket аудио-сервер (порт 8765)
     async with websockets.serve(handle_client, "0.0.0.0", port):
         await asyncio.Future()  # run forever
 

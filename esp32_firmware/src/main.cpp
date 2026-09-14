@@ -638,7 +638,151 @@ void onMessageCallback(WebsocketsMessage message) {
             set_state(STATE_IDLE);
             last_sleep_time = millis();
         }
+        else if (message.data().indexOf("\"type\":\"beep\"") >= 0 || message.data().indexOf("\"type\": \"beep\"") >= 0) {
+            Serial.println("Server commanded BEEP.");
+            void play_beep();
+            play_beep();
+        }
+        else if (message.data().indexOf("\"type\":\"reboot\"") >= 0 || message.data().indexOf("\"type\": \"reboot\"") >= 0) {
+            Serial.println("Server commanded REBOOT.");
+            delay(500);
+            ESP.restart();
+        }
+        else if (message.data().indexOf("\"type\":\"set_config\"") >= 0 || message.data().indexOf("\"type\": \"set_config\"") >= 0) {
+            Serial.println("Server commanded SET_CONFIG.");
+            void handle_remote_config(String json);
+            handle_remote_config(message.data());
+        }
     }
+}
+
+void play_beep() {
+    const int sample_rate = 16000;
+    int16_t beep_buf[256];
+    
+    // Тон 1: 700 Гц (80 мс)
+    for (int i = 0; i < 1280; i += 256) {
+        for (int j = 0; j < 256; j++) {
+            float s = sin(2.0 * PI * 700.0 * (i + j) / sample_rate) * 0.4 * speaker_volume;
+            beep_buf[j] = (int16_t)(s * 32767);
+        }
+        size_t bw;
+        i2s_write(I2S_NUM_1, beep_buf, 256 * 2, &bw, portMAX_DELAY);
+    }
+    // Тон 2: 1000 Гц (100 мс)
+    for (int i = 0; i < 1600; i += 256) {
+        for (int j = 0; j < 256; j++) {
+            float s = sin(2.0 * PI * 1000.0 * (i + j) / sample_rate) * 0.4 * speaker_volume;
+            beep_buf[j] = (int16_t)(s * 32767);
+        }
+        size_t bw;
+        i2s_write(I2S_NUM_1, beep_buf, 256 * 2, &bw, portMAX_DELAY);
+    }
+}
+
+void handle_remote_config(String json) {
+    preferences.begin("porfiriy", false);
+    
+    auto parse_float = [&](const String& key, float& target, const char* pref_key) {
+        int idx = json.indexOf("\"" + key + "\"");
+        if (idx >= 0) {
+            int colon = json.indexOf(":", idx);
+            if (colon > 0) {
+                float v = json.substring(colon + 1).toFloat();
+                target = v;
+                preferences.putFloat(pref_key, v);
+                Serial.printf("[CONFIG] Updated %s = %.2f\n", key.c_str(), v);
+            }
+        }
+    };
+
+    auto parse_int = [&](const String& key, int& target, const char* pref_key) {
+        int idx = json.indexOf("\"" + key + "\"");
+        if (idx >= 0) {
+            int colon = json.indexOf(":", idx);
+            if (colon > 0) {
+                int v = json.substring(colon + 1).toInt();
+                target = v;
+                preferences.putInt(pref_key, v);
+                Serial.printf("[CONFIG] Updated %s = %d\n", key.c_str(), v);
+            }
+        }
+    };
+
+    auto parse_bool = [&](const String& key, bool& target, const char* pref_key) {
+        int idx = json.indexOf("\"" + key + "\"");
+        if (idx >= 0) {
+            int colon = json.indexOf(":", idx);
+            if (colon > 0) {
+                String sub = json.substring(colon + 1, colon + 8);
+                bool v = (sub.indexOf("true") >= 0);
+                target = v;
+                preferences.putBool(pref_key, v);
+                Serial.printf("[CONFIG] Updated %s = %s\n", key.c_str(), v ? "true" : "false");
+            }
+        }
+    };
+
+    auto parse_string = [&](const String& key, String& target, const char* pref_key) {
+        int idx = json.indexOf("\"" + key + "\"");
+        if (idx >= 0) {
+            int q1 = json.indexOf("\"", idx + key.length() + 2);
+            if (q1 > 0) {
+                int q2 = json.indexOf("\"", q1 + 1);
+                if (q2 > 0) {
+                    String v = json.substring(q1 + 1, q2);
+                    target = v;
+                    preferences.putString(pref_key, v);
+                    Serial.printf("[CONFIG] Updated %s = %s\n", key.c_str(), v.c_str());
+                }
+            }
+        }
+    };
+
+    parse_int("mic_gain", mic_gain, "mic_gain");
+    parse_float("speaker_volume", speaker_volume, "spk_vol");
+    parse_float("wake_word_threshold", wake_word_threshold, "ww_thres");
+    parse_int("silence_timeout_ms", silence_timeout_ms, "sil_ms");
+    parse_int("listen_timeout_s", listen_timeout_s, "listen_to");
+    parse_int("silence_threshold_energy", silence_threshold_energy, "sil_thres");
+    parse_bool("enable_barge_in", enable_barge_in, "barge_in");
+    parse_int("led_brightness", led_brightness, "led_bright");
+    parse_string("led_color_idle", led_color_idle, "led_cidle");
+    parse_string("led_color_listen", led_color_listen, "led_clisten");
+    parse_string("led_color_think", led_color_think, "led_cthink");
+    parse_string("led_color_speak", led_color_speak, "led_cspeak");
+    
+    preferences.end();
+}
+
+void send_registration() {
+    String mac = WiFi.macAddress();
+    String ip = WiFi.localIP().toString();
+    int rssi = WiFi.RSSI();
+    
+    String json = "{";
+    json += "\"type\":\"register\",";
+    json += "\"mac\":\"" + mac + "\",";
+    json += "\"ip\":\"" + ip + "\",";
+    json += "\"rssi\":" + String(rssi) + ",";
+    json += "\"uptime\":" + String(millis() / 1000) + ",";
+    json += "\"device_type\":\"esp32\",";
+    json += "\"firmware\":\"0.0.52\",";
+    json += "\"config\":{";
+    json += "\"mic_gain\":" + String(mic_gain) + ",";
+    json += "\"speaker_volume\":" + String(speaker_volume, 2) + ",";
+    json += "\"wake_word_threshold\":" + String(wake_word_threshold, 2) + ",";
+    json += "\"silence_timeout_ms\":" + String(silence_timeout_ms) + ",";
+    json += "\"listen_timeout_s\":" + String(listen_timeout_s) + ",";
+    json += "\"silence_threshold_energy\":" + String(silence_threshold_energy) + ",";
+    json += "\"enable_barge_in\":" + String(enable_barge_in ? "true" : "false") + ",";
+    json += "\"led_brightness\":" + String(led_brightness) + ",";
+    json += "\"led_color_idle\":\"" + led_color_idle + "\",";
+    json += "\"led_color_listen\":\"" + led_color_listen + "\"";
+    json += "}}";
+    
+    client.send(json);
+    Serial.println("[REGISTER] Sent registration packet to server.");
 }
 
 void onEventsCallback(WebsocketsEvent event, String data) {
@@ -646,6 +790,7 @@ void onEventsCallback(WebsocketsEvent event, String data) {
         Serial.println("WebSocket Connected!");
         is_connected = true;
         set_state(STATE_IDLE);
+        send_registration();
     } else if (event == WebsocketsEvent::ConnectionClosed) {
         Serial.println("WebSocket Disconnected");
         is_connected = false;
@@ -780,6 +925,16 @@ void loop() {
     }
 
     client.poll();
+
+    // Фоновый Heartbeat телеметрии (RSSI, Uptime) каждые 20 сек в состоянии IDLE
+    static unsigned long last_heartbeat_time = 0;
+    if (is_connected && current_state == STATE_IDLE && millis() - last_heartbeat_time > 20000) {
+        last_heartbeat_time = millis();
+        String hb = "{\"type\":\"heartbeat\",\"rssi\":" + String(WiFi.RSSI()) + 
+                    ",\"uptime\":" + String(millis() / 1000) + 
+                    ",\"state\":\"idle\"}";
+        client.send(hb);
+    }
 
     // Считываем микрофон
     size_t bytes_read = 0;

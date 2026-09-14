@@ -241,3 +241,56 @@ class HomeAssistantAPI:
                 entities_text.append(" ".join(parts))
                 
         return "\n".join(entities_text)
+
+    async def get_areas(self) -> List[Dict[str, Any]]:
+        """Получить список всех зарегистрированных комнат (Areas) из Home Assistant."""
+        payload = {"type": "config/area_registry/list"}
+        res = await self._ws_send_and_receive(payload)
+        if res.get("success"):
+            return res.get("result", [])
+        return []
+
+    async def get_devices(self) -> List[Dict[str, Any]]:
+        """Получить список всех зарегистрированных устройств из Home Assistant."""
+        payload = {"type": "config/device_registry/list"}
+        res = await self._ws_send_and_receive(payload)
+        if res.get("success"):
+            return res.get("result", [])
+        return []
+
+    async def get_device_area_name(self, mac: str) -> Optional[str]:
+        """Определяет человекочитаемое имя комнаты в HA по MAC-адресу колонки."""
+        if not mac:
+            return None
+        clean_mac = mac.lower().replace(":", "").replace("-", "")
+        target_identifier = f"porfiriy_{clean_mac}"
+        
+        try:
+            devices = await self.get_devices()
+            target_device = None
+            for d in devices:
+                identifiers = d.get("identifiers", [])
+                for ident in identifiers:
+                    # Идентификатор в HA хранится как кортеж/список, например ["porfiriy_voice_assistant", "porfiriy_aabbcc"]
+                    if isinstance(ident, (list, tuple)):
+                        if any(target_identifier in str(item).lower() for item in ident):
+                            target_device = d
+                            break
+                    elif target_identifier in str(ident).lower():
+                        target_device = d
+                        break
+                if target_device:
+                    break
+                    
+            if not target_device or not target_device.get("area_id"):
+                return None
+                
+            area_id = target_device.get("area_id")
+            areas = await self.get_areas()
+            for a in areas:
+                if a.get("area_id") == area_id:
+                    return a.get("name")
+            return None
+        except Exception as e:
+            logger.error(f"Error resolving area name for MAC {mac}: {e}")
+            return None

@@ -56,3 +56,15 @@ configuration:
   thinking_timeout_s:
     name: "Thinking Timeout (seconds)"
     description: "Delay before Porfiriy speaks a filler phrase during long queries."
+  mqtt_host:
+    name: "MQTT Host"
+    description: "IP address or hostname of the MQTT broker (leave blank to auto-discover Mosquitto)."
+  mqtt_port:
+    name: "MQTT Port"
+    description: "Port of the MQTT broker (default 1883)."
+  mqtt_username:
+    name: "MQTT Username"
+    description: "Username for MQTT authentication (optional)."
+  mqtt_password:
+    name: "MQTT Password"
+    description: "Password for MQTT authentication."

@@ -56,3 +56,15 @@ configuration:
   thinking_timeout_s:
     name: "Таймаут размышления (сек)"
     description: "Длительность ожидания (по умолчанию 7 сек) перед воспроизведением фразы ожидания."
+  mqtt_host:
+    name: "MQTT Хост"
+    description: "IP адрес или имя хоста MQTT брокера (оставьте пустым для автоопределения Mosquitto)."
+  mqtt_port:
+    name: "MQTT Порт"
+    description: "Порт MQTT брокера (по умолчанию 1883)."
+  mqtt_username:
+    name: "MQTT Логин"
+    description: "Имя пользователя для авторизации в MQTT (оставьте пустым если не требуется)."
+  mqtt_password:
+    name: "MQTT Пароль"
+    description: "Пароль для авторизации в MQTT."

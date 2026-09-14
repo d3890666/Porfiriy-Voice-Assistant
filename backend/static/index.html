@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Порфирий — Управление парком колонок</title>
+  <link rel="stylesheet" href="static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Шапка -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo">
+          <img src="static/logo.png" alt="Порфирий" class="brand-avatar-img">
+        </div>
+        <div>
+          <h1 class="brand-title">ПОРФИРИЙ</h1>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.52</p>
+        </div>
+      </div>
+      
+      <div class="header-stats">
+        <div class="stat-pill">
+          <span class="stat-label">Колонок в сети</span>
+          <span class="stat-value" id="stat-online">0 / 0</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">Интеграция</span>
+          <span class="stat-badge green">MQTT Discovery OK</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Навигация -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="tab-fleet">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+        Флот колонок
+      </button>
+      <button class="nav-tab" data-tab="tab-bulk">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        Групповая настройка
+      </button>
+      <button class="nav-tab" data-tab="tab-brain">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.3 2 6.1 5 7.4V20a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2.6c3-1.3 5-4.1 5-7.4a8 8 0 0 0-8-8z"/></svg>
+        Мозг & Личность
+      </button>
+    </nav>
+
+    <!-- Вкладка 1: Флот колонок -->
+    <main id="tab-fleet" class="tab-content active">
+      <div class="toolbar">
+        <h2>Активные голосовые точки дома и улицы</h2>
+        <button class="btn btn-secondary" onclick="fetchDevices()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Обновить
+        </button>
+      </div>
+      
+      <div id="devices-grid" class="devices-grid">
+        <!-- Карточки генерируются динамически через app.js -->
+        <div class="empty-state">
+          <p>Поиск подключенных колонок...</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- Вкладка 2: Групповая настройка -->
+    <main id="tab-bulk" class="tab-content">
+      <div class="card bulk-card">
+        <h2>Пакетное применение настроек</h2>
+        <p class="section-desc">
+          Отметьте галочками нужные колонки, затем включите только те параметры, которые хотите обновить. 
+          Неотмеченные поля сохранят индивидуальные значения каждой комнаты.
+        </p>
+
+        <div class="bulk-section">
+          <h3>1. Выберите целевые колонки:</h3>
+          <div class="target-devices-selector" id="bulk-targets-list">
+            <label class="checkbox-badge">
+              <input type="checkbox" id="bulk-select-all" checked>
+              <span>Выбрать все</span>
+            </label>
+            <!-- Чекбоксы колонок заполняются скриптом -->
+          </div>
+        </div>
+
+        <div class="bulk-section">
+          <h3>2. Параметры для изменения:</h3>
+          <form id="bulk-form" onsubmit="handleBulkSubmit(event)">
+            <div class="form-grid">
+              
+              <!-- Громкость динамика -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_speaker_volume" id="chk-vol">
+                  <span class="toggle-slider"></span>
+                  <strong>Громкость динамика</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="range" name="speaker_volume" min="0.1" max="2.0" step="0.05" value="1.0" oninput="document.getElementById('val-vol').innerText = Math.round(this.value * 100) + '%'">
+                  <span class="range-val" id="val-vol">100%</span>
+                </div>
+              </div>
+
+              <!-- Чувствительность вейкворда -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_wake_word_threshold" id="chk-ww">
+                  <span class="toggle-slider"></span>
+                  <strong>Порог вейкворда (0.80 - 0.99)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="range" name="wake_word_threshold" min="0.80" max="0.99" step="0.01" value="0.93" oninput="document.getElementById('val-ww').innerText = this.value">
+                  <span class="range-val" id="val-ww">0.93</span>
+                </div>
+              </div>
+
+              <!-- Усиление микрофона -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_mic_gain" id="chk-gain">
+                  <span class="toggle-slider"></span>
+                  <strong>Усиление микрофона (Gain)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <select name="mic_gain">
+                    <option value="1">x1 (Низкое)</option>
+                    <option value="2" selected>x2 (Обычное)</option>
+                    <option value="3">x3 (Высокое)</option>
+                    <option value="4">x4</option>
+                    <option value="5">x5</option>
+                    <option value="8">x8</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Разрешить Barge-in -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_enable_barge_in" id="chk-barge">
+                  <span class="toggle-slider"></span>
+                  <strong>Прерывание речи вейквордом (Barge-in)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <select name="enable_barge_in">
+                    <option value="true">Включено</option>
+                    <option value="false" selected>Выключено</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Таймаут тишины -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_silence_timeout_ms" id="chk-sil">
+                  <span class="toggle-slider"></span>
+                  <strong>Пауза после речи (мс)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="number" name="silence_timeout_ms" value="700" min="300" max="3000" step="50">
+                </div>
+              </div>
+
+              <!-- Яркость подсветки -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_led_brightness" id="chk-led-b">
+                  <span class="toggle-slider"></span>
+                  <strong>Яркость диода (0 - 255)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="range" name="led_brightness" min="0" max="255" value="50" oninput="document.getElementById('val-led-b').innerText = this.value">
+                  <span class="range-val" id="val-led-b">50</span>
+                </div>
+              </div>
+
+              <!-- Цвет ожидания -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_led_color_idle" id="chk-col-idle">
+                  <span class="toggle-slider"></span>
+                  <strong>Цвет покоя (Idle)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="color" name="led_color_idle" value="#000000">
+                </div>
+              </div>
+
+              <!-- Цвет прослушивания -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_led_color_listen" id="chk-col-listen">
+                  <span class="toggle-slider"></span>
+                  <strong>Цвет внимания (Listening)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="color" name="led_color_listen" value="#0000ff">
+                </div>
+              </div>
+
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary btn-large">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                Применить выбранные поля ко всем отмеченным колонкам
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+
+    <!-- Вкладка 3: Мозг & Личность -->
+    <main id="tab-brain" class="tab-content">
+      <div class="card">
+        <h2>Глобальные настройки Порфирия</h2>
+        <p class="section-desc">Управляются централизованно в настройках аддона Home Assistant.</p>
+        <div class="brain-details" id="brain-info">
+          <p>Загрузка глобальных параметров...</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast">Успешно обновлено</div>
+
+  <script src="static/app.js"></script>
+</body>
+</html>

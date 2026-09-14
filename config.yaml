@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.51"
+version: "0.0.52"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -13,6 +13,12 @@ startup: application
 boot: auto
 hassio_api: true
 homeassistant_api: true
+ingress: true
+ingress_port: 8099
+panel_icon: "mdi:microphone-message"
+panel_title: "Порфирий"
+services:
+  - "mqtt:want"
 map:
   - share:rw
   - config:rw
@@ -92,6 +98,10 @@ options:
   ma_api_key: ""
   regenerate_phrases: false
   thinking_timeout_s: 7.0
+  mqtt_host: ""
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
 schema:
   gemini_api_key: str
   gemini_model: "list(models/gemini-2.5-flash-native-audio-preview-12-2025|models/gemini-2.5-flash-native-audio-latest|models/gemini-3.1-flash-live-preview|models/lyria-realtime-exp)"
@@ -112,6 +122,10 @@ schema:
   ma_api_key: str
   regenerate_phrases: bool
   thinking_timeout_s: float
+  mqtt_host: "str?"
+  mqtt_port: "int?"
+  mqtt_username: "str?"
+  mqtt_password: "str?"
 ports:
   8765/tcp: 8765
 ports_description:
