@@ -46,6 +46,10 @@ class WebServer:
         self.app.router.add_get("/api/firmware/info", self.handle_firmware_info)
         self.app.router.add_post("/api/devices/{mac}/ota", self.handle_device_ota)
         self.app.router.add_post("/api/devices/bulk_ota", self.handle_bulk_ota)
+        self.app.router.add_post("/api/devices/{mac}/mic_test/start", self.handle_mic_test_start)
+        self.app.router.add_get("/api/devices/{mac}/mic_test/audio", self.handle_mic_test_audio)
+        self.app.router.add_get("/api/devices/{mac}/mic_test/status", self.handle_mic_test_status)
+        self.app.router.add_get("/api/devices/{mac}/last_utterance/audio", self.handle_last_utterance_audio)
         self.app.router.add_get("/api/events", self.handle_events)
         self.app.router.add_get("/static/{filename:.*}", self.handle_static)
 
@@ -326,6 +330,63 @@ class WebServer:
         if not self.phrase_manager:
             return web.json_response({"is_ready": False, "total_phrases": 0, "categories": {}, "is_generating": False})
         return web.json_response(self.phrase_manager.get_status())
+
+    async def handle_mic_test_start(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        duration_s = 5.0
+        try:
+            body = await request.json()
+            if "duration_s" in body:
+                duration_s = float(body["duration_s"])
+        except Exception:
+            pass
+            
+        success = await self.device_manager.start_mic_test(mac, duration_s)
+        if success:
+            return web.json_response({"status": "recording", "mac": mac, "duration_s": duration_s})
+        return web.json_response({"status": "error", "message": "Колонка офлайн или не подключена к WebSocket"}, status=400)
+
+    async def handle_mic_test_audio(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        result = self.device_manager.get_mic_test_result(mac)
+        if not result or not result.get("wav"):
+            return web.Response(text="Запись теста микрофона отсутствует", status=404)
+            
+        return web.Response(
+            body=result["wav"],
+            content_type="audio/wav",
+            headers={
+                "Content-Disposition": f'inline; filename="mic_test_{mac}.wav"',
+                "Cache-Control": "no-cache, no-store, must-revalidate"
+            }
+        )
+
+    async def handle_mic_test_status(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        is_active = self.device_manager.is_mic_test_active(mac)
+        result = self.device_manager.get_mic_test_result(mac)
+        stats = result.get("stats") if result else None
+        return web.json_response({
+            "mac": mac,
+            "is_recording": is_active,
+            "has_recording": result is not None and bool(result.get("wav")),
+            "stats": stats
+        })
+
+    async def handle_last_utterance_audio(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        result = self.device_manager.get_last_utterance_result(mac)
+        if not result or not result.get("wav"):
+            return web.Response(text="Запись последней реплики отсутствует", status=404)
+            
+        return web.Response(
+            body=result["wav"],
+            content_type="audio/wav",
+            headers={
+                "Content-Disposition": f'inline; filename="utterance_{mac}.wav"',
+                "Cache-Control": "no-cache, no-store, must-revalidate"
+            }
+        )
 
     async def handle_events(self, request):
         """Server-Sent Events (SSE) для обновления дашборда в реальном времени."""

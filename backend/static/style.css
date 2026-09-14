@@ -790,3 +790,115 @@ body {
 .dev-web-btn:hover {
   background: rgba(0, 210, 255, 0.15);
 }
+
+/* Microphone Debug & Listening Player */
+.mic-debug-box {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mic-debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.mic-debug-title {
+  color: #cdd6f4;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mic-recording-pulse {
+  color: #f38ba8;
+  font-weight: 700;
+  animation: pulse-dot 0.8s infinite alternate;
+}
+
+.mic-debug-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.mic-btn {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.mic-player-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.mic-audio-element {
+  width: 100%;
+  height: 32px;
+  outline: none;
+  border-radius: 4px;
+}
+
+.mic-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mic-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+}
+
+.mic-badge.badge-neutral {
+  background: rgba(255, 255, 255, 0.08);
+  color: #cdd6f4;
+}
+
+.mic-badge.badge-info {
+  background: rgba(0, 210, 255, 0.15);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(0, 210, 255, 0.3);
+}
+
+.mic-badge.badge-success {
+  background: rgba(0, 230, 118, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.mic-badge.badge-warning {
+  background: rgba(255, 170, 0, 0.15);
+  color: var(--accent-amber);
+  border: 1px solid rgba(255, 170, 0, 0.3);
+}
+
+.mic-badge.badge-danger {
+  background: rgba(255, 50, 50, 0.2);
+  color: #ff5555;
+  border: 1px solid rgba(255, 50, 50, 0.4);
+  font-weight: 700;
+}
+

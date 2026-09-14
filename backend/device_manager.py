@@ -1,4 +1,8 @@
 import os
+import io
+import wave
+import struct
+import math
 import json
 import time
 import asyncio
@@ -7,7 +11,73 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.73"
+TARGET_FIRMWARE_VERSION = "0.0.75"
+
+def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
+    """Упаковка сырых 16-битных PCM сэмплов в стандартный RIFF WAV контейнер."""
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_data)
+    return buf.getvalue()
+
+def analyze_pcm16(pcm_data: bytes, sample_rate: int = 16000) -> Dict[str, Any]:
+    """Расчет акустических метрик (RMS dBFS, Peak, клиппинг)."""
+    if not pcm_data:
+        return {
+            "duration_s": 0.0,
+            "samples_count": 0,
+            "rms_linear": 0.0,
+            "rms_dbfs": -100.0,
+            "peak": 0,
+            "peak_dbfs": -100.0,
+            "clipping_samples": 0,
+            "clipping_percent": 0.0,
+            "quality": "no_audio"
+        }
+    
+    num_samples = len(pcm_data) // 2
+    samples = struct.unpack(f"<{num_samples}h", pcm_data[:num_samples * 2])
+    
+    peak = 0
+    clipping_count = 0
+    sum_sq = 0.0
+    
+    for s in samples:
+        abs_s = abs(s)
+        if abs_s > peak:
+            peak = abs_s
+        if abs_s >= 32600:
+            clipping_count += 1
+        sum_sq += s * s
+        
+    rms = math.sqrt(sum_sq / num_samples) if num_samples > 0 else 0.0
+    rms_dbfs = 20.0 * math.log10(rms / 32768.0) if rms > 0 else -100.0
+    peak_dbfs = 20.0 * math.log10(peak / 32768.0) if peak > 0 else -100.0
+    clip_pct = (clipping_count / num_samples) * 100.0 if num_samples > 0 else 0.0
+    
+    if clip_pct > 3.0:
+        quality = "critical_clipping"  # Перегрузка!
+    elif clip_pct > 0.3:
+        quality = "slight_clipping"    # Легкий клиппинг
+    elif rms_dbfs < -42.0:
+        quality = "too_quiet"          # Слишком тихо
+    else:
+        quality = "optimal"            # Чистый звук
+        
+    return {
+        "duration_s": round(num_samples / sample_rate, 2),
+        "samples_count": num_samples,
+        "rms_linear": round(rms, 1),
+        "rms_dbfs": round(rms_dbfs, 1),
+        "peak": peak,
+        "peak_dbfs": round(peak_dbfs, 1),
+        "clipping_samples": clipping_count,
+        "clipping_percent": round(clip_pct, 2),
+        "quality": quality
+    }
 
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 1.3,
@@ -43,6 +113,9 @@ class DeviceManager:
         self.devices: Dict[str, Dict[str, Any]] = {}
         self.active_sockets: Dict[str, Any] = {}
         self.subscribers: List[Callable[[str, Dict[str, Any]], Any]] = []
+        self.mic_test_sessions: Dict[str, Dict[str, Any]] = {}
+        self.mic_test_results: Dict[str, Dict[str, Any]] = {}
+        self.last_utterance_results: Dict[str, Dict[str, Any]] = {}
         self._load()
 
     def _load(self):
@@ -455,3 +528,104 @@ class DeviceManager:
                     # Пауза между стартами обновлений устройств
                     await asyncio.sleep(0.5)
         return started
+
+    async def start_mic_test(self, mac: str, duration_s: float = 5.0) -> bool:
+        """Запуск тестовой записи звука с микрофона на N секунд."""
+        clean_mac = mac.strip().lower()
+        ws = self.active_sockets.get(clean_mac)
+        if not ws:
+            logger.warning(f"[MIC-TEST] Cannot start mic test for {clean_mac}: device is offline")
+            return False
+            
+        duration_s = max(1.0, min(15.0, float(duration_s)))
+        duration_ms = int(duration_s * 1000)
+        
+        self.mic_test_sessions[clean_mac] = {
+            "active": True,
+            "start_time": time.time(),
+            "end_time": time.time() + duration_s,
+            "duration_s": duration_s,
+            "chunks": []
+        }
+        
+        logger.info(f"[MIC-TEST] Starting microphone test for {clean_mac} ({duration_s}s)")
+        self._notify("mic_test_started", {"mac": clean_mac, "duration_s": duration_s})
+        
+        await self.send_command(clean_mac, {
+            "type": "start_mic_test",
+            "duration_ms": duration_ms
+        })
+        return True
+
+    def is_mic_test_active(self, mac: str) -> bool:
+        clean_mac = mac.strip().lower()
+        session = self.mic_test_sessions.get(clean_mac)
+        if not session or not session.get("active"):
+            return False
+        if time.time() > session.get("end_time", 0) + 2.0:
+            session["active"] = False
+            return False
+        return True
+
+    def get_mic_test_end_time(self, mac: str) -> float:
+        clean_mac = mac.strip().lower()
+        session = self.mic_test_sessions.get(clean_mac)
+        return session.get("end_time", 0.0) if session else 0.0
+
+    def append_mic_test_chunk(self, mac: str, chunk: bytes):
+        clean_mac = mac.strip().lower()
+        session = self.mic_test_sessions.get(clean_mac)
+        if session and session.get("active"):
+            session["chunks"].append(chunk)
+
+    def finish_mic_test(self, mac: str) -> Optional[Dict[str, Any]]:
+        clean_mac = mac.strip().lower()
+        session = self.mic_test_sessions.get(clean_mac)
+        if not session:
+            return None
+            
+        session["active"] = False
+        chunks = session.get("chunks", [])
+        raw_pcm = b"".join(chunks)
+        
+        wav_bytes = pcm16_to_wav(raw_pcm)
+        stats = analyze_pcm16(raw_pcm)
+        stats["mac"] = clean_mac
+        stats["timestamp"] = time.time()
+        
+        self.mic_test_results[clean_mac] = {
+            "wav": wav_bytes,
+            "stats": stats,
+            "timestamp": time.time()
+        }
+        
+        logger.info(f"[MIC-TEST] Finished test for {clean_mac}: {len(raw_pcm)} bytes PCM, {stats['duration_s']}s, RMS: {stats['rms_dbfs']} dBFS, Peak: {stats['peak']}, Clip: {stats['clipping_percent']}%")
+        self._notify("mic_test_ready", {"mac": clean_mac, "stats": stats})
+        return stats
+
+    def get_mic_test_result(self, mac: str) -> Optional[Dict[str, Any]]:
+        clean_mac = mac.strip().lower()
+        return self.mic_test_results.get(clean_mac)
+
+    def save_last_utterance(self, mac: str, pcm_data: bytes):
+        """Сохранение последней боевой команды пользователя."""
+        clean_mac = mac.strip().lower()
+        if not pcm_data or len(pcm_data) < 1600:
+            return
+            
+        wav_bytes = pcm16_to_wav(pcm_data)
+        stats = analyze_pcm16(pcm_data)
+        stats["mac"] = clean_mac
+        stats["timestamp"] = time.time()
+        
+        self.last_utterance_results[clean_mac] = {
+            "wav": wav_bytes,
+            "stats": stats,
+            "timestamp": time.time()
+        }
+        logger.info(f"[LAST-UTTERANCE] Saved utterance for {clean_mac}: {len(pcm_data)} bytes PCM, {stats['duration_s']}s, RMS: {stats['rms_dbfs']} dBFS")
+        self._notify("last_utterance_ready", {"mac": clean_mac, "stats": stats})
+
+    def get_last_utterance_result(self, mac: str) -> Optional[Dict[str, Any]]:
+        clean_mac = mac.strip().lower()
+        return self.last_utterance_results.get(clean_mac)

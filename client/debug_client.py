@@ -123,6 +123,17 @@ class DebugClient:
                             logger.info(f"⚙️ [CONFIG] Received config update from Server: {msg_data.get('config')}")
                         elif msg_type == "reboot":
                             logger.info("🔄 [REBOOT] Received reboot command from Server!")
+                        elif msg_type == "start_mic_test":
+                            dur_ms = msg_data.get("duration_ms", 5000)
+                            logger.info(f"🎙️ [MIC-TEST] Received start_mic_test command from Server ({dur_ms} ms)")
+                            async def finish_mic_test():
+                                await asyncio.sleep(dur_ms / 1000.0)
+                                try:
+                                    await ws.send(json.dumps({"type": "mic_test_complete"}))
+                                    logger.info("🎙️ [MIC-TEST] Mic test completed, sent mic_test_complete to Server")
+                                except Exception as err:
+                                    logger.error(f"Error sending mic_test_complete: {err}")
+                            asyncio.create_task(finish_mic_test())
                     except Exception:
                         pass
             except Exception as e:

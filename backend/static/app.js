@@ -171,6 +171,7 @@ function renderDevicesGrid() {
 
     const roomText = dev.area_name ? `📍 ${dev.area_name}` : '📍 Без комнаты';
     const volumePercent = Math.round((cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5) * 100);
+    const micRecState = (window.micRecordingsState && window.micRecordingsState[dev.mac]) || null;
 
     // Условие: если ESP32 — отображаем все настройки, шкалу Wi-Fi, вейкворд и Web UI. Иначе — только базовые.
     const isEsp = (dev.device_type === 'esp32');
@@ -270,6 +271,27 @@ function renderDevicesGrid() {
           </div>
         </div>
 
+        <div class="mic-debug-box" id="mic-box-${dev.mac}">
+          <div class="mic-debug-header">
+            <span class="mic-debug-title">🎙️ Прослушать микрофон</span>
+            <span class="mic-debug-status" id="mic-status-${dev.mac}">${micRecState && micRecState.statusText ? micRecState.statusText : ''}</span>
+          </div>
+          <div class="mic-debug-controls">
+            <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать">
+              ⏺ Тест 5 сек
+            </button>
+            <button class="btn btn-secondary btn-sm mic-btn" id="btn-lastutt-${dev.mac}" onclick="playLastUtterance('${dev.mac}')" title="Прослушать последнюю распознанную живую реплику">
+              💬 Реплика
+            </button>
+          </div>
+          <div class="mic-player-wrap" id="mic-player-wrap-${dev.mac}" style="${micRecState && micRecState.audioSrc ? 'display: flex;' : 'display: none;'}">
+            <audio controls class="mic-audio-element" id="mic-audio-${dev.mac}" src="${micRecState ? (micRecState.audioSrc || '') : ''}"></audio>
+            <div class="mic-metrics" id="mic-metrics-${dev.mac}">
+              ${micRecState && micRecState.metricsHtml ? micRecState.metricsHtml : ''}
+            </div>
+          </div>
+        </div>
+
         ${isEsp ? `
           <div class="card-actions">
             <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'beep')" title="Проиграть звуковой сигнал">
@@ -294,6 +316,172 @@ function renderDevicesGrid() {
     `;
   }).join('');
 }
+
+// Глобальное состояние записей микрофонов колонок
+window.micRecordingsState = window.micRecordingsState || {};
+window.micTestTimers = window.micTestTimers || {};
+
+// Запуск теста микрофона на N секунд
+window.startMicTest = async function(mac, duration_s = 5) {
+  const btn = document.getElementById(`btn-mictest-${mac}`);
+  const statusEl = document.getElementById(`mic-status-${mac}`);
+  const wrapEl = document.getElementById(`mic-player-wrap-${mac}`);
+
+  if (window.micTestTimers[mac]) {
+    clearInterval(window.micTestTimers[mac]);
+    delete window.micTestTimers[mac];
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = `⏳ Запись... ${duration_s}с`;
+  }
+  if (statusEl) {
+    statusEl.innerHTML = `<span class="mic-recording-pulse">● Идет запись...</span>`;
+  }
+
+  window.micRecordingsState[mac] = window.micRecordingsState[mac] || {};
+  window.micRecordingsState[mac].statusText = `<span class="mic-recording-pulse">● Идет запись...</span>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration_s })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.message || 'Ошибка запуска теста');
+    }
+
+    let remaining = Math.round(duration_s);
+    window.micTestTimers[mac] = setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        if (btn) btn.innerText = `⏳ Запись... ${remaining}с`;
+      } else {
+        clearInterval(window.micTestTimers[mac]);
+        delete window.micTestTimers[mac];
+        if (btn) btn.innerText = `⏳ Обработка...`;
+        if (statusEl) statusEl.innerText = `Сборка WAV...`;
+        setTimeout(() => checkMicTestReady(mac), 1200);
+      }
+    }, 1000);
+
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '⏺ Тест 5 сек';
+    }
+    if (statusEl) statusEl.innerText = `Ошибка`;
+    showToast(`Ошибка старта записи: ${err.message}`, true);
+  }
+};
+
+// Проверка готовности аудио и отображение плеера
+window.checkMicTestReady = async function(mac) {
+  const btn = document.getElementById(`btn-mictest-${mac}`);
+  const statusEl = document.getElementById(`mic-status-${mac}`);
+  const wrapEl = document.getElementById(`mic-player-wrap-${mac}`);
+  const audioEl = document.getElementById(`mic-audio-${mac}`);
+  const metricsEl = document.getElementById(`mic-metrics-${mac}`);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/status`);
+    const data = await res.json();
+
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '⏺ Тест 5 сек';
+    }
+
+    if (data.has_recording) {
+      const audioUrl = `${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/audio?t=${Date.now()}`;
+      if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-green);">✓ Записано</span>`;
+      if (wrapEl) wrapEl.style.display = 'flex';
+      if (audioEl) {
+        audioEl.src = audioUrl;
+        audioEl.load();
+        audioEl.play().catch(() => {});
+      }
+      let metricsHtml = '';
+      if (metricsEl && data.stats) {
+        metricsHtml = renderMicMetrics(metricsEl, data.stats);
+      }
+      window.micRecordingsState[mac] = {
+        audioSrc: audioUrl,
+        statusText: `<span style="color: var(--accent-green);">✓ Записано</span>`,
+        metricsHtml: metricsHtml
+      };
+      showToast('Тестовая запись микрофона готова к прослушиванию!', false);
+    } else {
+      if (statusEl) statusEl.innerText = 'Нет данных';
+    }
+  } catch (e) {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '⏺ Тест 5 сек';
+    }
+    if (statusEl) statusEl.innerText = 'Ошибка получения записи';
+  }
+};
+
+// Воспроизведение последней боевой распознанной реплики
+window.playLastUtterance = async function(mac) {
+  const statusEl = document.getElementById(`mic-status-${mac}`);
+  const wrapEl = document.getElementById(`mic-player-wrap-${mac}`);
+  const audioEl = document.getElementById(`mic-audio-${mac}`);
+  const metricsEl = document.getElementById(`mic-metrics-${mac}`);
+
+  try {
+    const audioUrl = `${API_BASE}/api/devices/${encodeURIComponent(mac)}/last_utterance/audio?t=${Date.now()}`;
+    const checkRes = await fetch(audioUrl, { method: 'HEAD' });
+    if (!checkRes.ok) {
+      showToast('Нет недавних распознанных фраз от этой колонки. Скажите команду ассистенту!', true);
+      return;
+    }
+    if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-blue);">💬 Реплика</span>`;
+    if (wrapEl) wrapEl.style.display = 'flex';
+    if (audioEl) {
+      audioEl.src = audioUrl;
+      audioEl.load();
+      audioEl.play().catch(() => {});
+    }
+    window.micRecordingsState[mac] = window.micRecordingsState[mac] || {};
+    window.micRecordingsState[mac].audioSrc = audioUrl;
+    window.micRecordingsState[mac].statusText = `<span style="color: var(--accent-blue);">💬 Реплика</span>`;
+    showToast('Воспроизведение последней фразы пользователя', false);
+  } catch (err) {
+    showToast(`Ошибка загрузки реплики: ${err.message}`, true);
+  }
+};
+
+// Отрисовка бейджей метрик звука (RMS dBFS, пик, клиппинг)
+window.renderMicMetrics = function(container, stats) {
+  if (!stats) return '';
+
+  let clipBadge = '';
+  if (stats.clipping_percent > 3.0) {
+    clipBadge = `<span class="mic-badge badge-danger" title="Сильный цифровой клиппинг! Снизьте усиление mic_gain">⚠️ Клиппинг: ${stats.clipping_percent}%</span>`;
+  } else if (stats.clipping_percent > 0.1) {
+    clipBadge = `<span class="mic-badge badge-warning" title="Легкий клиппинг на пиках громкости">⚠️ Клиппинг: ${stats.clipping_percent}%</span>`;
+  } else {
+    clipBadge = `<span class="mic-badge badge-success" title="Звук чистый, цифровой перегрузки нет">✓ 0% клиппинга</span>`;
+  }
+
+  let rmsClass = 'badge-info';
+  if (stats.rms_dbfs < -42) rmsClass = 'badge-warning';
+
+  const html = `
+    <span class="mic-badge ${rmsClass}" title="Средняя громкость (RMS dBFS)">${stats.rms_dbfs} dBFS</span>
+    <span class="mic-badge badge-neutral" title="Пиковая амплитуда от 0 до 32767">Пик: ${stats.peak}</span>
+    ${clipBadge}
+  `;
+  if (container) {
+    container.innerHTML = html;
+  }
+  return html;
+};
 
 // Расчет шкалы сигнала Wi-Fi
 function getRssiVisual(rssi) {
@@ -1034,7 +1222,18 @@ function setupSSE() {
     evtSource.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data.device) {
+        if (data.event === 'mic_test_ready') {
+          const info = data.device;
+          if (info && info.mac) {
+            checkMicTestReady(info.mac);
+          }
+        } else if (data.event === 'last_utterance_ready') {
+          const info = data.device;
+          if (info && info.mac) {
+            const statusEl = document.getElementById(`mic-status-${info.mac}`);
+            if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-blue);" title="Свежая реплика готова к прослушиванию">💬 Новая фраза</span>`;
+          }
+        } else if (data.device) {
           // Обработка специального прогресса OTA
           if (data.event === 'ota_progress') {
             const info = data.device;

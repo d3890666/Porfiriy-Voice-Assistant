@@ -459,6 +459,13 @@ async def handle_client(websocket):
                 try:
                     async for message in websocket:
                         if isinstance(message, bytes):
+                            # Проверяем, активен ли режим отладки/теста микрофона для этой колонки
+                            if client_mac and device_manager.is_mic_test_active(client_mac):
+                                device_manager.append_mic_test_chunk(client_mac, message)
+                                if time.time() >= device_manager.get_mic_test_end_time(client_mac):
+                                    device_manager.finish_mic_test(client_mac)
+                                continue
+
                             if session_state.get("is_tool_pending"):
                                 # КРИТИЧНО: Нельзя отправлять аудио, пока выполняется Tool Call, иначе сервер Gemini закроет соединение с ошибкой 1008
                                 continue
@@ -519,6 +526,9 @@ async def handle_client(websocket):
                                     # Шлюз закрыт (звучит эхо динамика или тишина) - не шлем в Gemini чтобы не прервать речь
                                     continue
                                 
+                            utt_buf = session_state.setdefault("utterance_buffer", collections.deque(maxlen=150))
+                            utt_buf.append(message)
+
                             if not session_state.get("first_audio_received"):
                                 logger.info(f"Started receiving audio stream from microphone ({client_mac})...")
                                 session_state["first_audio_received"] = True
@@ -538,7 +548,12 @@ async def handle_client(websocket):
                                 data = json.loads(message)
                                 msg_type = data.get("type")
                                 
-                                if msg_type == "register":
+                                if msg_type == "mic_test_complete":
+                                    logger.info(f"[MIC-TEST] Received mic_test_complete from {client_mac}")
+                                    if client_mac:
+                                        device_manager.finish_mic_test(client_mac)
+                                    continue
+                                elif msg_type == "register":
                                     client_mac = data.get("mac", client_mac).lower()
                                     device_manager.register_device(client_mac, data, ws=websocket)
                                     area = await ha_api.get_device_area_name(client_mac)
@@ -562,6 +577,7 @@ async def handle_client(websocket):
                                         )
                                 elif msg_type == "wake_word_detected":
                                     logger.info(f"Wake word received from {client_mac}. Resetting session state.")
+                                    session_state["utterance_buffer"] = collections.deque(maxlen=150)
                                     device_manager.set_device_state(client_mac, "listening")
                                     cancel_thinking_watchdog()
                                     session_state["is_gemini_speaking"] = False
@@ -595,6 +611,8 @@ async def handle_client(websocket):
                                     session_state["first_audio_sent"] = False
                                     session_state["first_audio_received"] = False
                                 elif msg_type == "end_of_speech":
+                                    if client_mac and session_state.get("utterance_buffer"):
+                                        device_manager.save_last_utterance(client_mac, b"".join(session_state["utterance_buffer"]))
                                     device_manager.set_device_state(client_mac, "thinking")
                                     vad_ms = options.get("vad_silence_duration_ms", 600)
                                     needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)

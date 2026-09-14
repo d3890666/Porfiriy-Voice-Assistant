@@ -88,10 +88,12 @@ enum DeviceState {
     STATE_LISTENING,  // 1: Запись команды (микрофон стримится в WebSocket)
     STATE_THINKING,   // 2: Ожидание ответа от сервера (микрофон заглушен)
     STATE_SPEAKING,   // 3: Воспроизведение звука динамиком (микрофон заглушен)
-    STATE_OTA         // 4: Прием и запись прошивки по воздуху (все аудио заглушено)
+    STATE_OTA,        // 4: Прием и запись прошивки по воздуху (все аудио заглушено)
+    STATE_MIC_TEST    // 5: Тест микрофона (звук стримится на сервер для прослушивания)
 };
 DeviceState current_state = STATE_IDLE;
 unsigned long state_enter_time = 0;
+unsigned long mic_test_end_time = 0;
 
 void set_state(DeviceState new_state) {
     if (current_state != new_state) {
@@ -107,6 +109,7 @@ inline bool is_thinking() { return current_state == STATE_THINKING; }
 inline bool is_speaking() { return current_state == STATE_SPEAKING; }
 inline bool is_idle() { return current_state == STATE_IDLE; }
 inline bool is_ota() { return current_state == STATE_OTA; }
+inline bool is_mic_testing() { return current_state == STATE_MIC_TEST; }
 
 bool is_connected = false;
 bool user_has_spoken = false;
@@ -178,6 +181,16 @@ void update_led() {
                 int b = (int)((fast_breathe / 255.0) * 80);
                 leds[0] = CRGB::Cyan;
                 FastLED.setBrightness(b > 10 ? (b > 255 ? 255 : b) : 10);
+                FastLED.show();
+                return;
+            }
+        case STATE_MIC_TEST:
+            {
+                // Пульсация пурпурным (Magenta) во время теста микрофона
+                float pulse = (exp(sin(millis() / 300.0 * PI)) - 0.36787944) * 108.0;
+                int b = (int)((pulse / 255.0) * led_brightness);
+                leds[0] = CRGB::Magenta;
+                FastLED.setBrightness(b > 15 ? (b > 255 ? 255 : b) : 15);
                 FastLED.show();
                 return;
             }
@@ -786,6 +799,19 @@ void onMessageCallback(WebsocketsMessage message) {
             delay(500);
             ESP.restart();
         }
+        else if (message.data().indexOf("\"type\":\"start_mic_test\"") >= 0 || message.data().indexOf("\"type\": \"start_mic_test\"") >= 0) {
+            Serial.println("[MIC-TEST] Server requested microphone test.");
+            int dur_idx = message.data().indexOf("\"duration_ms\":");
+            unsigned long duration = 5000;
+            if (dur_idx >= 0) {
+                duration = (unsigned long)message.data().substring(dur_idx + 14).toInt();
+                if (duration < 1000) duration = 1000;
+                if (duration > 15000) duration = 15000;
+            }
+            mic_test_end_time = millis() + duration;
+            set_state(STATE_MIC_TEST);
+            client.send("{\"type\":\"mic_test_started\"}");
+        }
         else if (message.data().indexOf("\"type\":\"set_config\"") >= 0 || message.data().indexOf("\"type\": \"set_config\"") >= 0) {
             Serial.println("Server commanded SET_CONFIG.");
             void handle_remote_config(String json);
@@ -1240,6 +1266,18 @@ void loop() {
                     }
                 }
             }
+        }
+    }
+    else if (current_state == STATE_MIC_TEST) {
+        // Передаем сырой звук микрофона в WebSocket для тестовой записи
+        if (is_connected) {
+            client.sendBinary((const char*)mic_buffer_16, samples_read * 2);
+        }
+        if (millis() >= mic_test_end_time) {
+            Serial.println("[MIC-TEST] Finished mic test duration. Returning to IDLE.");
+            client.send("{\"type\":\"mic_test_complete\"}");
+            set_state(STATE_IDLE);
+            last_sleep_time = millis();
         }
     }
 }
