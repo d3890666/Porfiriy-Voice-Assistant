@@ -454,7 +454,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.64</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.65</p>
         </div>
       </div>
       
@@ -783,6 +783,13 @@ PING:
                 <span>Прерывание речи (Barge-in)</span>
               </label>
               <small class="field-hint">Разрешает перебивать Порфирия голосом во время его ответа</small>
+            </div>
+
+            <!-- Порог громкости прерывания (RMS) -->
+            <div class="form-field">
+              <label for="cfg-barge-rms">Порог громкости прерывания (RMS: <span id="val-barge-rms">600</span>)</label>
+              <input type="range" id="cfg-barge-rms" name="barge_in_threshold_rms" min="100" max="2500" step="50" value="600" oninput="document.getElementById('val-barge-rms').innerText = this.value">
+              <small class="field-hint">Чувствительность к голосу: 300–600 для ПК и тихих комнат, 1000–1800 для громких колонок</small>
             </div>
 
             <!-- VAD Silence Duration -->

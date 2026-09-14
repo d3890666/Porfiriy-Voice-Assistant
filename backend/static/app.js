@@ -669,6 +669,11 @@ function populateGlobalSettingsForm() {
     bargeInChk.checked = globalOptions.enable_barge_in !== false;
   }
 
+  const rmsVal = globalOptions.barge_in_threshold_rms !== undefined ? globalOptions.barge_in_threshold_rms : 600;
+  setVal('cfg-barge-rms', rmsVal);
+  const valBargeRms = document.getElementById('val-barge-rms');
+  if (valBargeRms) valBargeRms.innerText = rmsVal;
+
   // 4 Модульных промпта: если в настройках пусто или пробелы, подставляем каноничный шаблон!
   const getPromptVal = (key, fallbackKey) => {
     const val = globalOptions[key];
@@ -753,6 +758,7 @@ async function saveGlobalSettings(e) {
       vad_silence_duration_ms: parseInt(document.getElementById('cfg-vad-silence')?.value || 600),
       enable_google_search: document.getElementById('cfg-google-search')?.checked || false,
       enable_barge_in: document.getElementById('cfg-barge-in')?.checked !== false,
+      barge_in_threshold_rms: parseInt(document.getElementById('cfg-barge-rms')?.value || 600),
       prompt_persona: document.getElementById('cfg-prompt-persona')?.value || '',
       prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
       prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',

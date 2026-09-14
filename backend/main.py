@@ -179,7 +179,8 @@ def get_options():
         "debug_mode": False,
         "enable_google_search": True,
         "vad_silence_duration_ms": 600,
-        "enable_barge_in": True
+        "enable_barge_in": True,
+        "barge_in_threshold_rms": 600
     }
 
     for k, v in defaults.items():
@@ -385,7 +386,7 @@ async def handle_client(websocket):
                                 session_state["echo_baseline_rms"] = baseline * 0.90 + rms * 0.10
                                 
                                 # Голос человека должен превышать адаптивное эхо и минимальный порог
-                                barge_thresh = max(float(options.get("barge_in_threshold_rms", 1800)), baseline * 2.2)
+                                barge_thresh = max(float(options.get("barge_in_threshold_rms", 600)), baseline * 2.2)
                                 
                                 barge_buf = session_state.setdefault("barge_in_buffer", collections.deque(maxlen=6))
                                 barge_buf.append(message)

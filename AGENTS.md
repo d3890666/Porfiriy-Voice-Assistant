@@ -22,6 +22,11 @@
 
 ## Важные вехи и принятые решения (Changelog)
 
+### Версия 0.0.65 (Clean Add-on Config, Web UI Exclusivity & Barge-In RMS Threshold Slider)
+*   **Устранение дублирования настроек**: Из `config.yaml` аддона полностью удалены дублирующиеся параметры веб-интерфейса (`gemini_*`, `system_prompt`, `prompt_*`, `voice_name`, `temperature`, `enable_google_search`, `vad_silence_duration_ms`, `enable_barge_in`, `thinking_timeout_s`). Теперь вкладка «Конфигурация» в Home Assistant чистая и содержит только системные опции интеграций (MQTT, Music Assistant, Ducking, Debug), а все параметры логики и промпты управляются исключительно через удобный Ingress Web UI аддона.
+*   **Синхронизация Supervisor API**: В `backend/web_server.py` список полей, отправляемых в Supervisor (`/addons/self/options`), строго ограничен только системными ключами `config.yaml`, что исключает ошибку `400: Bad Request` при сохранении глобальных настроек.
+*   **Настройка порога RMS для Barge-In**: В веб-интерфейс на вкладку «Мозг & Личность» добавлен интерактивный слайдер порога RMS (`cfg-barge-rms`) в диапазоне от 100 до 2500 с оптимальным значением по умолчанию 600. Это обеспечивает комфортное прерывание как со стандартных микрофонов ПК (тестовый клиент), так и с ESP32 без необходимости кричать.
+
 ### Версия 0.0.64 (Barge-In Global Setting UI & Test Client Support)
 *   **Barge-In Global Web UI Setting**: Чекбокс «Прерывание речи (Barge-in)» добавлен на вкладку «Мозг & Личность» (`tab-brain`) веб-интерфейса Ingress UI рядом с поиском Google и синхронизируется с сервером на лету (`POST /api/global`).
 *   **PC Test Client Barge-In Support**: Отладочный клиент на ПК (`debug_client.py`) полностью поддерживает серверный шлюз Barge-in — при произнесении речи поверх ответа Gemini сервер мгновенно отправляет `interrupted`, очищая очередь воспроизведения звуковой карты ПК.

@@ -213,8 +213,8 @@ class WebServer:
             allowed_fields = [
                 "gemini_api_key", "gemini_model", "voice_name", "temperature",
                 "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
-                "enable_barge_in", "prompt_persona", "prompt_users", "prompt_smart_home",
-                "prompt_general"
+                "enable_barge_in", "barge_in_threshold_rms", "prompt_persona", "prompt_users",
+                "prompt_smart_home", "prompt_general"
             ]
             
             for field in allowed_fields:
@@ -224,7 +224,7 @@ class WebServer:
                         # Если передан пустой или маскированный ключ — оставляем прежний
                         if val and "..." not in str(val) and "*" not in str(val):
                             updated_opts[field] = str(val).strip()
-                    elif field in ["thinking_timeout_s", "vad_silence_duration_ms"]:
+                    elif field in ["thinking_timeout_s", "vad_silence_duration_ms", "barge_in_threshold_rms"]:
                         try:
                             updated_opts[field] = int(val)
                         except (ValueError, TypeError):
@@ -243,33 +243,33 @@ class WebServer:
             if self.options_save_callback:
                 self.options_save_callback(updated_opts)
             
-            # 2. Синхронизируем с Home Assistant Supervisor API (чтобы в UI HA настройки обновились)
+            # 2. Синхронизируем с Home Assistant Supervisor API только те поля, что объявлены в schema config.yaml
             supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
             if supervisor_token:
                 try:
                     ha_allowed = {
-                        "gemini_api_key", "gemini_model", "system_prompt",
-                        "prompt_persona", "prompt_users", "prompt_smart_home", "prompt_general",
-                        "voice_name", "temperature", "thinking_timeout_s", "enable_google_search",
-                        "vad_silence_duration_ms", "enable_barge_in"
+                        "enable_media_ducking", "ducking_volume_factor", "default_media_player",
+                        "ma_api_key", "mqtt_host", "mqtt_port", "mqtt_username", "mqtt_password",
+                        "debug_mode", "debug_audio", "regenerate_phrases"
                     }
                     ha_opts = {k: v for k, v in updated_opts.items() if k in ha_allowed}
-                    async with aiohttp.ClientSession() as session:
-                        url = "http://supervisor/addons/self/options"
-                        async with session.post(
-                            url,
-                            headers={
-                                "Authorization": f"Bearer {supervisor_token}",
-                                "Content-Type": "application/json"
-                            },
-                            json={"options": ha_opts},
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as resp:
-                            if resp.status == 200:
-                                logger.info("Synchronized options with Home Assistant Supervisor.")
-                            else:
-                                text_err = await resp.text()
-                                logger.warning(f"Supervisor options sync returned HTTP {resp.status}: {text_err}")
+                    if ha_opts:
+                        async with aiohttp.ClientSession() as session:
+                            url = "http://supervisor/addons/self/options"
+                            async with session.post(
+                                url,
+                                headers={
+                                    "Authorization": f"Bearer {supervisor_token}",
+                                    "Content-Type": "application/json"
+                                },
+                                json={"options": ha_opts},
+                                timeout=aiohttp.ClientTimeout(total=5)
+                            ) as resp:
+                                if resp.status == 200:
+                                    logger.info("Synchronized options with Home Assistant Supervisor.")
+                                else:
+                                    text_err = await resp.text()
+                                    logger.warning(f"Supervisor options sync returned HTTP {resp.status}: {text_err}")
                 except Exception as se:
                     logger.warning(f"Failed to sync options with Supervisor: {se}")
 
