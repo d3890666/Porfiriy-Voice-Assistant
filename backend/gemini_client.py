@@ -96,7 +96,7 @@ class GeminiProxyClient:
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
         if not api_key:
-            logger.warning("Gemini API key is empty! Connection will likely fail.")
+            raise ValueError("Gemini API key is not configured! Please open Porfiriy Web UI ('Мозг & Личность') and enter your API key.")
             
         self.client = genai.Client(
             http_options={"api_version": "v1alpha"},

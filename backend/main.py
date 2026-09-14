@@ -60,7 +60,8 @@ def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume:
 SUCCESS_CHIME = generate_beep(600, 100) + generate_beep(800, 150)
 ERROR_CHIME = generate_beep(300, 150) + generate_beep(200, 200)
 
-options_path = "/data/options.json"
+SYSTEM_OPTIONS_PATH = "/data/options.json"
+USER_CONFIG_PATH = "/data/porfiriy_config.json" if os.path.exists("/data") else os.path.join(os.path.dirname(__file__), "porfiriy_config.json")
 _runtime_options = None
 
 DEFAULT_PERSONA = (
@@ -147,17 +148,25 @@ async def refresh_available_models():
 def get_options():
     global _runtime_options
     if _runtime_options is not None:
-        opts = dict(_runtime_options)
-    elif os.path.exists(options_path):
+        return dict(_runtime_options)
+
+    opts = {}
+    # 1. Загружаем системные опции Supervisor (если есть)
+    if os.path.exists(SYSTEM_OPTIONS_PATH):
         try:
-            with open(options_path, "r", encoding="utf-8") as f:
-                _runtime_options = json.load(f)
-                opts = dict(_runtime_options)
+            with open(SYSTEM_OPTIONS_PATH, "r", encoding="utf-8") as f:
+                opts.update(json.load(f))
         except Exception as e:
             logger.error(f"Error loading options.json: {e}")
-            opts = {}
-    else:
-        opts = {}
+
+    # 2. Поверх накладываем изолированные веб-настройки пользователя (не перезаписываемые Supervisor'ом)
+    if os.path.exists(USER_CONFIG_PATH):
+        try:
+            with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+                user_opts = json.load(f)
+                opts.update(user_opts)
+        except Exception as e:
+            logger.error(f"Error loading porfiriy_config.json: {e}")
 
     # Если пользователь ранее настраивал единый system_prompt в старых версиях,
     # переносим его в prompt_persona если prompt_persona еще пустой
@@ -197,10 +206,10 @@ def save_options(new_options: dict):
     opts.update(new_options)
     _runtime_options = opts
     try:
-        os.makedirs(os.path.dirname(options_path), exist_ok=True)
-        with open(options_path, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
+        with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(opts, f, indent=2, ensure_ascii=False)
-        logger.info("Saved updated options to /data/options.json")
+        logger.info(f"Saved updated options to persistent {USER_CONFIG_PATH}")
     except Exception as e:
         logger.warning(f"Failed to persist options to file: {e}")
 
@@ -265,8 +274,20 @@ async def handle_client(websocket):
         full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: The user is speaking through the device in room '{area_name}'. When handling ambiguous smart home requests (e.g. 'turn on light', 'close curtains'), ALWAYS prioritize devices located in '{area_name}'."
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
+    api_key = (options.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")).strip()
+    if not api_key:
+        logger.error("🛑 [CONFIG ERROR] Gemini API key is empty! Пожалуйста, откройте Web UI Порфирия (вкладка 'Мозг & Личность') и сохраните ваш API-ключ Gemini.")
+        try:
+            await websocket.send(json.dumps({
+                "type": "error",
+                "message": "Gemini API key is not configured. Please open Porfiriy Web UI."
+            }))
+        except Exception:
+            pass
+        return
+
     gemini_client = GeminiProxyClient(
-        api_key=options.get("gemini_api_key"),
+        api_key=api_key,
         system_prompt=full_prompt,
         ha_api=ha_api,
         voice_name=options.get("voice_name", "Zephyr"),
