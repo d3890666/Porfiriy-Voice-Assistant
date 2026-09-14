@@ -435,8 +435,17 @@ function toggleSelectAll(checked) {
 
 // Обработка группового сохранения
 async function handleBulkSubmit(e) {
-  e.preventDefault();
-  const form = e.target;
+  if (e) {
+    try {
+      e.preventDefault();
+      e.stopPropagation();
+    } catch (_) {}
+  }
+  const form = document.getElementById('bulk-form');
+  if (!form) {
+    console.error('bulk-form element not found');
+    return;
+  }
 
   // 1. Выбранные устройства
   const checkedDevs = Array.from(document.querySelectorAll('.bulk-dev-checkbox:checked')).map(cb => cb.value);

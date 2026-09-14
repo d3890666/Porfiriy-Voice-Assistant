@@ -302,21 +302,23 @@ class DeviceManager:
         """
         results = {}
         is_all = "all" in target_macs or len(target_macs) == 0
+        norm_targets = [m.strip().lower() for m in target_macs]
         
         cfg_to_send = dict(field_mask_config)
         if "speaker_volume" in cfg_to_send:
             cfg_to_send["speaker_volume"] = 1.0
 
         for mac, dev in self.devices.items():
-            if is_all or mac in target_macs:
+            clean_mac = mac.strip().lower()
+            if is_all or clean_mac in norm_targets:
                 dev.setdefault("config", {})
                 dev["config"].update(field_mask_config)
                 
-                sent = await self.send_command(mac, {
+                sent = await self.send_command(clean_mac, {
                     "type": "set_config",
                     "config": cfg_to_send
                 })
-                results[mac] = sent
+                results[clean_mac] = sent
                 self._notify("config_updated", dev)
                 
         self._save()
