@@ -19,6 +19,7 @@ DEFAULT_DEVICE_CONFIG = {
     "listen_timeout_s": 6,
     "silence_threshold_energy": 180,
     "barge_in_threshold_rms": None,
+    "enable_ducking": True,
     "led_brightness": 50,
     "led_color_idle": "#000000",
     "led_color_listen": "#0000ff",
@@ -287,6 +288,22 @@ class DeviceManager:
         clean_mac = mac.strip().lower()
         if clean_mac in self.devices:
             self.devices[clean_mac]["area_name"] = area_name
+
+    def get_device_config(self, mac: str) -> Dict[str, Any]:
+        """Возвращает актуальный конфиг конкретного устройства или дефолты."""
+        clean_mac = mac.strip().lower()
+        dev = self.devices.get(clean_mac)
+        if dev and "config" in dev:
+            return dev["config"]
+        return dict(DEFAULT_DEVICE_CONFIG)
+
+    def get_device_area(self, mac: str) -> Optional[str]:
+        """Возвращает имя комнаты, к которой привязана колонка."""
+        clean_mac = mac.strip().lower()
+        dev = self.devices.get(clean_mac)
+        if dev:
+            return dev.get("area_name")
+        return None
 
     async def start_ota_update(self, mac: str) -> bool:
         """Запуск асинхронной передачи прошивки по WebSocket."""

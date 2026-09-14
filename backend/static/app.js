@@ -257,6 +257,17 @@ function renderDevicesGrid() {
               onchange="updateSingleDeviceConfig('${dev.mac}', 'barge_in_threshold_rms', this.value ? parseInt(this.value, 10) : null)"
               title="Индивидуальный порог RMS перебивания. Пустое поле = использовать общий (${globalOptions.barge_in_threshold_rms || 600})">
           </div>
+          <div class="slider-row" style="margin-top: 4px;">
+            <span>🔇 Приглушать медиа:</span>
+            <label class="checkbox-label" style="margin-left: auto; cursor: pointer; gap: 6px;">
+              <input type="checkbox" ${cfg.enable_ducking !== false ? 'checked' : ''} 
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'enable_ducking', this.checked); this.nextElementSibling.innerText = this.checked ? 'Вкл' : 'Выкл'; this.nextElementSibling.style.color = this.checked ? 'var(--accent-green)' : '#888';"
+                title="Разрешить приглушать медиаплееры при разговоре через эту колонку">
+              <span style="font-size: 11px; font-weight: 700; color: ${cfg.enable_ducking !== false ? 'var(--accent-green)' : '#888'};">
+                ${cfg.enable_ducking !== false ? 'Вкл' : 'Выкл'}
+              </span>
+            </label>
+          </div>
         </div>
 
         ${isEsp ? `
@@ -454,6 +465,9 @@ async function handleBulkSubmit(e) {
   if (form.apply_barge_in_threshold_rms && form.apply_barge_in_threshold_rms.checked) {
     const val = parseInt(form.barge_in_threshold_rms.value, 10);
     fields.barge_in_threshold_rms = isNaN(val) || val <= 0 ? null : val;
+  }
+  if (form.apply_enable_ducking && form.apply_enable_ducking.checked) {
+    fields.enable_ducking = form.enable_ducking.checked;
   }
   if (form.apply_silence_timeout_ms && form.apply_silence_timeout_ms.checked) {
     fields.silence_timeout_ms = parseInt(form.silence_timeout_ms.value, 10);
@@ -703,10 +717,9 @@ function populateGlobalSettingsForm() {
   if (valBargeRms) valBargeRms.innerText = rmsVal;
 
   // Настройки мультимедиа и дакинга
-  const duckingChk = document.getElementById('cfg-ducking-enable');
-  if (duckingChk) {
-    duckingChk.checked = globalOptions.enable_media_ducking !== false;
-  }
+  const duckMode = globalOptions.ducking_mode || (globalOptions.enable_media_ducking !== false ? 'same_area' : 'disabled');
+  setVal('cfg-ducking-mode', duckMode);
+  handleDuckingModeChange(duckMode);
 
   const duckFactor = globalOptions.ducking_volume_factor !== undefined ? globalOptions.ducking_volume_factor : 0.25;
   setVal('cfg-ducking-factor', duckFactor);
@@ -893,7 +906,8 @@ async function saveGlobalSettings(e) {
       enable_google_search: document.getElementById('cfg-google-search')?.checked || false,
       enable_barge_in: document.getElementById('cfg-barge-in')?.checked !== false,
       barge_in_threshold_rms: parseInt(document.getElementById('cfg-barge-rms')?.value || 600),
-      enable_media_ducking: document.getElementById('cfg-ducking-enable')?.checked !== false,
+      ducking_mode: document.getElementById('cfg-ducking-mode')?.value || 'same_area',
+      enable_media_ducking: document.getElementById('cfg-ducking-mode')?.value !== 'disabled',
       ducking_volume_factor: parseFloat(document.getElementById('cfg-ducking-factor')?.value || 0.25),
       default_media_player: document.getElementById('cfg-default-media-player')?.value || 'auto',
       regenerate_phrases: document.getElementById('cfg-regen-phrases')?.checked || false,
@@ -1067,6 +1081,14 @@ function escapeHtml(str) {
 }
 
 // Явный экспорт всех интерактивных функций на объект window
+function handleDuckingModeChange(mode) {
+  const container = document.getElementById('ducking-factor-container');
+  if (container) {
+    container.style.display = (mode === 'disabled') ? 'none' : 'block';
+  }
+}
+
+window.handleDuckingModeChange = handleDuckingModeChange;
 window.setupTabs = setupTabs;
 window.fetchDevices = fetchDevices;
 window.fetchGlobalOptions = fetchGlobalOptions;

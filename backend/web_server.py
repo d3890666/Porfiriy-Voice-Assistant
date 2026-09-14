@@ -234,7 +234,7 @@ class WebServer:
                 "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
                 "enable_barge_in", "barge_in_threshold_rms", "prompt_persona", "prompt_users",
                 "prompt_smart_home", "prompt_general",
-                "enable_media_ducking", "ducking_volume_factor", "default_media_player",
+                "ducking_mode", "enable_media_ducking", "ducking_volume_factor", "default_media_player",
                 "ma_api_key", "regenerate_phrases"
             ]
             
@@ -250,6 +250,17 @@ class WebServer:
                             sval = str(val).strip()
                             if "..." not in sval and "*" not in sval:
                                 updated_opts[field] = sval
+                    elif field == "ducking_mode":
+                        if str(val) in ["same_area", "all", "disabled"]:
+                            updated_opts[field] = str(val)
+                            updated_opts["enable_media_ducking"] = (str(val) != "disabled")
+                    elif field == "enable_media_ducking":
+                        bval = bool(val)
+                        updated_opts[field] = bval
+                        if not bval:
+                            updated_opts["ducking_mode"] = "disabled"
+                        elif updated_opts.get("ducking_mode") == "disabled":
+                            updated_opts["ducking_mode"] = "same_area"
                     elif field in ["thinking_timeout_s", "vad_silence_duration_ms", "barge_in_threshold_rms"]:
                         try:
                             updated_opts[field] = int(val)
@@ -260,7 +271,7 @@ class WebServer:
                             updated_opts[field] = float(val)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in", "enable_media_ducking", "regenerate_phrases"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases"]:
                         updated_opts[field] = bool(val)
                     else:
                         updated_opts[field] = str(val)

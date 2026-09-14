@@ -474,7 +474,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.68</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.69</p>
         </div>
       </div>
       
@@ -601,6 +601,21 @@ PING:
                   </label>
                   <div class="field-wrapper">
                     <input type="number" name="barge_in_threshold_rms" value="600" min="100" max="2500" step="50" placeholder="600 (по умолч.)" style="width: 100%;">
+                  </div>
+                </div>
+
+                <!-- Приглушать медиа (Ducking) -->
+                <div class="form-group-toggle">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_enable_ducking" id="chk-enable-ducking">
+                    <span class="toggle-slider"></span>
+                    <strong>Приглушать медиа (Ducking)</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <label class="checkbox-label" style="margin-top: 4px;">
+                      <input type="checkbox" name="enable_ducking" checked>
+                      <span>Разрешить приглушение звука при разговоре</span>
+                    </label>
                   </div>
                 </div>
 
@@ -880,18 +895,19 @@ PING:
           <p class="section-desc">Управление приглушением звука колонок при разговоре и интеграция с Music Assistant.</p>
           <div class="settings-grid">
 
-            <!-- Ducking Enable -->
-            <div class="form-field-checkbox">
-              <label class="checkbox-label">
-                <input type="checkbox" id="cfg-ducking-enable" name="enable_media_ducking" checked>
-                <span class="custom-checkbox"></span>
-                <span>Приглушение музыки (Ducking)</span>
-              </label>
-              <small class="field-hint">Автоматически понижать громкость колонки во время диалога с ассистентом</small>
+            <!-- Ducking Mode -->
+            <div class="form-field">
+              <label for="cfg-ducking-mode">Режим приглушения звука (Ducking)</label>
+              <select id="cfg-ducking-mode" name="ducking_mode" onchange="handleDuckingModeChange(this.value)">
+                <option value="same_area" selected>🎯 Только в комнате вызова (по Area в HA)</option>
+                <option value="all">🌐 Во всем доме (все играющие плееры)</option>
+                <option value="disabled">🚫 Полностью отключено</option>
+              </select>
+              <small class="field-hint">🎯 Зональный режим приглушает звук только в комнате говорящего, не трогая другие комнаты и телевизоры (на даче, улице и т.д.)</small>
             </div>
 
             <!-- Ducking Factor -->
-            <div class="form-field">
+            <div class="form-field" id="ducking-factor-container">
               <label for="cfg-ducking-factor">Коэффициент приглушения: <span id="val-ducking-factor">0.25</span> (<span id="val-ducking-percent">25%</span>)</label>
               <input type="range" id="cfg-ducking-factor" name="ducking_volume_factor" min="0.05" max="0.80" step="0.05" value="0.25" oninput="updateDuckingFactorDisplay(this.value)">
               <small class="field-hint">Громкость при дакинге (например 0.25 = 25% от текущей громкости)</small>
@@ -900,7 +916,7 @@ PING:
             <!-- Default Media Player Dropdown -->
             <div class="form-field full-width">
               <div class="field-label-row">
-                <label for="cfg-default-media-player" style="margin-bottom: 0;">Медиаплеер для приглушения</label>
+                <label for="cfg-default-media-player" style="margin-bottom: 0;">Основной медиаплеер для музыки</label>
                 <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-players" onclick="refreshMediaPlayersList()" title="Обновить список плееров из Home Assistant">
                   🔄 Обновить плееры
                 </button>
@@ -908,7 +924,7 @@ PING:
               <select id="cfg-default-media-player" name="default_media_player">
                 <option value="auto" selected>🔄 Автоматически (все играющие плееры)</option>
               </select>
-              <small class="field-hint">Медиаплеер Home Assistant, громкость которого приглушается (или автоопределение играющего устройства)</small>
+              <small class="field-hint">Колонка, на которой Порфирий включает треки по запросу „Включи музыку / поставь радио”, если комната не названа в команде</small>
             </div>
 
             <!-- Music Assistant API Key -->
@@ -1061,6 +1077,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.68"></script>
+  <script src="static/app.js?v=0.0.69"></script>
 </body>
 </html>

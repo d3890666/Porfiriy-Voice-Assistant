@@ -4,7 +4,7 @@
 [![ESP32-S3](https://img.shields.io/badge/Hardware-ESP32--S3-red?logo=espressif)](https://www.espressif.com/)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-Firmware-orange?logo=platformio)](https://platformio.org/)
 [![Google Gemini Live](https://img.shields.io/badge/AI-Gemini%20Live%20API-4285F4?logo=google)](https://ai.google.dev/)
-[![Version](https://img.shields.io/badge/Version-0.0.68-brightgreen)]()
+[![Version](https://img.shields.io/badge/Version-0.0.69-brightgreen)]()
 
 **Порфирий** — высокоскоростной двунаправленный голосовой ассистент нового поколения для **Home Assistant**, использующий **Google Gemini Live Audio API** и автономную микрофонную колонку на базе **ESP32-S3**.
 
@@ -167,6 +167,11 @@ python client/debug_client.py
 ---
 
 ## 📝 Список изменений (Changelog)
+
+### Версия 0.0.69 (Smart Area Ducking & Per-Device Controls)
+* 🎯 **Зональный (покомнатный) Ducking**: Добавлен выбор режима дакинга: `🎯 Только в комнате вызова` (по Area в Home Assistant), `🌐 Во всем доме` или `🚫 Отключено`. При разговоре через уличную колонку или в другой комнате звук на домашних телевизорах и плеерах больше не падает!
+* 🎛️ **Индивидуальный тумблер на каждой колонке**: В карточку каждого устройства («Флот колонок») и в пакетную настройку («Групповая настройка») добавлен переключатель «Приглушать медиа (Ducking)». Позволяет полностью отключить дакинг для конкретной уличной или детской колонки.
+* 🎵 **Разделение ролей медиаплеера**: Поле «Медиаплеер для приглушения» переименовано в «Основной медиаплеер для музыки» с понятным описанием запуска музыки по запросу («Включи музыку / поставь радио»).
 
 ### Версия 0.0.68 (Web UI Media, Ducking & Dynamic Players Integration)
 * 🎵 **Секция «Мультимедиа, Ducking & Музыка» в Web UI**: Настройки приглушения музыки (тумблер дакинга, слайдер коэффициента громкости 0.05–0.80), API-ключ Music Assistant и флаг перегенерации фраз перенесены из конфигурации аддона в веб-интерфейс Ingress на вкладку «Мозг & Личность».

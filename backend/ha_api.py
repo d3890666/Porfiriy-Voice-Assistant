@@ -310,3 +310,33 @@ class HomeAssistantAPI:
         except Exception as e:
             logger.error(f"Error resolving area name for MAC {mac}: {e}")
             return None
+
+    async def get_media_player_areas(self) -> Dict[str, str]:
+        """Возвращает соответствие entity_id медиаплеера -> имя комнаты (Area name)."""
+        try:
+            areas = await self.get_areas()
+            area_id_to_name = {a.get("area_id"): a.get("name") for a in areas if a.get("area_id")}
+            
+            # 1. Получаем список сущностей
+            payload_ent = {"type": "config/entity_registry/list"}
+            res_ent = await self._ws_send_and_receive(payload_ent)
+            entities = res_ent.get("result", []) if res_ent.get("success") else []
+            
+            # 2. Получаем список устройств (для наследования комнат от устройства)
+            payload_dev = {"type": "config/device_registry/list"}
+            res_dev = await self._ws_send_and_receive(payload_dev)
+            devices = res_dev.get("result", []) if res_dev.get("success") else []
+            dev_area_map = {d.get("id"): d.get("area_id") for d in devices if d.get("id")}
+            
+            player_areas = {}
+            for e in entities:
+                eid = e.get("entity_id", "")
+                if eid.startswith("media_player."):
+                    area_id = e.get("area_id") or dev_area_map.get(e.get("device_id"))
+                    if area_id and area_id in area_id_to_name:
+                        player_areas[eid] = area_id_to_name[area_id]
+            return player_areas
+        except Exception as e:
+            logger.error(f"Error resolving media player areas: {e}")
+            return {}
+

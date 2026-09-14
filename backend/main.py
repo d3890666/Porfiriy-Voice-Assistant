@@ -190,6 +190,7 @@ def get_options():
         "vad_silence_duration_ms": 600,
         "enable_barge_in": True,
         "barge_in_threshold_rms": 600,
+        "ducking_mode": "same_area",
         "enable_media_ducking": True,
         "ducking_volume_factor": 0.25,
         "default_media_player": "auto",
@@ -352,21 +353,44 @@ async def handle_client(websocket):
 
             async def duck_media():
                 """Приглушить громкость активных медиаплееров в Home Assistant."""
-                if not options.get("enable_media_ducking", True):
+                # 1. Проверяем индивидуальную настройку конкретной вызванной колонки
+                dev_cfg = device_manager.get_device_config(client_mac)
+                if not dev_cfg.get("enable_ducking", True):
+                    logger.info(f"[DUCKING] Ducking disabled for device {client_mac}, skipping.")
                     return
+
+                # 2. Проверяем глобальный режим дакинга
+                mode = options.get("ducking_mode", "same_area")
+                if options.get("enable_media_ducking") is False or mode == "disabled":
+                    return
+
                 try:
                     factor = float(options.get("ducking_volume_factor", 0.25))
-                    default_player = options.get("default_media_player", "auto")
                     playing_players = await ha_api.get_playing_media_players()
+                    if not playing_players:
+                        return
+
                     target_players = []
-                    if default_player and default_player != "auto":
-                        states = await ha_api.get_states()
-                        specific = next((s for s in states if s.get("entity_id") == default_player), None)
-                        if specific and specific.get("state") == "playing":
-                            target_players = [specific]
-                        elif not specific:
+
+                    if mode == "same_area":
+                        calling_area = device_manager.get_device_area(client_mac)
+                        if not calling_area and ha_api:
+                            calling_area = await ha_api.get_device_area_name(client_mac)
+
+                        if calling_area:
+                            player_areas = await ha_api.get_media_player_areas()
+                            for p in playing_players:
+                                eid = p.get("entity_id")
+                                p_area = player_areas.get(eid)
+                                if p_area and p_area.strip().lower() == calling_area.strip().lower():
+                                    target_players.append(p)
+                            logger.info(f"[DUCKING] Area matching for '{calling_area}': {len(target_players)}/{len(playing_players)} players matched.")
+                        else:
+                            # Если комната колонки не определена, глушим все играющие плееры
+                            logger.info(f"[DUCKING] Device {client_mac} has no area assigned. Falling back to all playing players.")
                             target_players = playing_players
                     else:
+                        # mode == "all"
                         target_players = playing_players
 
                     for p in target_players:
