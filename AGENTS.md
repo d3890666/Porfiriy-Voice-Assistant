@@ -6,8 +6,12 @@
 **ВСЕГДА**, когда вносятся изменения в код и делается `git push` (особенно если ожидается, что пользователь проверит изменения в Home Assistant), **ОБЯЗАТЕЛЬНО** увеличивайте значение `version` в файле `config.yaml` (например, с `0.0.12` на `0.0.13`). 
 *Причина:* Если версия в `config.yaml` не изменится, Home Assistant не увидит обновления в локальном репозитории аддонов, и пользователь не сможет установить новую версию кода.
 
+## 🛑 КРИТИЧЕСКОЕ ПРАВИЛО: Копирование скомпилированной прошивки ESP32 в аддон
+**ВСЕГДА**, когда изменяется код прошивки ESP32 (`esp32_firmware/src/main.cpp` и др.) и выполняется сборка PlatformIO, **ОБЯЗАТЕЛЬНО** копируйте свежий бинарник из `esp32_firmware/.pio/build/esp32-s3-devkitc-1/firmware.bin` в каталог аддона `backend/firmware/firmware.bin` перед коммитом и `git push`.
+*Причина:* Аддон поставляет прошивку для автоматического OTA-обновления колонок по WebSocket. Если не скопировать файл в `backend/firmware/firmware.bin`, контейнер аддона не будет содержать актуальную версию прошивки для раздачи по воздуху.
+
 ## Архитектура проекта
-*   **Backend (`backend/main.py`)**: Работает как Home Assistant Add-on. Является мостом (WebSocket Server) между клиентом (микрофон/динамик) и Google Gemini Live API.
+*   **Backend (`backend/main.py`)**: Работает как Home Assistant Add-on. Является мостом (WebSocket Server) между клиентом (микрофон/динамик) и Google Gemini Live API. Включает встроенный бинарник прошивки (`backend/firmware/firmware.bin`) для One-Click WebSocket OTA обновления колонок.
 *   **Client (`client/debug_client.py`)**: Отладочный Python-клиент для ПК. Читает микрофон и отправляет сырой 16kHz PCM аудио-поток по WebSocket, воспроизводит ответы Gemini. Принимает текстовые команды из консоли.
 *   **ESP32 Firmware (`esp32_firmware/src/main.cpp`)**: Нативная C++ прошивка для ESP32-S3 (написана в PlatformIO). Реализует I2S захват и воспроизведение аудио, локальный детект вейкворда через TFLite Micro (`porfiriy.tflite` -> `model.h`) и имеет Web Captive Portal (сеть `Porfiriy_Setup`) для настройки Wi-Fi и WebSocket сервера.
 *   **Home Assistant API (`backend/ha_api.py`)**: Отвечает за извлечение списка доступных устройств (exposed entities для Assist) и вызов сервисов (`call_service`).
