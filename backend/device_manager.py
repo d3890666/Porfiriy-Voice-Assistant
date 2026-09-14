@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.72"
+TARGET_FIRMWARE_VERSION = "0.0.73"
 
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 1.3,

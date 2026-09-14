@@ -617,14 +617,7 @@ async def handle_client(websocket):
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
-                                    session_state["first_audio_received"] = False
-                                    phrase = phrase_manager.get_phrase("empty_noise")
-                                    if phrase:
-                                        try:
-                                            speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                                            await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
-                                        except Exception:
-                                            pass
+                                    # При таймауте ожидания команды тихо засыпаем без спонтанных реплик
                                     await websocket.send(json.dumps({"type": "sleep"}))
                                     await unduck_media()
                             except Exception as e:
@@ -893,14 +886,19 @@ async def handle_client(websocket):
                 except Exception as e:
                     logger.error(f"Error receiving from Gemini: {e}")
                     cancel_thinking_watchdog()
-                    phrase = phrase_manager.get_phrase("network_error")
-                    if phrase:
-                        logger.info("Playing dynamic network_error phrase...")
-                        try:
-                            speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                            await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
-                        except Exception:
-                            pass
+                    # Произносим фразу ТОЛЬКО если пользователь прямо сейчас ждал ответа (был в активном диалоге)!
+                    # В режиме покоя (IDLE) при обрыве или тайм-ауте сессии Google колонка обязана молчать!
+                    if session_state.get("is_thinking") or session_state.get("is_gemini_speaking"):
+                        phrase = phrase_manager.get_phrase("network_error")
+                        if phrase:
+                            logger.info("Playing dynamic network_error phrase (active user conversation interrupted)...")
+                            try:
+                                speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+                                await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
+                            except Exception:
+                                pass
+                    else:
+                        logger.info("Gemini Live session disconnected while idle. Staying completely silent.")
                     try:
                         await websocket.send(json.dumps({"type": "sleep"}))
                     except Exception:

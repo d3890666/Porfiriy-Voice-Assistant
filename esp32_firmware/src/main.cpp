@@ -9,7 +9,7 @@
 #include <nvs_flash.h>
 #include <Update.h>
 
-#define FIRMWARE_VERSION "0.0.72"
+#define FIRMWARE_VERSION "0.0.73"
 
 #include "model.h"
 // TFLite
