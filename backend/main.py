@@ -1,9 +1,11 @@
 import asyncio
+import collections
 import json
 import os
 import logging
 import math
 import struct
+import time
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -22,6 +24,20 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("server")
 audio_logger = logging.getLogger("audio")
 tool_logger = logging.getLogger("tools")
+
+def calculate_pcm_rms(pcm_data: bytes) -> float:
+    """Вычисляет среднеквадратичную амплитуду (RMS) 16-битного PCM звука."""
+    if not pcm_data or len(pcm_data) < 2:
+        return 0.0
+    try:
+        import audioop
+        return float(audioop.rms(pcm_data, 2))
+    except Exception:
+        count = len(pcm_data) // 2
+        if count == 0:
+            return 0.0
+        shorts = struct.unpack(f"<{count}h", pcm_data[:count*2])
+        return math.sqrt(sum(s * s for s in shorts) / count)
 
 def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume: float = 0.5) -> bytes:
     """Генерация сырого 16-bit PCM аудио сигнала (синусоиды)."""
@@ -354,9 +370,54 @@ async def handle_client(websocket):
                                 # КРИТИЧНО: Нельзя отправлять аудио, пока выполняется Tool Call, иначе сервер Gemini закроет соединение с ошибкой 1008
                                 continue
                                 
-                            if not options.get("enable_barge_in", True) and session_state.get("is_gemini_speaking"):
-                                # Игнорируем микрофон пока говорит ассистент, если перебивание выключено
-                                continue
+                            is_speaking = session_state.get("is_gemini_speaking", False)
+                            barge_in_enabled = options.get("enable_barge_in", True)
+                            
+                            if is_speaking:
+                                if not barge_in_enabled:
+                                    # Игнорируем микрофон пока говорит ассистент, если перебивание выключено
+                                    continue
+                                
+                                # Серверный шлюз Barge-in с адаптивным фильтром эха динамика
+                                rms = calculate_pcm_rms(message)
+                                baseline = session_state.get("echo_baseline_rms", 300.0)
+                                # Плавно подтягиваем базовый уровень эха динамика
+                                session_state["echo_baseline_rms"] = baseline * 0.90 + rms * 0.10
+                                
+                                # Голос человека должен превышать адаптивное эхо и минимальный порог
+                                barge_thresh = max(float(options.get("barge_in_threshold_rms", 1800)), baseline * 2.2)
+                                
+                                barge_buf = session_state.setdefault("barge_in_buffer", collections.deque(maxlen=6))
+                                barge_buf.append(message)
+                                
+                                now = time.time()
+                                if rms >= barge_thresh and (now - session_state.get("last_barge_in_time", 0.0) > 1.2):
+                                    session_state["last_barge_in_time"] = now
+                                    logger.info(f"[BARGE-IN] User speech detected during playback (RMS: {rms:.0f} >= {barge_thresh:.0f})! Interrupting Gemini & Client speaker.")
+                                    
+                                    # 1. Мгновенно глушим динамик на клиенте (ESP32/PC)
+                                    await websocket.send(json.dumps({"type": "interrupted"}))
+                                    
+                                    # 2. Переводим состояние в listening
+                                    session_state["is_gemini_speaking"] = False
+                                    session_state["first_audio_sent"] = False
+                                    cancel_thinking_watchdog()
+                                    device_manager.set_device_state(client_mac, "listening")
+                                    
+                                    # 3. Отправляем в Gemini буфер предзаписи + текущий чанк
+                                    async with gemini_send_lock:
+                                        while barge_buf:
+                                            pre_chunk = barge_buf.popleft()
+                                            await session.send_realtime_input(
+                                                audio=types.Blob(
+                                                    data=pre_chunk,
+                                                    mime_type="audio/pcm;rate=16000"
+                                                )
+                                            )
+                                    continue
+                                else:
+                                    # Шлюз закрыт (звучит эхо динамика или тишина) - не шлем в Gemini чтобы не прервать речь
+                                    continue
                                 
                             if not session_state.get("first_audio_received"):
                                 logger.info(f"Started receiving audio stream from microphone ({client_mac})...")
@@ -516,6 +577,10 @@ async def handle_client(websocket):
                                 # Обработка прерывания
                                 if getattr(content, "interrupted", False):
                                     logger.info("Gemini Interrupted by User (Barge-in)!")
+                                    session_state["is_gemini_speaking"] = False
+                                    session_state["first_audio_sent"] = False
+                                    cancel_thinking_watchdog()
+                                    device_manager.set_device_state(client_mac, "listening")
                                     await websocket.send(json.dumps({"type": "interrupted"}))
                                 
                                 if getattr(content, "input_transcription", None):

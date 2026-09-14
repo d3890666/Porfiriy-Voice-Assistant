@@ -9,7 +9,7 @@
 #include <nvs_flash.h>
 #include <Update.h>
 
-#define FIRMWARE_VERSION "0.0.62"
+#define FIRMWARE_VERSION "0.0.63"
 
 #include "model.h"
 // TFLite
@@ -486,7 +486,9 @@ void handleSave() {
     if (server.hasArg("speaker_volume")) { speaker_volume = server.arg("speaker_volume").toFloat(); preferences.putFloat("spk_vol", speaker_volume); }
     if (server.hasArg("wake_word_threshold")) { wake_word_threshold = server.arg("wake_word_threshold").toFloat(); preferences.putFloat("ww_thres", wake_word_threshold); }
     if (server.hasArg("reconnect_interval")) { reconnect_interval = server.arg("reconnect_interval").toInt(); preferences.putInt("reconn_int", reconnect_interval); }
-    enable_barge_in = server.hasArg("enable_barge_in"); preferences.putBool("barge_in", enable_barge_in);
+    // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
+    enable_barge_in = false;
+    preferences.putBool("barge_in", false);
     
     // Настройки LED
     if (server.hasArg("led_brightness")) { led_brightness = server.arg("led_brightness").toInt(); preferences.putInt("led_bright", led_brightness); }
@@ -523,7 +525,8 @@ void load_preferences() {
     speaker_volume = preferences.getFloat("spk_vol", 1.0);
     wake_word_threshold = preferences.getFloat("ww_thres", 0.93);
     reconnect_interval = preferences.getInt("reconn_int", 5);
-    enable_barge_in = preferences.getBool("barge_in", false);
+    // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
+    enable_barge_in = false;
     wake_word_window_size = preferences.getInt("ww_win", 3);
     if (wake_word_window_size < 1) wake_word_window_size = 1;
     if (wake_word_window_size > MAX_WINDOW_SIZE) wake_word_window_size = MAX_WINDOW_SIZE;
@@ -898,7 +901,8 @@ void handle_remote_config(String json) {
     parse_int("silence_timeout_ms", silence_timeout_ms, "sil_ms");
     parse_int("listen_timeout_s", listen_timeout_s, "listen_to");
     parse_int("silence_threshold_energy", silence_threshold_energy, "sil_thres");
-    parse_bool("enable_barge_in", enable_barge_in, "barge_in");
+    // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
+    enable_barge_in = false;
     parse_int("led_brightness", led_brightness, "led_bright");
     parse_string("led_color_idle", led_color_idle, "led_cidle");
     parse_string("led_color_listen", led_color_listen, "led_clisten");
@@ -1214,6 +1218,12 @@ void loop() {
         }
     }
     else if (current_state == STATE_SPEAKING) {
+        // Отправляем звук микрофона на бэкенд для серверной обработки прерываний (Barge-in)
+        if (is_connected) {
+            client.sendBinary((const char*)mic_buffer_16, samples_read * 2);
+        }
+
+        // Локальный детектор на ESP32 сохранен, но принудительно отключен (enable_barge_in = false)
         if (enable_barge_in) {
             float barge_thresh = (wake_word_threshold + 0.03f > 0.98f) ? 0.98f : (wake_word_threshold + 0.03f);
             bool detected = detect_wakeword(mic_buffer_16, samples_read, barge_thresh);
