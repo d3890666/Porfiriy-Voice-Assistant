@@ -50,6 +50,7 @@ class WebServer:
         self.app.router.add_get("/api/devices/{mac}/mic_test/audio", self.handle_mic_test_audio)
         self.app.router.add_get("/api/devices/{mac}/mic_test/status", self.handle_mic_test_status)
         self.app.router.add_get("/api/devices/{mac}/last_utterance/audio", self.handle_last_utterance_audio)
+        self.app.router.add_get("/api/devices/{mac}/last_utterance/status", self.handle_last_utterance_status)
         self.app.router.add_get("/api/events", self.handle_events)
         self.app.router.add_get("/static/{filename:.*}", self.handle_static)
 
@@ -387,6 +388,16 @@ class WebServer:
                 "Cache-Control": "no-cache, no-store, must-revalidate"
             }
         )
+
+    async def handle_last_utterance_status(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        result = self.device_manager.get_last_utterance_result(mac)
+        stats = result.get("stats") if result else None
+        return web.json_response({
+            "mac": mac,
+            "has_recording": result is not None and bool(result.get("wav")),
+            "stats": stats
+        })
 
     async def handle_events(self, request):
         """Server-Sent Events (SSE) для обновления дашборда в реальном времени."""

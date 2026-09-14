@@ -277,8 +277,8 @@ function renderDevicesGrid() {
             <span class="mic-debug-status" id="mic-status-${dev.mac}">${micRecState && micRecState.statusText ? micRecState.statusText : ''}</span>
           </div>
           <div class="mic-debug-controls">
-            <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать">
-              ⏺ Тест 5 сек
+            <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать" ${micRecState && micRecState.isTesting ? 'disabled' : ''}>
+              ${micRecState && micRecState.buttonText ? micRecState.buttonText : '⏺ Тест 5 сек'}
             </button>
             <button class="btn btn-secondary btn-sm mic-btn" id="btn-lastutt-${dev.mac}" onclick="playLastUtterance('${dev.mac}')" title="Прослушать последнюю распознанную живую реплику">
               💬 Реплика
@@ -323,25 +323,34 @@ window.micTestTimers = window.micTestTimers || {};
 
 // Запуск теста микрофона на N секунд
 window.startMicTest = async function(mac, duration_s = 5) {
-  const btn = document.getElementById(`btn-mictest-${mac}`);
-  const statusEl = document.getElementById(`mic-status-${mac}`);
-  const wrapEl = document.getElementById(`mic-player-wrap-${mac}`);
-
   if (window.micTestTimers[mac]) {
     clearInterval(window.micTestTimers[mac]);
     delete window.micTestTimers[mac];
   }
 
-  if (btn) {
-    btn.disabled = true;
-    btn.innerText = `⏳ Запись... ${duration_s}с`;
-  }
-  if (statusEl) {
-    statusEl.innerHTML = `<span class="mic-recording-pulse">● Идет запись...</span>`;
-  }
-
   window.micRecordingsState[mac] = window.micRecordingsState[mac] || {};
+  window.micRecordingsState[mac].isTesting = true;
+  window.micRecordingsState[mac].buttonText = `⏳ Запись... ${duration_s}с`;
   window.micRecordingsState[mac].statusText = `<span class="mic-recording-pulse">● Идет запись...</span>`;
+
+  const updateBtnText = (text, disabled = true) => {
+    window.micRecordingsState[mac].buttonText = text;
+    window.micRecordingsState[mac].isTesting = disabled;
+    const b = document.getElementById(`btn-mictest-${mac}`);
+    if (b) {
+      b.disabled = disabled;
+      b.innerText = text;
+    }
+  };
+
+  const updateStatus = (html) => {
+    window.micRecordingsState[mac].statusText = html;
+    const s = document.getElementById(`mic-status-${mac}`);
+    if (s) s.innerHTML = html;
+  };
+
+  updateBtnText(`⏳ Запись... ${duration_s}с`, true);
+  updateStatus(`<span class="mic-recording-pulse">● Идет запись...</span>`);
 
   try {
     const res = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/start`, {
@@ -355,51 +364,65 @@ window.startMicTest = async function(mac, duration_s = 5) {
     }
 
     let remaining = Math.round(duration_s);
+    updateBtnText(`⏳ Запись... ${remaining}с`, true);
+
     window.micTestTimers[mac] = setInterval(() => {
       remaining -= 1;
       if (remaining > 0) {
-        if (btn) btn.innerText = `⏳ Запись... ${remaining}с`;
+        updateBtnText(`⏳ Запись... ${remaining}с`, true);
       } else {
         clearInterval(window.micTestTimers[mac]);
         delete window.micTestTimers[mac];
-        if (btn) btn.innerText = `⏳ Обработка...`;
-        if (statusEl) statusEl.innerText = `Сборка WAV...`;
-        setTimeout(() => checkMicTestReady(mac), 1200);
+        updateBtnText(`⏳ Анализ...`, true);
+        updateStatus(`Сборка WAV...`);
+        setTimeout(() => checkMicTestReady(mac), 1000);
       }
     }, 1000);
 
   } catch (err) {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerText = '⏺ Тест 5 сек';
+    if (window.micTestTimers[mac]) {
+      clearInterval(window.micTestTimers[mac]);
+      delete window.micTestTimers[mac];
     }
-    if (statusEl) statusEl.innerText = `Ошибка`;
+    updateBtnText('⏺ Тест 5 сек', false);
+    updateStatus(`<span style="color: var(--accent-red);">Ошибка</span>`);
     showToast(`Ошибка старта записи: ${err.message}`, true);
   }
 };
 
 // Проверка готовности аудио и отображение плеера
 window.checkMicTestReady = async function(mac) {
+  if (window.micTestTimers[mac]) {
+    clearInterval(window.micTestTimers[mac]);
+    delete window.micTestTimers[mac];
+  }
+
+  window.micRecordingsState[mac] = window.micRecordingsState[mac] || {};
+  window.micRecordingsState[mac].isTesting = false;
+  window.micRecordingsState[mac].buttonText = '⏺ Тест 5 сек';
+
   const btn = document.getElementById(`btn-mictest-${mac}`);
   const statusEl = document.getElementById(`mic-status-${mac}`);
   const wrapEl = document.getElementById(`mic-player-wrap-${mac}`);
   const audioEl = document.getElementById(`mic-audio-${mac}`);
   const metricsEl = document.getElementById(`mic-metrics-${mac}`);
 
+  if (btn) {
+    btn.disabled = false;
+    btn.innerText = '⏺ Тест 5 сек';
+  }
+
   try {
     const res = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/status`);
     const data = await res.json();
 
-    if (btn) {
-      btn.disabled = false;
-      btn.innerText = '⏺ Тест 5 сек';
-    }
-
-    if (data.has_recording) {
+    if (data.has_recording && data.stats && data.stats.has_audio !== false && data.stats.samples_count > 0) {
       const audioUrl = `${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/audio?t=${Date.now()}`;
-      if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-green);">✓ Записано</span>`;
+      const statusHtml = `<span style="color: var(--accent-green);">✓ Записано (${data.stats.duration_s}с)</span>`;
+      if (statusEl) statusEl.innerHTML = statusHtml;
       if (wrapEl) wrapEl.style.display = 'flex';
       if (audioEl) {
+        audioEl.style.display = 'block';
         audioEl.src = audioUrl;
         audioEl.load();
         audioEl.play().catch(() => {});
@@ -409,20 +432,39 @@ window.checkMicTestReady = async function(mac) {
         metricsHtml = renderMicMetrics(metricsEl, data.stats);
       }
       window.micRecordingsState[mac] = {
+        isTesting: false,
+        buttonText: '⏺ Тест 5 сек',
         audioSrc: audioUrl,
-        statusText: `<span style="color: var(--accent-green);">✓ Записано</span>`,
+        statusText: statusHtml,
         metricsHtml: metricsHtml
       };
-      showToast('Тестовая запись микрофона готова к прослушиванию!', false);
+      showToast(`Тестовая запись готова! RMS: ${data.stats.rms_dbfs} dBFS, Peak: ${data.stats.peak}`, false);
     } else {
-      if (statusEl) statusEl.innerText = 'Нет данных';
+      // 0 байт или на плате старая прошивка
+      const statusHtml = `<span style="color: var(--accent-yellow);" title="Колонка не передала звук (0 байт). Нажмите кнопку ⚡ OTA в карточке!">⚠️ 0 байт</span>`;
+      if (statusEl) statusEl.innerHTML = statusHtml;
+      if (wrapEl) wrapEl.style.display = 'flex';
+      if (audioEl) audioEl.style.display = 'none';
+      const warnHtml = `
+        <div style="background: rgba(255, 171, 0, 0.12); border: 1px solid rgba(255, 171, 0, 0.35); border-radius: 6px; padding: 8px 10px; font-size: 11px; line-height: 1.4; color: #ffca28; width: 100%;">
+          <strong>⚠️ Аудио не получено (0 байт)</strong><br>
+          Плата ESP32 еще работает на старой прошивке без функции передачи звука при тесте.<br>
+          Пожалуйста, нажмите кнопку <strong>«⚡ OTA»</strong> ниже в этой карточке для беспроводного обновления!
+        </div>
+      `;
+      if (metricsEl) metricsEl.innerHTML = warnHtml;
+      window.micRecordingsState[mac] = {
+        isTesting: false,
+        buttonText: '⏺ Тест 5 сек',
+        audioSrc: '',
+        statusText: statusHtml,
+        metricsHtml: warnHtml
+      };
+      showToast('⚠️ Звук не получен (0 байт). Нажмите кнопку «⚡ OTA» в карточке устройства!', true);
     }
   } catch (e) {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerText = '⏺ Тест 5 сек';
-    }
     if (statusEl) statusEl.innerText = 'Ошибка получения записи';
+    showToast(`Ошибка проверки записи: ${e.message}`, true);
   }
 };
 
@@ -434,23 +476,34 @@ window.playLastUtterance = async function(mac) {
   const metricsEl = document.getElementById(`mic-metrics-${mac}`);
 
   try {
-    const audioUrl = `${API_BASE}/api/devices/${encodeURIComponent(mac)}/last_utterance/audio?t=${Date.now()}`;
-    const checkRes = await fetch(audioUrl, { method: 'HEAD' });
-    if (!checkRes.ok) {
-      showToast('Нет недавних распознанных фраз от этой колонки. Скажите команду ассистенту!', true);
+    const statusRes = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/last_utterance/status`);
+    const statusData = await statusRes.json();
+
+    if (!statusData.has_recording || !statusData.stats) {
+      if (statusEl) statusEl.innerHTML = `<span style="color: var(--text-muted);">Нет реплик</span>`;
+      showToast('В этой сессии еще не было распознанных голосовых команд. Скажите вслух «Порфирий, который час?» и повторите!', true);
       return;
     }
-    if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-blue);">💬 Реплика</span>`;
+
+    const audioUrl = `${API_BASE}/api/devices/${encodeURIComponent(mac)}/last_utterance/audio?t=${Date.now()}`;
+    const statusHtml = `<span style="color: var(--accent-blue);">💬 Реплика (${statusData.stats.duration_s}с)</span>`;
+    if (statusEl) statusEl.innerHTML = statusHtml;
     if (wrapEl) wrapEl.style.display = 'flex';
     if (audioEl) {
+      audioEl.style.display = 'block';
       audioEl.src = audioUrl;
       audioEl.load();
       audioEl.play().catch(() => {});
     }
+    let metricsHtml = '';
+    if (metricsEl && statusData.stats) {
+      metricsHtml = renderMicMetrics(metricsEl, statusData.stats);
+    }
     window.micRecordingsState[mac] = window.micRecordingsState[mac] || {};
     window.micRecordingsState[mac].audioSrc = audioUrl;
-    window.micRecordingsState[mac].statusText = `<span style="color: var(--accent-blue);">💬 Реплика</span>`;
-    showToast('Воспроизведение последней фразы пользователя', false);
+    window.micRecordingsState[mac].statusText = statusHtml;
+    window.micRecordingsState[mac].metricsHtml = metricsHtml;
+    showToast(`Воспроизведение последней фразы (${statusData.stats.duration_s}с, RMS: ${statusData.stats.rms_dbfs} dBFS)`, false);
   } catch (err) {
     showToast(`Ошибка загрузки реплики: ${err.message}`, true);
   }
@@ -1222,18 +1275,23 @@ function setupSSE() {
     evtSource.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data.event === 'mic_test_ready') {
-          const info = data.device;
+        if (data.event === 'mic_test_started') {
+          // Не сбрасываем карточки при старте микротеста
+          return;
+        } else if (data.event === 'mic_test_ready') {
+          const info = data.device || data.data;
           if (info && info.mac) {
             checkMicTestReady(info.mac);
           }
+          return;
         } else if (data.event === 'last_utterance_ready') {
-          const info = data.device;
+          const info = data.device || data.data;
           if (info && info.mac) {
             const statusEl = document.getElementById(`mic-status-${info.mac}`);
-            if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-blue);" title="Свежая реплика готова к прослушиванию">💬 Новая фраза</span>`;
+            if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-blue);" title="Свежая реплика готова к прослушиванию">💬 Реплика готова</span>`;
           }
-        } else if (data.device) {
+          return;
+        } else if (data.device && data.device.mac) {
           // Обработка специального прогресса OTA
           if (data.event === 'ota_progress') {
             const info = data.device;
@@ -1245,14 +1303,17 @@ function setupSSE() {
               renderOtaBanner();
             }
           } else {
-            // Обновляем устройство в локальном массиве
+            // Обновляем устройство в локальном массиве со слиянием свойств
             const idx = devices.findIndex(d => d.mac === data.device.mac);
             if (idx >= 0) {
-              devices[idx] = data.device;
+              devices[idx] = Object.assign({}, devices[idx], data.device);
             } else {
               devices.push(data.device);
             }
-            renderDevicesGrid();
+            // Если на этом устройстве сейчас идет обратный отсчет теста, не сбрасываем DOM карточки
+            if (!window.micTestTimers[data.device.mac]) {
+              renderDevicesGrid();
+            }
             renderBulkTargets();
             renderOtaBanner();
             updateHeaderStats();

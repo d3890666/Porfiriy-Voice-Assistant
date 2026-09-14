@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.75"
+TARGET_FIRMWARE_VERSION = "0.0.76"
 
 def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     """Упаковка сырых 16-битных PCM сэмплов в стандартный RIFF WAV контейнер."""
@@ -551,11 +551,23 @@ class DeviceManager:
         logger.info(f"[MIC-TEST] Starting microphone test for {clean_mac} ({duration_s}s)")
         self._notify("mic_test_started", {"mac": clean_mac, "duration_s": duration_s})
         
+        # Гарантируем автоматическое завершение теста по тайм-ауту (даже если плата со старой прошивкой ничего не прислала)
+        asyncio.create_task(self._auto_finish_mic_test(clean_mac, duration_s))
+        
         await self.send_command(clean_mac, {
             "type": "start_mic_test",
             "duration_ms": duration_ms
         })
         return True
+
+    async def _auto_finish_mic_test(self, mac: str, duration_s: float):
+        """Фоновый сторожевой таймер: завершает тест и готовит результат, если от колонки не пришло завершение."""
+        await asyncio.sleep(duration_s + 0.6)
+        clean_mac = mac.strip().lower()
+        session = self.mic_test_sessions.get(clean_mac)
+        if session and session.get("active"):
+            logger.info(f"[MIC-TEST] Watchdog auto-finishing mic test for {clean_mac}")
+            self.finish_mic_test(clean_mac)
 
     def is_mic_test_active(self, mac: str) -> bool:
         clean_mac = mac.strip().lower()
@@ -588,10 +600,11 @@ class DeviceManager:
         chunks = session.get("chunks", [])
         raw_pcm = b"".join(chunks)
         
-        wav_bytes = pcm16_to_wav(raw_pcm)
+        wav_bytes = pcm16_to_wav(raw_pcm) if raw_pcm else b""
         stats = analyze_pcm16(raw_pcm)
         stats["mac"] = clean_mac
         stats["timestamp"] = time.time()
+        stats["has_audio"] = bool(raw_pcm and len(raw_pcm) >= 1600)
         
         self.mic_test_results[clean_mac] = {
             "wav": wav_bytes,
@@ -600,7 +613,7 @@ class DeviceManager:
         }
         
         logger.info(f"[MIC-TEST] Finished test for {clean_mac}: {len(raw_pcm)} bytes PCM, {stats['duration_s']}s, RMS: {stats['rms_dbfs']} dBFS, Peak: {stats['peak']}, Clip: {stats['clipping_percent']}%")
-        self._notify("mic_test_ready", {"mac": clean_mac, "stats": stats})
+        self._notify("mic_test_ready", {"mac": clean_mac, "stats": stats, "has_audio": stats["has_audio"]})
         return stats
 
     def get_mic_test_result(self, mac: str) -> Optional[Dict[str, Any]]:
