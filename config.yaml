@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.67"
+version: "0.0.68"
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
@@ -23,11 +23,6 @@ map:
   - share:rw
   - config:rw
 options:
-  enable_media_ducking: true
-  ducking_volume_factor: 0.25
-  default_media_player: "media_player.iandeks_stantsiia_2_a9yk"
-  ma_api_key: ""
-  regenerate_phrases: false
   mqtt_host: ""
   mqtt_port: 1883
   mqtt_username: ""
@@ -35,11 +30,6 @@ options:
   debug_mode: true
   debug_audio: false
 schema:
-  enable_media_ducking: bool
-  ducking_volume_factor: float
-  default_media_player: str
-  ma_api_key: str
-  regenerate_phrases: bool
   mqtt_host: "str?"
   mqtt_port: "int?"
   mqtt_username: "str?"

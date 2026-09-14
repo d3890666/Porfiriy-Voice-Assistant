@@ -474,7 +474,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.67</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.68</p>
         </div>
       </div>
       
@@ -875,7 +875,65 @@ PING:
 
           </div>
 
-          <!-- Секция 2: 4 Модульных промпта -->
+          <!-- Секция 2: Мультимедиа, Ducking & Музыка -->
+          <h3 class="settings-group-title" style="margin-top: 32px;">🎵 Мультимедиа, Ducking & Музыка</h3>
+          <p class="section-desc">Управление приглушением звука колонок при разговоре и интеграция с Music Assistant.</p>
+          <div class="settings-grid">
+
+            <!-- Ducking Enable -->
+            <div class="form-field-checkbox">
+              <label class="checkbox-label">
+                <input type="checkbox" id="cfg-ducking-enable" name="enable_media_ducking" checked>
+                <span class="custom-checkbox"></span>
+                <span>Приглушение музыки (Ducking)</span>
+              </label>
+              <small class="field-hint">Автоматически понижать громкость колонки во время диалога с ассистентом</small>
+            </div>
+
+            <!-- Ducking Factor -->
+            <div class="form-field">
+              <label for="cfg-ducking-factor">Коэффициент приглушения: <span id="val-ducking-factor">0.25</span> (<span id="val-ducking-percent">25%</span>)</label>
+              <input type="range" id="cfg-ducking-factor" name="ducking_volume_factor" min="0.05" max="0.80" step="0.05" value="0.25" oninput="updateDuckingFactorDisplay(this.value)">
+              <small class="field-hint">Громкость при дакинге (например 0.25 = 25% от текущей громкости)</small>
+            </div>
+
+            <!-- Default Media Player Dropdown -->
+            <div class="form-field full-width">
+              <div class="field-label-row">
+                <label for="cfg-default-media-player" style="margin-bottom: 0;">Медиаплеер для приглушения</label>
+                <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-players" onclick="refreshMediaPlayersList()" title="Обновить список плееров из Home Assistant">
+                  🔄 Обновить плееры
+                </button>
+              </div>
+              <select id="cfg-default-media-player" name="default_media_player">
+                <option value="auto" selected>🔄 Автоматически (все играющие плееры)</option>
+              </select>
+              <small class="field-hint">Медиаплеер Home Assistant, громкость которого приглушается (или автоопределение играющего устройства)</small>
+            </div>
+
+            <!-- Music Assistant API Key -->
+            <div class="form-field full-width">
+              <label for="cfg-ma-key">API-ключ Music Assistant</label>
+              <div class="input-with-action">
+                <input type="password" id="cfg-ma-key" name="ma_api_key" placeholder="Опциональный токен (оставьте пустым если не требуется)">
+                <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-ma-key" onclick="toggleMaKeyVisibility()" title="Показать/скрыть токен">👁️</button>
+              </div>
+              <small class="field-hint">Опциональный токен авторизации для Music Assistant</small>
+            </div>
+
+            <!-- Regenerate Phrases on Restart -->
+            <div class="form-field-checkbox full-width">
+              <label class="checkbox-label">
+                <input type="checkbox" id="cfg-regen-phrases" name="regenerate_phrases">
+                <span class="custom-checkbox"></span>
+                <span>Перегенерировать фразы при перезапуске</span>
+              </label>
+              <small class="field-hint">Принудительно заставить Порфирия придумать и озвучить новый комплект системных фраз при старте</small>
+            </div>
+
+          </div>
+
+          <!-- Секция 3: 4 Модульных промпта -->
           <h3 class="settings-group-title" style="margin-top: 32px;">🎭 4 Модульных промпта Порфирия</h3>
           <p class="section-desc">Каждый промпт отвечает за свою грань поведения. Редактируйте прямо здесь с многострочным форматированием.</p>
 
@@ -1003,6 +1061,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.60"></script>
+  <script src="static/app.js?v=0.0.68"></script>
 </body>
 </html>

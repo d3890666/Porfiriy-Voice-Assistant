@@ -189,7 +189,12 @@ def get_options():
         "enable_google_search": True,
         "vad_silence_duration_ms": 600,
         "enable_barge_in": True,
-        "barge_in_threshold_rms": 600
+        "barge_in_threshold_rms": 600,
+        "enable_media_ducking": True,
+        "ducking_volume_factor": 0.25,
+        "default_media_player": "auto",
+        "ma_api_key": "",
+        "regenerate_phrases": False
     }
 
     for k, v in defaults.items():
@@ -351,8 +356,20 @@ async def handle_client(websocket):
                     return
                 try:
                     factor = float(options.get("ducking_volume_factor", 0.25))
+                    default_player = options.get("default_media_player", "auto")
                     playing_players = await ha_api.get_playing_media_players()
-                    for p in playing_players:
+                    target_players = []
+                    if default_player and default_player != "auto":
+                        states = await ha_api.get_states()
+                        specific = next((s for s in states if s.get("entity_id") == default_player), None)
+                        if specific and specific.get("state") == "playing":
+                            target_players = [specific]
+                        elif not specific:
+                            target_players = playing_players
+                    else:
+                        target_players = playing_players
+
+                    for p in target_players:
                         eid = p.get("entity_id")
                         if eid and eid not in session_state["ducked_media_players"]:
                             curr_vol = p.get("attributes", {}).get("volume_level")

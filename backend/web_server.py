@@ -37,6 +37,7 @@ class WebServer:
         self.app.router.add_post("/api/devices/{mac}/beep", self.handle_device_beep)
         self.app.router.add_post("/api/devices/{mac}/reboot", self.handle_device_reboot)
         self.app.router.add_get("/api/areas", self.handle_get_areas)
+        self.app.router.add_get("/api/media_players", self.handle_get_media_players)
         self.app.router.add_get("/api/global", self.handle_get_global)
         self.app.router.add_post("/api/global", self.handle_set_global)
         self.app.router.add_post("/api/models/refresh", self.handle_refresh_models)
@@ -178,20 +179,38 @@ class WebServer:
             return web.json_response({"areas": areas})
         return web.json_response({"areas": []})
 
+    async def handle_get_media_players(self, request):
+        if self.ha_api:
+            players = await self.ha_api.get_media_players()
+            return web.json_response({"media_players": players})
+        return web.json_response({"media_players": []})
+
     def _safe_options(self, opts: Dict[str, Any]) -> Dict[str, Any]:
         safe = dict(opts)
         key = safe.get("gemini_api_key", "")
         safe["has_api_key"] = bool(key)
         if key:
             safe["gemini_api_key"] = key[:4] + "..." + key[-4:] if len(key) >= 8 else "********"
+
+        ma_key = safe.get("ma_api_key", "")
+        safe["has_ma_api_key"] = bool(ma_key)
+        if ma_key:
+            safe["ma_api_key"] = ma_key[:4] + "..." + ma_key[-4:] if len(ma_key) >= 8 else "********"
         return safe
 
     async def handle_get_global(self, request):
         opts = self.options_callback() if self.options_callback else {}
         models = self.models_callback() if self.models_callback else []
+        media_players = []
+        if self.ha_api:
+            try:
+                media_players = await self.ha_api.get_media_players()
+            except Exception as e:
+                logger.warning(f"Error fetching media players for global settings: {e}")
         return web.json_response({
             "options": self._safe_options(opts),
-            "models": models
+            "models": models,
+            "media_players": media_players
         })
 
     async def handle_refresh_models(self, request):
@@ -214,7 +233,9 @@ class WebServer:
                 "gemini_api_key", "gemini_model", "voice_name", "temperature",
                 "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
                 "enable_barge_in", "barge_in_threshold_rms", "prompt_persona", "prompt_users",
-                "prompt_smart_home", "prompt_general"
+                "prompt_smart_home", "prompt_general",
+                "enable_media_ducking", "ducking_volume_factor", "default_media_player",
+                "ma_api_key", "regenerate_phrases"
             ]
             
             for field in allowed_fields:
@@ -224,17 +245,22 @@ class WebServer:
                         # Если передан пустой или маскированный ключ — оставляем прежний
                         if val and "..." not in str(val) and "*" not in str(val):
                             updated_opts[field] = str(val).strip()
+                    elif field == "ma_api_key":
+                        if val is not None:
+                            sval = str(val).strip()
+                            if "..." not in sval and "*" not in sval:
+                                updated_opts[field] = sval
                     elif field in ["thinking_timeout_s", "vad_silence_duration_ms", "barge_in_threshold_rms"]:
                         try:
                             updated_opts[field] = int(val)
                         except (ValueError, TypeError):
                             pass
-                    elif field == "temperature":
+                    elif field in ["temperature", "ducking_volume_factor"]:
                         try:
                             updated_opts[field] = float(val)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "enable_media_ducking", "regenerate_phrases"]:
                         updated_opts[field] = bool(val)
                     else:
                         updated_opts[field] = str(val)
@@ -248,9 +274,8 @@ class WebServer:
             if supervisor_token:
                 try:
                     ha_allowed = {
-                        "enable_media_ducking", "ducking_volume_factor", "default_media_player",
-                        "ma_api_key", "mqtt_host", "mqtt_port", "mqtt_username", "mqtt_password",
-                        "debug_mode", "debug_audio", "regenerate_phrases"
+                        "mqtt_host", "mqtt_port", "mqtt_username", "mqtt_password",
+                        "debug_mode", "debug_audio"
                     }
                     ha_opts = {k: v for k, v in updated_opts.items() if k in ha_allowed}
                     if ha_opts:

@@ -4,6 +4,7 @@ const API_BASE = window.location.pathname.replace(/\/index\.html.*$/i, '').repla
 let devices = [];
 let globalOptions = {};
 let availableModels = [];
+let availableMediaPlayers = [];
 
 const CANONICAL_PROMPTS = window.CANONICAL_PROMPTS || {
   persona: `IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
@@ -122,6 +123,7 @@ async function fetchGlobalOptions() {
       const data = await res.json();
       globalOptions = data.options || {};
       availableModels = data.models || [];
+      availableMediaPlayers = data.media_players || [];
       renderBrainInfo();
     }
   } catch (err) {
@@ -700,6 +702,34 @@ function populateGlobalSettingsForm() {
   const valBargeRms = document.getElementById('val-barge-rms');
   if (valBargeRms) valBargeRms.innerText = rmsVal;
 
+  // Настройки мультимедиа и дакинга
+  const duckingChk = document.getElementById('cfg-ducking-enable');
+  if (duckingChk) {
+    duckingChk.checked = globalOptions.enable_media_ducking !== false;
+  }
+
+  const duckFactor = globalOptions.ducking_volume_factor !== undefined ? globalOptions.ducking_volume_factor : 0.25;
+  setVal('cfg-ducking-factor', duckFactor);
+  updateDuckingFactorDisplay(duckFactor);
+
+  populateMediaPlayersDropdown(globalOptions.default_media_player || 'auto');
+
+  const maKeyInput = document.getElementById('cfg-ma-key');
+  if (maKeyInput) {
+    if (globalOptions.has_ma_api_key) {
+      maKeyInput.placeholder = `Токен задан (${globalOptions.ma_api_key || '••••••••'})`;
+      maKeyInput.value = '';
+    } else {
+      maKeyInput.placeholder = 'Опциональный токен (оставьте пустым если не требуется)';
+      maKeyInput.value = '';
+    }
+  }
+
+  const regenPhrasesChk = document.getElementById('cfg-regen-phrases');
+  if (regenPhrasesChk) {
+    regenPhrasesChk.checked = Boolean(globalOptions.regenerate_phrases);
+  }
+
   // 4 Модульных промпта: если в настройках пусто или пробелы, подставляем каноничный шаблон!
   const getPromptVal = (key, fallbackKey) => {
     const val = globalOptions[key];
@@ -753,6 +783,84 @@ function toggleKeyVisibility() {
   }
 }
 
+function toggleMaKeyVisibility() {
+  const input = document.getElementById('cfg-ma-key');
+  const btn = document.getElementById('btn-toggle-ma-key');
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    if (btn) btn.textContent = '🔒';
+  } else {
+    input.type = 'password';
+    if (btn) btn.textContent = '👁️';
+  }
+}
+
+function updateDuckingFactorDisplay(val) {
+  const num = parseFloat(val) || 0.25;
+  const elVal = document.getElementById('val-ducking-factor');
+  const elPct = document.getElementById('val-ducking-percent');
+  if (elVal) elVal.innerText = num.toFixed(2);
+  if (elPct) elPct.innerText = Math.round(num * 100) + '%';
+}
+
+function populateMediaPlayersDropdown(selectedPlayer) {
+  const select = document.getElementById('cfg-default-media-player');
+  if (!select) return;
+
+  const currentVal = selectedPlayer || select.value || 'auto';
+  let html = '<option value="auto">🔄 Автоматически (все играющие плееры)</option>';
+
+  if (availableMediaPlayers && availableMediaPlayers.length > 0) {
+    html += '<optgroup label="Медиаплееры Home Assistant">';
+    availableMediaPlayers.forEach(p => {
+      const isSel = (p.entity_id === currentVal) ? 'selected' : '';
+      html += `<option value="${escapeHtml(p.entity_id)}" ${isSel}>${escapeHtml(p.name)} (${escapeHtml(p.entity_id)})</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (currentVal && currentVal !== 'auto' && !availableMediaPlayers.some(p => p.entity_id === currentVal)) {
+    html += `<optgroup label="Текущий сохраненный плеер">`;
+    html += `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (Сохранен)</option>`;
+    html += `</optgroup>`;
+  }
+
+  select.innerHTML = html;
+  select.value = currentVal;
+}
+
+async function refreshMediaPlayersList() {
+  const btn = document.getElementById('btn-refresh-players');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '🔄 Опрос HA...';
+  }
+
+  showToast('Запрашиваю список медиаплееров из Home Assistant...');
+
+  try {
+    const res = await fetch(`${API_BASE}/api/media_players`);
+    const data = await res.json();
+    if (data.media_players) {
+      availableMediaPlayers = data.media_players;
+      const select = document.getElementById('cfg-default-media-player');
+      const currentVal = select ? select.value : (globalOptions.default_media_player || 'auto');
+      populateMediaPlayersDropdown(currentVal);
+      showToast(`Плееры обновлены! Найдено ${availableMediaPlayers.length} медиаплееров.`);
+    } else {
+      showToast(`Ошибка опроса плееров: ${data.error || 'Проверьте соединение с HA'}`, true);
+    }
+  } catch (err) {
+    showToast('Сетевая ошибка при обновлении плееров', true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '🔄 Обновить плееры';
+    }
+  }
+}
+
 // Сохранение глобальных настроек (Hot Reload)
 async function saveGlobalSettings(e) {
   if (e) {
@@ -785,6 +893,10 @@ async function saveGlobalSettings(e) {
       enable_google_search: document.getElementById('cfg-google-search')?.checked || false,
       enable_barge_in: document.getElementById('cfg-barge-in')?.checked !== false,
       barge_in_threshold_rms: parseInt(document.getElementById('cfg-barge-rms')?.value || 600),
+      enable_media_ducking: document.getElementById('cfg-ducking-enable')?.checked !== false,
+      ducking_volume_factor: parseFloat(document.getElementById('cfg-ducking-factor')?.value || 0.25),
+      default_media_player: document.getElementById('cfg-default-media-player')?.value || 'auto',
+      regenerate_phrases: document.getElementById('cfg-regen-phrases')?.checked || false,
       prompt_persona: document.getElementById('cfg-prompt-persona')?.value || '',
       prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
       prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',
@@ -794,6 +906,11 @@ async function saveGlobalSettings(e) {
     const newKey = document.getElementById('cfg-api-key')?.value?.trim();
     if (newKey) {
       payload.gemini_api_key = newKey;
+    }
+
+    const newMaKey = document.getElementById('cfg-ma-key')?.value?.trim();
+    if (newMaKey !== undefined && newMaKey !== '') {
+      payload.ma_api_key = newMaKey;
     }
 
     console.log('Sending global settings payload to:', `${API_BASE}/api/global`, payload);
@@ -965,6 +1082,10 @@ window.restoreDefaultPrompt = restoreDefaultPrompt;
 window.populateGlobalSettingsForm = populateGlobalSettingsForm;
 window.updatePromptCharCounters = updatePromptCharCounters;
 window.toggleKeyVisibility = toggleKeyVisibility;
+window.toggleMaKeyVisibility = toggleMaKeyVisibility;
+window.updateDuckingFactorDisplay = updateDuckingFactorDisplay;
+window.populateMediaPlayersDropdown = populateMediaPlayersDropdown;
+window.refreshMediaPlayersList = refreshMediaPlayersList;
 window.saveGlobalSettings = saveGlobalSettings;
 window.regeneratePhrases = regeneratePhrases;
 window.checkPhrasesStatus = checkPhrasesStatus;

@@ -60,6 +60,22 @@ class HomeAssistantAPI:
             logger.error(f"Error fetching playing media players: {e}")
             return []
 
+    async def get_media_players(self) -> List[Dict[str, str]]:
+        """Получить список всех медиаплееров из Home Assistant (ID и имя)."""
+        try:
+            states = await self.get_states()
+            players = []
+            for s in states:
+                eid = s.get("entity_id", "")
+                if eid.startswith("media_player."):
+                    name = s.get("attributes", {}).get("friendly_name") or eid
+                    players.append({"entity_id": eid, "name": name})
+            players.sort(key=lambda x: x["name"].lower())
+            return players
+        except Exception as e:
+            logger.error(f"Error fetching media players: {e}")
+            return []
+
     async def call_service(self, domain: str, service: str, service_data: Dict[str, Any] = None) -> Any:
         """
         Вызвать сервис в HA (например: domain='light', service='turn_on', service_data={'entity_id': 'light.kitchen'})

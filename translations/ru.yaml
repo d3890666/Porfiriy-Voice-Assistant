@@ -1,19 +1,5 @@
 configuration:
-  enable_media_ducking:
-    name: "Приглушение музыки (Ducking)"
-    description: "Автоматически понижать громкость колонки во время диалога с ассистентом."
-  ducking_volume_factor:
-    name: "Коэффициент приглушения"
-    description: "Коэффициент громкости при дакинге (например 0.25 = 25% от текущей громкости)."
-  default_media_player:
-    name: "Медиаплеер для приглушения"
-    description: "Entity ID медиаплеера Home Assistant, громкость которого приглушается."
-  ma_api_key:
-    name: "API-ключ Music Assistant"
-    description: "Опциональный токен для Music Assistant."
-  regenerate_phrases:
-    name: "Перегенерировать фразы"
-    description: "Принудительно заставить Порфирия придумать и озвучить новый комплект системных фраз при перезапуске."
+
   debug_mode:
     name: "Режим отладки"
     description: "Включить подробные логи сервера."

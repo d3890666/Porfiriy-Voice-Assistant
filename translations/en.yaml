@@ -1,19 +1,5 @@
 configuration:
-  enable_media_ducking:
-    name: "Enable Media Ducking"
-    description: "Temporarily lower Home Assistant media player volume during voice interaction."
-  ducking_volume_factor:
-    name: "Ducking Volume Factor"
-    description: "Fraction to reduce volume during ducking (e.g. 0.25 = 25% of current volume)."
-  default_media_player:
-    name: "Default Media Player"
-    description: "Entity ID of the media player to duck during speech."
-  ma_api_key:
-    name: "Music Assistant API Key"
-    description: "Optional API token for Music Assistant integration."
-  regenerate_phrases:
-    name: "Regenerate Dynamic Phrases"
-    description: "Force Porfiriy to brainstorm and synthesize a new set of system phrases on startup."
+
   debug_mode:
     name: "Debug Mode"
     description: "Enable verbose debug logging."
