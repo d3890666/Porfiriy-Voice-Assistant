@@ -9,7 +9,7 @@
 #include <nvs_flash.h>
 #include <Update.h>
 
-#define FIRMWARE_VERSION "0.0.61"
+#define FIRMWARE_VERSION "0.0.62"
 
 #include "model.h"
 // TFLite
@@ -54,6 +54,18 @@ int led_mode_think = 2;  // 0=Off, 1=Solid, 2=Breathing
 int led_mode_speak = 1;  // 0=Off, 1=Solid, 2=Breathing
 int reconnect_interval = 5; // в секундах
 bool enable_barge_in = false; // прерывание речи вейквордом (Barge-in)
+
+// --- Скользящее окно вейкворда (Sliding Window для слитной речи) ---
+#define MAX_WINDOW_SIZE 8
+int wake_word_window_size = 3;  // 1..8 срезов (по умолчанию 3 = ~30мс)
+int wake_word_window_mode = 1;  // 0=Average, 1=Peak Hold (для слитной речи), 2=Majority
+float prob_window[MAX_WINDOW_SIZE] = {0.0f};
+int prob_window_head = 0;
+
+// Живой монитор скора вейкворда (для Web UI и умного логирования)
+float recent_peak_score = 0.0f;
+unsigned long last_score_log_time = 0;
+unsigned long last_peak_reset_time = 0;
 
 // --- Настройки пинов ---
 #define I2S_MIC_BCLK 3
@@ -235,6 +247,17 @@ const char index_html[] PROGMEM = R"rawliteral(
   </div>
   <p>Состояние: <span id="status-text" class="status-badge">Загрузка...</span></p>
   <p style="margin-top:8px;">Связь с сервером: <span id="conn-text" class="status-badge">Загрузка...</span></p>
+  
+  <div style="margin-top:14px; background:#222; padding:10px; border-radius:6px; border:1px solid #444;">
+    <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:5px;">
+      <span>🎯 Скор вейкворда (Realtime):</span>
+      <span id="ww-score-val" style="font-family:monospace; font-weight:bold; color:#4dabf7;">0.00 / %WW_THRES%</span>
+    </div>
+    <div style="width:100%; height:8px; background:#444; border-radius:4px; overflow:hidden;">
+      <div id="ww-score-bar" style="width:0%; height:100%; background:#4dabf7; transition:width 0.15s ease;"></div>
+    </div>
+  </div>
+
   <button type="button" onclick="forceReconnect()" style="margin-top:12px; padding:6px 12px; background:#ffc107; color:#000; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">Переподключить сейчас</button>
 </div>
 
@@ -334,11 +357,22 @@ setInterval(() => {
       ct.style.background = "#dc3545"; 
       ct.style.color = "#fff";
     }
+
+    if(data.ww_score !== undefined) {
+      let pct = Math.min(100, Math.round(data.ww_score * 100));
+      let valEl = document.getElementById("ww-score-val");
+      let barEl = document.getElementById("ww-score-bar");
+      if(valEl) valEl.innerText = Number(data.ww_score).toFixed(2) + " / " + Number(data.ww_threshold).toFixed(2);
+      if(barEl) {
+        barEl.style.width = pct + "%";
+        barEl.style.background = (data.ww_score >= data.ww_threshold) ? "#28a745" : (data.ww_score >= 0.4 ? "#ffc107" : "#4dabf7");
+      }
+    }
   }).catch(() => {
     let st = document.getElementById("status-text");
     if(st) { st.innerText = "Плата занята / переподключение"; st.style.background = "#6c757d"; }
   });
-}, 1000);
+}, 400);
 
 // Перехват отправки формы для сохранения "на лету" без ребута (если wifi/сервер не менялись)
 document.getElementById("settingsForm").addEventListener("submit", function(e) {
@@ -416,7 +450,11 @@ void handleStatus() {
     json += "\"server_url\":\"ws://" + ws_host + ":" + String(ws_port) + "\",";
     json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
     json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
-    json += "\"uptime\":" + String(millis() / 1000);
+    json += "\"uptime\":" + String(millis() / 1000) + ",";
+    json += "\"ww_score\":" + String(recent_peak_score, 2) + ",";
+    json += "\"ww_threshold\":" + String(wake_word_threshold, 2) + ",";
+    json += "\"ww_window\":" + String(wake_word_window_size) + ",";
+    json += "\"ww_mode\":" + String(wake_word_window_mode);
     json += "}";
     server.send(200, "application/json", json);
 }
@@ -486,6 +524,10 @@ void load_preferences() {
     wake_word_threshold = preferences.getFloat("ww_thres", 0.93);
     reconnect_interval = preferences.getInt("reconn_int", 5);
     enable_barge_in = preferences.getBool("barge_in", false);
+    wake_word_window_size = preferences.getInt("ww_win", 3);
+    if (wake_word_window_size < 1) wake_word_window_size = 1;
+    if (wake_word_window_size > MAX_WINDOW_SIZE) wake_word_window_size = MAX_WINDOW_SIZE;
+    wake_word_window_mode = preferences.getInt("ww_mode", 1);
     
     led_brightness = preferences.getInt("led_bright", 50);
     led_mode_idle = preferences.getInt("led_m_idle", 0);
@@ -849,6 +891,10 @@ void handle_remote_config(String json) {
     parse_int("mic_gain", mic_gain, "mic_gain");
     parse_float("speaker_volume", speaker_volume, "spk_vol");
     parse_float("wake_word_threshold", wake_word_threshold, "ww_thres");
+    parse_int("wake_word_window_size", wake_word_window_size, "ww_win");
+    if (wake_word_window_size < 1) wake_word_window_size = 1;
+    if (wake_word_window_size > MAX_WINDOW_SIZE) wake_word_window_size = MAX_WINDOW_SIZE;
+    parse_int("wake_word_window_mode", wake_word_window_mode, "ww_mode");
     parse_int("silence_timeout_ms", silence_timeout_ms, "sil_ms");
     parse_int("listen_timeout_s", listen_timeout_s, "listen_to");
     parse_int("silence_threshold_energy", silence_threshold_energy, "sil_thres");
@@ -879,6 +925,8 @@ void send_registration() {
     json += "\"mic_gain\":" + String(mic_gain) + ",";
     json += "\"speaker_volume\":" + String(speaker_volume, 2) + ",";
     json += "\"wake_word_threshold\":" + String(wake_word_threshold, 2) + ",";
+    json += "\"wake_word_window_size\":" + String(wake_word_window_size) + ",";
+    json += "\"wake_word_window_mode\":" + String(wake_word_window_mode) + ",";
     json += "\"silence_timeout_ms\":" + String(silence_timeout_ms) + ",";
     json += "\"listen_timeout_s\":" + String(listen_timeout_s) + ",";
     json += "\"silence_threshold_energy\":" + String(silence_threshold_energy) + ",";
@@ -912,6 +960,8 @@ bool detect_wakeword(int16_t* audio_buffer, size_t num_samples, float custom_thr
     
     if (frontend_output.size > 0) {
         int slices_produced = frontend_output.size / PREPROCESSOR_FEATURE_SIZE;
+        float active_threshold = (custom_threshold > 0.0) ? custom_threshold : wake_word_threshold;
+
         for (int s = 0; s < slices_produced; s++) {
             // Нормализация (ESPHome INCEPTION style)
             for (size_t i = 0; i < PREPROCESSOR_FEATURE_SIZE; ++i) {
@@ -925,29 +975,76 @@ bool detect_wakeword(int16_t* audio_buffer, size_t num_samples, float custom_thr
                 feature_ring_buffer[(feature_buffer_index * PREPROCESSOR_FEATURE_SIZE) + i] = (int8_t)value;
             }
             feature_buffer_index = (feature_buffer_index + 1) % num_slices;
-        }
 
-        // Копируем кольцевой буфер в тензор
-        for (int i = 0; i < num_slices; i++) {
-            int ring_idx = (feature_buffer_index + i) % num_slices;
-            memcpy(
-                input_tensor->data.int8 + (i * PREPROCESSOR_FEATURE_SIZE),
-                feature_ring_buffer + (ring_idx * PREPROCESSOR_FEATURE_SIZE),
-                PREPROCESSOR_FEATURE_SIZE
-            );
-        }
-
-        if (interpreter->Invoke() == kTfLiteOk) {
-            float prob = 0.0;
-            if (output_tensor->type == kTfLiteUInt8) {
-                prob = (output_tensor->data.uint8[0] - output_tensor->params.zero_point) * output_tensor->params.scale;
-            } else if (output_tensor->type == kTfLiteInt8) {
-                prob = (output_tensor->data.int8[0] - output_tensor->params.zero_point) * output_tensor->params.scale;
+            // Копируем кольцевой буфер в тензор
+            for (int i = 0; i < num_slices; i++) {
+                int ring_idx = (feature_buffer_index + i) % num_slices;
+                memcpy(
+                    input_tensor->data.int8 + (i * PREPROCESSOR_FEATURE_SIZE),
+                    feature_ring_buffer + (ring_idx * PREPROCESSOR_FEATURE_SIZE),
+                    PREPROCESSOR_FEATURE_SIZE
+                );
             }
-            
-            float active_threshold = (custom_threshold > 0.0) ? custom_threshold : wake_word_threshold;
-            if (prob >= active_threshold) {
-                return true;
+
+            if (interpreter->Invoke() == kTfLiteOk) {
+                float prob = 0.0;
+                if (output_tensor->type == kTfLiteUInt8) {
+                    prob = (output_tensor->data.uint8[0] - output_tensor->params.zero_point) * output_tensor->params.scale;
+                } else if (output_tensor->type == kTfLiteInt8) {
+                    prob = (output_tensor->data.int8[0] - output_tensor->params.zero_point) * output_tensor->params.scale;
+                }
+                
+                // Трекаем недавний пик для вебморды ESP32
+                if (prob > recent_peak_score) {
+                    recent_peak_score = prob;
+                }
+                if (millis() - last_peak_reset_time > 400) {
+                    recent_peak_score = prob;
+                    last_peak_reset_time = millis();
+                }
+
+                // Умное логирование в Serial (только если prob >= 0.30 и не чаще раз в 250 мс)
+                if (prob >= 0.30f && (millis() - last_score_log_time > 250)) {
+                    last_score_log_time = millis();
+                    Serial.printf("[WW-DEBUG] Score: %.2f | Win: %d | Mode: %d | Thres: %.2f\n", 
+                        prob, wake_word_window_size, wake_word_window_mode, active_threshold);
+                }
+
+                // Помещаем срез в кольцевой буфер скользящего окна
+                prob_window[prob_window_head] = prob;
+                prob_window_head = (prob_window_head + 1) % wake_word_window_size;
+
+                // Режимы детекции скользящего окна
+                bool detected = false;
+                if (wake_word_window_mode == 1) {
+                    // Режим 1: Peak Hold (максимальный пик в окне - идеален для слитной речи)
+                    float max_p = 0.0f;
+                    for (int w = 0; w < wake_word_window_size; w++) {
+                        if (prob_window[w] > max_p) max_p = prob_window[w];
+                    }
+                    if (max_p >= active_threshold) detected = true;
+                } else if (wake_word_window_mode == 2) {
+                    // Режим 2: Majority (большинство срезов выше порога)
+                    int count = 0;
+                    for (int w = 0; w < wake_word_window_size; w++) {
+                        if (prob_window[w] >= active_threshold) count++;
+                    }
+                    if (count >= (wake_word_window_size / 2 + 1)) detected = true;
+                } else {
+                    // Режим 0: Average (скользящее среднее)
+                    float sum_p = 0.0f;
+                    for (int w = 0; w < wake_word_window_size; w++) {
+                        sum_p += prob_window[w];
+                    }
+                    if ((sum_p / wake_word_window_size) >= active_threshold) detected = true;
+                }
+
+                if (detected) {
+                    // Сбрасываем окно для предотвращения дребезга
+                    for (int w = 0; w < MAX_WINDOW_SIZE; w++) prob_window[w] = 0.0f;
+                    recent_peak_score = prob;
+                    return true;
+                }
             }
         }
     }

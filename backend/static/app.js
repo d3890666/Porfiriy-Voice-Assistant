@@ -425,6 +425,12 @@ async function handleBulkSubmit(e) {
   if (form.apply_wake_word_threshold.checked) {
     fields.wake_word_threshold = parseFloat(form.wake_word_threshold.value);
   }
+  if (form.apply_wake_word_window_size && form.apply_wake_word_window_size.checked) {
+    fields.wake_word_window_size = parseInt(form.wake_word_window_size.value, 10);
+  }
+  if (form.apply_wake_word_window_mode && form.apply_wake_word_window_mode.checked) {
+    fields.wake_word_window_mode = parseInt(form.wake_word_window_mode.value, 10);
+  }
   if (form.apply_mic_gain.checked) {
     fields.mic_gain = parseInt(form.mic_gain.value, 10);
   }

@@ -7,12 +7,14 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.61"
+TARGET_FIRMWARE_VERSION = "0.0.62"
 
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 2,
     "speaker_volume": 1.0,
     "wake_word_threshold": 0.93,
+    "wake_word_window_size": 3,
+    "wake_word_window_mode": 1,
     "silence_timeout_ms": 700,
     "listen_timeout_s": 6,
     "silence_threshold_energy": 180,

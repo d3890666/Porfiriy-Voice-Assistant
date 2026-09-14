@@ -454,7 +454,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.61</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.62</p>
         </div>
       </div>
       
@@ -555,6 +555,35 @@ PING:
                 <div class="field-wrapper">
                   <input type="range" name="wake_word_threshold" min="0.80" max="0.99" step="0.01" value="0.93" oninput="document.getElementById('val-ww').innerText = this.value">
                   <span class="range-val" id="val-ww">0.93</span>
+                </div>
+              </div>
+
+              <!-- Окно скольжения вейкворда (Sliding Window) -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_wake_word_window_size" id="chk-ww-win">
+                  <span class="toggle-slider"></span>
+                  <strong>Окно скольжения (1 - 8 срезов)</strong>
+                </label>
+                <div class="field-wrapper">
+                  <input type="range" name="wake_word_window_size" min="1" max="8" step="1" value="3" oninput="document.getElementById('val-ww-win').innerText = this.value + ' (~' + (this.value*10) + ' мс)'">
+                  <span class="range-val" id="val-ww-win">3 (~30 мс)</span>
+                </div>
+              </div>
+
+              <!-- Режим скользящего окна -->
+              <div class="form-group-toggle">
+                <label class="toggle-control">
+                  <input type="checkbox" name="apply_wake_word_window_mode" id="chk-ww-mode">
+                  <span class="toggle-slider"></span>
+                  <strong>Режим окна вейкворда</strong>
+                </label>
+                <div class="field-wrapper">
+                  <select name="wake_word_window_mode">
+                    <option value="1" selected>⚡ Пиковый (Peak Hold) — для слитной речи</option>
+                    <option value="0">📊 Скользящее среднее — требует паузы</option>
+                    <option value="2">⚖️ Большинство срезов (Majority)</option>
+                  </select>
                 </div>
               </div>
 
