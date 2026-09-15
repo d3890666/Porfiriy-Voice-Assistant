@@ -160,11 +160,23 @@ DEFAULT_GENERAL = (
 )
 
 _available_models = []
+_api_key_index = 0
+
+def get_active_api_key(api_key_str: str) -> str:
+    global _api_key_index
+    if not api_key_str:
+        return ""
+    keys = [k.strip() for k in api_key_str.split(",") if k.strip()]
+    if not keys:
+        return ""
+    _api_key_index = (_api_key_index + 1) % len(keys)
+    return keys[_api_key_index]
 
 async def refresh_available_models():
     global _available_models
     opts = get_options()
-    api_key = opts.get("gemini_api_key", "")
+    api_key_str = opts.get("gemini_api_key", "")
+    api_key = get_active_api_key(api_key_str)
     try:
         _available_models = await fetch_available_gemini_models(api_key)
         live_count = sum(1 for m in _available_models if m.get("is_live"))
@@ -308,7 +320,9 @@ async def handle_client(websocket):
         full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: The user is speaking through the device in room '{area_name}'. When handling ambiguous smart home requests (e.g. 'turn on light', 'close curtains'), ALWAYS prioritize devices located in '{area_name}'."
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
     
-    api_key = (options.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")).strip()
+    api_key_str = (options.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")).strip()
+    api_key = get_active_api_key(api_key_str)
+    
     if not api_key:
         logger.error("🛑 [CONFIG ERROR] Gemini API key is empty! Пожалуйста, откройте Web UI Порфирия (вкладка 'Мозг & Личность') и сохраните ваш API-ключ Gemini.")
         try:

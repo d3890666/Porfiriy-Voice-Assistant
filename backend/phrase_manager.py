@@ -128,10 +128,17 @@ class PhraseManager:
 
     async def initialize(self, options: dict):
         """Проверяет актуальность кэша и при необходимости генерирует фразы."""
-        api_key = options.get("gemini_api_key")
-        if not api_key:
+        api_key_str = options.get("gemini_api_key")
+        if not api_key_str:
             logger.warning("No Gemini API key provided, skipping phrase generation.")
             return
+            
+        import random
+        keys = [k.strip() for k in api_key_str.split(",") if k.strip()]
+        if not keys:
+            logger.warning("No valid Gemini API key found, skipping phrase generation.")
+            return
+        api_key = random.choice(keys)
 
         force = options.get("regenerate_phrases", False)
         persona = options.get("prompt_persona", DEFAULT_PERSONA)

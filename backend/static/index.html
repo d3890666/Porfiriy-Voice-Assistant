@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.79">
+  <link rel="stylesheet" href="static/style.css?v=0.0.80">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -816,7 +816,7 @@ PING:
                 <input type="password" id="cfg-api-key" name="gemini_api_key" placeholder="Ключ сохранен (введите новый для изменения)">
                 <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-key" onclick="toggleKeyVisibility()" title="Показать/скрыть ключ">👁️</button>
               </div>
-              <small class="field-hint">Оставьте поле без изменений, если ключ менять не требуется. Ключ защищен.</small>
+              <small class="field-hint">Оставьте поле без изменений, если ключ менять не требуется. Ключ защищен.<br>💡 Для автоматической ротации (Round-Robin) можно указать несколько ключей через запятую.</small>
             </div>
 
             <!-- Gemini Model -->
@@ -1081,6 +1081,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.79"></script>
+  <script src="static/app.js?v=0.0.80"></script>
 </body>
 </html>

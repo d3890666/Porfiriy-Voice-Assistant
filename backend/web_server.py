@@ -195,7 +195,8 @@ class WebServer:
         key = safe.get("gemini_api_key", "")
         safe["has_api_key"] = bool(key)
         if key:
-            safe["gemini_api_key"] = key[:4] + "..." + key[-4:] if len(key) >= 8 else "********"
+            keys = [k.strip() for k in key.split(",") if k.strip()]
+            safe["gemini_api_key"] = ",".join([k[:4] + "..." + k[-4:] if len(k) >= 8 else "********" for k in keys])
 
         ma_key = safe.get("ma_api_key", "")
         safe["has_ma_api_key"] = bool(ma_key)
