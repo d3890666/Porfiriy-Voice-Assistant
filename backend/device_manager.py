@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.77"
+TARGET_FIRMWARE_VERSION = "0.0.78"
 
 def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     """Упаковка сырых 16-битных PCM сэмплов в стандартный RIFF WAV контейнер."""

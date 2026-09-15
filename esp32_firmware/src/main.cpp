@@ -8,8 +8,9 @@
 #include <FastLED.h>
 #include <nvs_flash.h>
 #include <Update.h>
+#include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.77"
+#define FIRMWARE_VERSION "0.0.78"
 
 #include "model.h"
 // TFLite
@@ -170,6 +171,10 @@ CRGB hexToCRGB(String hex) {
 
 // Управление светодиодом
 void update_led() {
+    static unsigned long last_led_update = 0;
+    if (millis() - last_led_update < 33) return; // ~30 FPS limit
+    last_led_update = millis();
+
     int active_mode = led_mode_idle;
     String active_color = led_color_idle;
     
@@ -556,6 +561,7 @@ void setup_wifi() {
         Serial.print("Connecting to WiFi: ");
         Serial.println(ssid);
         WiFi.begin(ssid.c_str(), password.c_str());
+        esp_wifi_set_ps(WIFI_PS_NONE); // Disable Power Save for I2S DMA stability
         
         int attempts = 0;
         while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -602,7 +608,7 @@ void setup_i2s() {
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count = 8,
+        .dma_buf_count = 16,
         .dma_buf_len = BUFFER_SAMPLES,
         .use_apll = false,
         .tx_desc_auto_clear = false,
@@ -1187,7 +1193,8 @@ void loop() {
     
     int32_t sum_amp = 0;
     for (int i = 0; i < samples_read; i++) {
-        int32_t val = (int32_t)((mic_buffer_32[i] >> 16) * mic_gain);
+        // Сдвиг на 14 бит вместо 16 дает аппаратное усиление x4 для INMP441
+        int32_t val = (int32_t)((mic_buffer_32[i] >> 14) * mic_gain);
         if (val > 32767) val = 32767;
         if (val < -32768) val = -32768;
         mic_buffer_16[i] = (int16_t)val;
