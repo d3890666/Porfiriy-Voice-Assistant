@@ -1,12 +1,14 @@
-ARG BUILD_FROM="ghcr.io/home-assistant/amd64-base:3.19"
+ARG BUILD_FROM="ghcr.io/home-assistant/amd64-base-debian:bookworm"
 FROM $BUILD_FROM
 
 ENV LANG="C.UTF-8"
 
-# Install dependencies
-RUN apk add --no-cache \
+# Install dependencies (libgomp1 is required by onnxruntime / OpenMP)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
-    py3-pip
+    python3-pip \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy root filesystem
 COPY run.sh /
@@ -18,3 +20,4 @@ RUN pip3 install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r /b
 RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]
+

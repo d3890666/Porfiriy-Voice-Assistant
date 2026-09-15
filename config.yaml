@@ -1,15 +1,12 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.81"
+version: "0.0.82"
 
 slug: "porfiriy_voice_assistant"
 init: false
 arch:
   - aarch64
   - amd64
-  - armv7
-  - armhf
-  - i386
 startup: application
 boot: auto
 hassio_api: true
