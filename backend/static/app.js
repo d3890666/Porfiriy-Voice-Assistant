@@ -1429,6 +1429,7 @@ function setupSSE() {
               scoreBar.style.width = Math.min(100, Math.round(score * 100)) + '%';
               scoreBar.style.background = isTriggered ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)';
             }
+          }
           // Обновляем в локальном стейте без перерисовки
           const devIdx = devices.findIndex(d => d.mac === mac);
           if (devIdx >= 0) devices[devIdx].ww_score = score;
