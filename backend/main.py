@@ -13,7 +13,7 @@ from ha_api import HomeAssistantAPI
 from gemini_client import GeminiProxyClient, fetch_available_gemini_models
 from google.genai import types
 from phrase_manager import PhraseManager
-from device_manager import DeviceManager
+from device_manager import DeviceManager, pcm16_to_wav
 from mqtt_discovery import MQTTDiscoveryManager
 from web_server import WebServer
 from wakeword_engine import WakeWordEngine
@@ -518,6 +518,36 @@ async def handle_client(websocket):
                                 # КРИТИЧНО: Нельзя отправлять аудио, пока выполняется Tool Call, иначе сервер Gemini закроет соединение с ошибкой 1008
                                 continue
                                 
+                            # Если для устройства включен серверный вейкворд и колонка в покое — проверяем вейкворд через openWakeWord
+                            dev_cfg = device_manager.get_device_config(client_mac)
+                            if dev_cfg.get("wake_word_mode") == "server":
+                                dev_obj = device_manager.get_device(client_mac) or {}
+                                if dev_obj.get("state") == "idle" and not session_state.get("is_gemini_speaking") and not session_state.get("is_thinking"):
+                                    if ww_engine and ww_engine.is_ready:
+                                        score = ww_engine.process_chunk(message, client_mac)
+                                        device_manager.update_ww_score(client_mac, score)
+                                        if ww_engine.is_triggered(client_mac):
+                                            preroll = ww_engine.consume_preroll(client_mac)
+                                            logger.info(f"[WW-SERVER] Server-side wake word triggered for {client_mac} (score={score:.3f})")
+                                            session_state["utterance_buffer"] = collections.deque(maxlen=150)
+                                            device_manager.set_device_state(client_mac, "listening")
+                                            cancel_thinking_watchdog()
+                                            session_state["is_gemini_speaking"] = False
+                                            session_state["is_tool_pending"] = False
+                                            session_state["first_audio_sent"] = False
+                                            session_state["first_audio_received"] = False
+                                            await duck_media()
+                                            try:
+                                                await websocket.send(json.dumps({"type": "listen"}))
+                                            except Exception:
+                                                pass
+                                            if preroll:
+                                                async with gemini_send_lock:
+                                                    await session.send_realtime_input(
+                                                        audio=types.Blob(data=preroll, mime_type="audio/pcm;rate=16000")
+                                                    )
+                                    continue
+
                             is_speaking = session_state.get("is_gemini_speaking", False)
                             barge_in_enabled = options.get("enable_barge_in", True)
                             
@@ -717,11 +747,18 @@ async def handle_client(websocket):
                                         pcm_audio = scale_pcm16(part.inline_data.data, speaker_vol)
                                         audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (scaled to {speaker_vol*100:.0f}%)")
                                     
-                                        # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
-                                        CHUNK_SIZE = 4096
-                                        for i in range(0, len(pcm_audio), CHUNK_SIZE):
-                                            chunk = pcm_audio[i:i+CHUNK_SIZE]
-                                            await websocket.send(chunk)
+                                        dev_cfg = device_manager.get_device_config(client_mac)
+                                        out_mode = dev_cfg.get("audio_output_mode", "stream")
+                                        resp_player = dev_cfg.get("response_player")
+
+                                        if out_mode == "external_player" and resp_player and resp_player != "auto":
+                                            session_state.setdefault("external_audio_chunks", []).append(pcm_audio)
+                                        else:
+                                            # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
+                                            CHUNK_SIZE = 4096
+                                            for i in range(0, len(pcm_audio), CHUNK_SIZE):
+                                                chunk = pcm_audio[i:i+CHUNK_SIZE]
+                                                await websocket.send(chunk)
                                     
                             # Обработка транскрипции и состояния
                             content = response.server_content
@@ -733,6 +770,31 @@ async def handle_client(websocket):
                                     # Сбрасываем флаг отправки аудио для следующего ответа
                                     session_state["first_audio_sent"] = False
                                     device_manager.set_device_state(client_mac, "idle")
+
+                                    # Если настроен внешний плеер — воспроизводим WAV на медиаплеере Home Assistant
+                                    dev_cfg = device_manager.get_device_config(client_mac)
+                                    out_mode = dev_cfg.get("audio_output_mode", "stream")
+                                    resp_player = dev_cfg.get("response_player")
+                                    ext_chunks = session_state.get("external_audio_chunks", [])
+                                    if out_mode == "external_player" and resp_player and resp_player != "auto" and ext_chunks:
+                                        raw_pcm = b"".join(ext_chunks)
+                                        wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
+                                        device_manager.save_response_wav(client_mac, wav_bytes)
+                                        wav_url = f"http://homeassistant:8099/api/virtual/{client_mac}/response.wav"
+                                        logger.info(f"Routing Gemini response to external player {resp_player}: {wav_url}")
+                                        asyncio.create_task(ha_api.call_service("media_player", "play_media", {
+                                            "entity_id": resp_player,
+                                            "media_content_id": wav_url,
+                                            "media_content_type": "music"
+                                        }))
+                                        session_state["external_audio_chunks"] = []
+                                        # Шлем легкий earcon на само устройство о завершении
+                                        try:
+                                            speaker_vol = float(dev_cfg.get("speaker_volume", 0.5))
+                                            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+                                        except Exception:
+                                            pass
+
                                     # Отправляем команду на засыпание (чтобы колонка снова ждала вейкворд)
                                     await websocket.send(json.dumps({"type": "sleep"}))
                                 
@@ -1067,15 +1129,28 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
 
                 # Получаем ответ
                 device_manager.set_device_state(client_mac, "thinking")
+                out_mode = dev_config.get("audio_output_mode", "stream")
+                speaker_vol = float(dev_config.get("speaker_volume", 0.8))
+
                 async for response in session.receive():
                     if response.server_content and response.server_content.model_turn:
                         device_manager.set_device_state(client_mac, "speaking")
                         for part in response.server_content.model_turn.parts:
                             if part.inline_data and part.inline_data.data:
-                                speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                                pcm_response_chunks.append(scale_pcm16(part.inline_data.data, speaker_vol))
+                                scaled_chunk = scale_pcm16(part.inline_data.data, speaker_vol)
+                                pcm_response_chunks.append(scaled_chunk)
+                                if out_mode == "stream":
+                                    try:
+                                        await websocket.send(scaled_chunk)
+                                    except Exception:
+                                        pass
                     if response.server_content and getattr(response.server_content, "turn_complete", False):
                         logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
+                        if out_mode == "stream":
+                            try:
+                                await websocket.send(json.dumps({"type": "sleep"}))
+                            except Exception:
+                                pass
                         break
         except Exception as e:
             logger.error(f"[STREAMER] Gemini session error for {client_mac}: {e}")
@@ -1087,39 +1162,33 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             logger.warning(f"[STREAMER] No audio received from Gemini for {client_mac}.")
             return
 
-        # Упаковываем PCM в WAV
-        import io, wave as wave_lib
+        # Упаковываем PCM в WAV и кэшируем (для Web UI и внешнего плеера)
         raw_pcm = b"".join(pcm_response_chunks)
-        buf = io.BytesIO()
-        with wave_lib.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(16000)
-            wf.writeframes(raw_pcm)
-        wav_bytes = buf.getvalue()
+        wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
         device_manager.save_response_wav(client_mac, wav_bytes)
 
-        # Определяем URL WAV для HA media_player
-        # Используем IP из SUPERVISOR_TOKEN окружения или fallback
-        ha_host = os.environ.get("HASSIO_TOKEN", None)
-        # Определяем базовый URL из переменных окружения HA (Ingress)
-        supervisor_host = "homeassistant"
-        wav_url = f"http://{supervisor_host}:8099/api/virtual/{client_mac}/response.wav"
+        if out_mode == "external_player":
+            player = response_player if response_player and response_player != "auto" else None
+            if not player:
+                logger.warning(f"[STREAMER] No response_player configured for {client_mac}. Set it in device settings.")
+                return
 
-        player = response_player if response_player and response_player != "auto" else None
-        if not player:
-            logger.warning(f"[STREAMER] No response_player configured for {client_mac}. Set it in device settings.")
-            return
-
-        logger.info(f"[STREAMER] Playing response on {player}: {wav_url}")
-        try:
-            await ha_api.call_service("media_player", "play_media", {
-                "entity_id": player,
-                "media_content_id": wav_url,
-                "media_content_type": "music"
-            })
-        except Exception as e:
-            logger.error(f"[STREAMER] Failed to play media on {player}: {e}")
+            supervisor_host = "homeassistant"
+            wav_url = f"http://{supervisor_host}:8099/api/virtual/{client_mac}/response.wav"
+            logger.info(f"[STREAMER] Playing response on {player}: {wav_url}")
+            try:
+                await ha_api.call_service("media_player", "play_media", {
+                    "entity_id": player,
+                    "media_content_id": wav_url,
+                    "media_content_type": "music"
+                })
+                # Сигнал готовности на стример
+                try:
+                    await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"[STREAMER] Failed to play media on {player}: {e}")
 
     try:
         async for message in websocket:

@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.79"
+TARGET_FIRMWARE_VERSION = "0.0.83"
 
 def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     """Упаковка сырых 16-битных PCM сэмплов в стандартный RIFF WAV контейнер."""
@@ -58,17 +58,18 @@ def analyze_pcm16(pcm_data: bytes, sample_rate: int = 16000) -> Dict[str, Any]:
     peak_dbfs = 20.0 * math.log10(peak / 32768.0) if peak > 0 else -100.0
     clip_pct = (clipping_count / num_samples) * 100.0 if num_samples > 0 else 0.0
     
-    if clip_pct > 3.0:
-        quality = "critical_clipping"  # Перегрузка!
-    elif clip_pct > 0.3:
-        quality = "slight_clipping"    # Легкий клиппинг
+    quality = "optimal"
+    if clip_pct > 1.5:
+        quality = "critical_clipping"
+    elif clip_pct > 0.1:
+        quality = "warning_clipping"
     elif rms_dbfs < -42.0:
-        quality = "too_quiet"          # Слишком тихо
-    else:
-        quality = "optimal"            # Чистый звук
+        quality = "too_quiet"
+    elif rms_dbfs > -10.0:
+        quality = "loud"
         
     return {
-        "duration_s": round(num_samples / sample_rate, 2),
+        "duration_s": round(num_samples / float(sample_rate), 2),
         "samples_count": num_samples,
         "rms_linear": round(rms, 1),
         "rms_dbfs": round(rms_dbfs, 1),
@@ -85,6 +86,10 @@ DEFAULT_DEVICE_CONFIG = {
     "wake_word_threshold": 0.93,
     "wake_word_window_size": 3,
     "wake_word_window_mode": 1,
+    "wake_word_mode": "local",       # "local" (TFLite на плате) или "server" (openWakeWord ONNX)
+    "ww_threshold": 0.94,            # Порог серверного вейкворда
+    "audio_output_mode": "stream",   # "stream" (встроенный/в сокет) или "external_player" (HA media_player)
+    "response_player": "",           # entity_id плеера HA для вывода звука
     "silence_timeout_ms": 700,
     "listen_timeout_s": 6,
     "silence_threshold_energy": 180,
@@ -198,6 +203,9 @@ class DeviceManager:
                 "area_name": None
             }
             self.devices[clean_mac] = dev
+
+        if dev.get("device_type") == "pc_streamer":
+            dev["config"].setdefault("wake_word_mode", "server")
             
         dev["target_firmware"] = TARGET_FIRMWARE_VERSION
         dev["has_update"] = (

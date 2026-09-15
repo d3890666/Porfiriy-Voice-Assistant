@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.82">
+  <link rel="stylesheet" href="static/style.css?v=0.0.83">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -617,7 +617,7 @@ PING:
                   </div>
                 </div>
 
-                <!-- Приглушать медиа (Ducking) -->
+                    <!-- Приглушать медиа (Ducking) -->
                 <div class="form-group-toggle">
                   <label class="toggle-control">
                     <input type="checkbox" name="apply_enable_ducking" id="chk-enable-ducking">
@@ -632,6 +632,26 @@ PING:
                   </div>
                 </div>
 
+                <!-- Вывод звука ответа -->
+                <div class="form-group-toggle full-width">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_audio_output_mode" id="chk-out-mode">
+                    <span class="toggle-slider"></span>
+                    <strong>Вывод звука ответа</strong>
+                  </label>
+                  <div class="field-wrapper" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <select name="audio_output_mode" id="bulk-audio-output-mode" style="flex: 1; min-width: 180px; padding: 6px 10px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 6px;" onchange="document.getElementById('chk-out-mode').checked = true; document.getElementById('bulk-response-player-wrap').style.display = (this.value === 'external_player' ? 'block' : 'none');">
+                      <option value="stream">Встроенный динамик / В стрим</option>
+                      <option value="external_player">Внешний медиаплеер Home Assistant</option>
+                    </select>
+                    <div id="bulk-response-player-wrap" style="display: none; flex: 1; min-width: 200px;">
+                      <select name="response_player" id="bulk-response-player" style="width: 100%; padding: 6px 10px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 6px;" onchange="document.getElementById('chk-out-mode').checked = true;">
+                        <option value="">— Выберите медиаплеер —</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </div>
 
@@ -639,6 +659,21 @@ PING:
             <div class="settings-group-card">
               <h4 class="settings-group-subtitle">🧠 Распознавание вейкворда («Порфирий»)</h4>
               <div class="form-grid">
+
+                <!-- Режим движка вейкворда -->
+                <div class="form-group-toggle full-width">
+                  <label class="toggle-control">
+                    <input type="checkbox" name="apply_wake_word_mode" id="chk-ww-mode">
+                    <span class="toggle-slider"></span>
+                    <strong>Движок распознавания вейкворда</strong>
+                  </label>
+                  <div class="field-wrapper">
+                    <select name="wake_word_mode" style="width: 100%; padding: 6px 10px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 6px;" onchange="document.getElementById('chk-ww-mode').checked = true;">
+                      <option value="local">Локальный TFLite (на плате ESP32)</option>
+                      <option value="server">Серверный openWakeWord (на сервере аддона)</option>
+                    </select>
+                  </div>
+                </div>
 
                 <!-- Порог вейкворда -->
                 <div class="form-group-toggle">
@@ -1107,6 +1142,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.82"></script>
+  <script src="static/app.js?v=0.0.83"></script>
 </body>
 </html>

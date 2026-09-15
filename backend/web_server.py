@@ -524,7 +524,7 @@ class WebServer:
         except Exception:
             return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
 
-        allowed = {"response_player", "ww_threshold", "area_name", "speaker_volume"}
+        allowed = {"response_player", "ww_threshold", "area_name", "speaker_volume", "audio_output_mode", "wake_word_mode"}
         cfg = {k: v for k, v in data.items() if k in allowed}
 
         if "ww_threshold" in cfg:

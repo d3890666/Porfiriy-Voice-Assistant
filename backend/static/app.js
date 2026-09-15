@@ -272,18 +272,36 @@ function renderDevicesGrid() {
           </div>
           ${isEsp ? `
             <div class="slider-row">
+              <span>🧠 Режим вейкворда:</span>
+              <select style="background: #1e222b; border: 1px solid #3b4252; color: #fff; padding: 3px 6px; border-radius: 4px; font-size: 11px; margin-left: auto;" 
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_mode', this.value)">
+                <option value="local" ${cfg.wake_word_mode !== 'server' ? 'selected' : ''}>Локальный (TFLite)</option>
+                <option value="server" ${cfg.wake_word_mode === 'server' ? 'selected' : ''}>Серверный (openWakeWord)</option>
+              </select>
+            </div>
+            ${cfg.wake_word_mode === 'server' ? `
+              <div class="slider-row">
+                <span>🎯 Порог WW:</span>
+                <input type="range" min="0.50" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" 
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))"
+                  oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)">
+                <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
+              </div>
+            ` : `
+              <div class="slider-row">
+                <span>🎯 Вейкворд:</span>
+                <input type="range" min="0.80" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
+                  oninput="this.nextElementSibling.innerText = this.value">
+                <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
+              </div>
+            `}
+            <div class="slider-row">
               <span>🎙️ Усиление (Gain):</span>
               <input type="number" step="0.1" min="0.5" max="5.0" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
                 value="${cfg.mic_gain !== undefined ? cfg.mic_gain : 1.3}"
                 onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))"
                 title="Усиление микрофона (по умолчанию 1.3)">
-            </div>
-            <div class="slider-row">
-              <span>🎯 Вейкворд:</span>
-              <input type="range" min="0.80" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
-                onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
-                oninput="this.nextElementSibling.innerText = this.value">
-              <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
             </div>
           ` : ''}
           <div class="slider-row">
@@ -304,6 +322,33 @@ function renderDevicesGrid() {
                 ${cfg.enable_ducking !== false ? 'Вкл' : 'Выкл'}
               </span>
             </label>
+          </div>
+
+          <!-- Универсальный блок выбора вывода звука ответа -->
+          <div class="audio-output-box" style="margin-top: 10px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px 10px;">
+            <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700; margin-bottom: 6px;">🔊 Вывод звука ответа:</div>
+            <div style="display: flex; gap: 12px; margin-bottom: ${cfg.audio_output_mode === 'external_player' ? '8px' : '2px'}; font-size: 12px;">
+              <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="radio" name="out_mode_${dev.mac}" value="stream" ${cfg.audio_output_mode !== 'external_player' ? 'checked' : ''} 
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'audio_output_mode', 'stream')">
+                <span>${isEsp ? 'Встроенный динамик' : 'В стрим (динамик ПК)'}</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="radio" name="out_mode_${dev.mac}" value="external_player" ${cfg.audio_output_mode === 'external_player' ? 'checked' : ''} 
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'audio_output_mode', 'external_player')">
+                <span>Внешний плеер HA</span>
+              </label>
+            </div>
+            ${cfg.audio_output_mode === 'external_player' ? `
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <select style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px;" 
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'response_player', this.value)">
+                  <option value="">— Выберите медиаплеер HA —</option>
+                  ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.response_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                  ${cfg.response_player && !availableMediaPlayers.some(p => p.entity_id === cfg.response_player) ? `<option value="${escapeHtml(cfg.response_player)}" selected>${escapeHtml(cfg.response_player)}</option>` : ''}
+                </select>
+              </div>
+            ` : ''}
           </div>
         </div>
 
@@ -755,6 +800,15 @@ async function handleBulkSubmit(e) {
   if (form.apply_enable_ducking && form.apply_enable_ducking.checked) {
     fields.enable_ducking = form.enable_ducking.checked;
   }
+  if (form.apply_audio_output_mode && form.apply_audio_output_mode.checked) {
+    fields.audio_output_mode = form.audio_output_mode.value;
+    if (fields.audio_output_mode === 'external_player' && form.response_player) {
+      fields.response_player = form.response_player.value;
+    }
+  }
+  if (form.apply_wake_word_mode && form.apply_wake_word_mode.checked) {
+    fields.wake_word_mode = form.wake_word_mode.value;
+  }
   if (form.apply_silence_timeout_ms && form.apply_silence_timeout_ms.checked) {
     fields.silence_timeout_ms = parseInt(form.silence_timeout_ms.value, 10);
   }
@@ -816,6 +870,9 @@ async function updateSingleDeviceConfig(mac, field, value) {
     if (d) {
       if (!d.config) d.config = {};
       d.config[field] = value;
+      if (field === 'audio_output_mode' || field === 'wake_word_mode') {
+        renderDevicesGrid();
+      }
     }
 
     await fetch(`${API_BASE}/api/devices/${mac}/config`, {
@@ -1130,6 +1187,17 @@ function populateMediaPlayersDropdown(selectedPlayer) {
 
   select.innerHTML = html;
   select.value = currentVal;
+
+  const bulkSelect = document.getElementById('bulk-response-player');
+  if (bulkSelect) {
+    let bulkHtml = '<option value="">— Выберите медиаплеер —</option>';
+    if (availableMediaPlayers && availableMediaPlayers.length > 0) {
+      availableMediaPlayers.forEach(p => {
+        bulkHtml += `<option value="${escapeHtml(p.entity_id)}">${escapeHtml(p.name)} (${escapeHtml(p.entity_id)})</option>`;
+      });
+    }
+    bulkSelect.innerHTML = bulkHtml;
+  }
 }
 
 async function refreshMediaPlayersList() {

@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.79"
+#define FIRMWARE_VERSION "0.0.83"
 
 #include "model.h"
 // TFLite
@@ -41,6 +41,7 @@ uint16_t ws_port = 8765;
 float mic_gain = 1.3f;
 float speaker_volume = 1.0;
 float wake_word_threshold = 0.93;
+String wake_word_mode = "local";     // "local" (TFLite на ESP32) или "server" (openWakeWord на сервере)
 int silence_timeout_ms = 700;        // таймаут тишины после фразы (мс)
 int listen_timeout_s = 6;            // макс. время ожидания команды (сек)
 int silence_threshold_energy = 180;  // порог энергии звука для детекции голоса
@@ -525,6 +526,7 @@ void handleSave() {
     if (server.hasArg("silence_threshold_energy")) { silence_threshold_energy = server.arg("silence_threshold_energy").toInt(); preferences.putInt("sil_thres", silence_threshold_energy); }
     if (server.hasArg("speaker_volume")) { speaker_volume = server.arg("speaker_volume").toFloat(); preferences.putFloat("spk_vol", speaker_volume); }
     if (server.hasArg("wake_word_threshold")) { wake_word_threshold = server.arg("wake_word_threshold").toFloat(); preferences.putFloat("ww_thres", wake_word_threshold); }
+    if (server.hasArg("wake_word_mode")) { wake_word_mode = server.arg("wake_word_mode"); preferences.putString("ww_mode_str", wake_word_mode); }
     if (server.hasArg("reconnect_interval")) { reconnect_interval = server.arg("reconnect_interval").toInt(); preferences.putInt("reconn_int", reconnect_interval); }
     // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
     enable_barge_in = false;
@@ -563,6 +565,7 @@ void load_preferences() {
     silence_threshold_energy = preferences.getInt("sil_thres", 180);
     speaker_volume = preferences.getFloat("spk_vol", 1.0);
     wake_word_threshold = preferences.getFloat("ww_thres", 0.93);
+    wake_word_mode = preferences.getString("ww_mode_str", "local");
     reconnect_interval = preferences.getInt("reconn_int", 5);
     // Локальный Barge-in на ESP32 принудительно отключен (прерывание обрабатывается на сервере)
     enable_barge_in = false;
@@ -814,6 +817,13 @@ void onMessageCallback(WebsocketsMessage message) {
             Serial.println("Server commanded THINKING.");
             set_state(STATE_THINKING);
         }
+        else if (message.data().indexOf("\"type\":\"listen\"") >= 0 || message.data().indexOf("\"type\": \"listen\"") >= 0) {
+            Serial.println("Server commanded LISTEN (Server Wake Word triggered).");
+            set_state(STATE_LISTENING);
+            user_has_spoken = false;
+            last_speech_time = millis();
+            ws_tx_buffer_len = 0;
+        }
         else if (message.data().indexOf("\"type\":\"speaking\"") >= 0 || message.data().indexOf("\"type\": \"speaking\"") >= 0) {
             Serial.println("Server commanded SPEAKING.");
             set_state(STATE_SPEAKING);
@@ -939,6 +949,7 @@ void handle_remote_config(String json) {
     parse_float("mic_gain", mic_gain, "mic_gain_f");
     parse_float("speaker_volume", speaker_volume, "spk_vol");
     parse_float("wake_word_threshold", wake_word_threshold, "ww_thres");
+    parse_string("wake_word_mode", wake_word_mode, "ww_mode_str");
     parse_int("wake_word_window_size", wake_word_window_size, "ww_win");
     if (wake_word_window_size < 1) wake_word_window_size = 1;
     if (wake_word_window_size > MAX_WINDOW_SIZE) wake_word_window_size = MAX_WINDOW_SIZE;
@@ -1234,24 +1245,31 @@ void loop() {
 
     // --- ЛОГИКА КОНЕЧНОГО АВТОМАТА (STATE MACHINE) ---
     if (current_state == STATE_IDLE) {
-        // ТОЛЬКО В РЕЖИМЕ IDLE ДЕТЕКТИРУЕТСЯ ВЕЙКВОРД!
-        bool detected = detect_wakeword(mic_buffer_16, samples_read);
-        if (millis() - last_sleep_time > 1500) {
-            if (detected) {
-                Serial.println("Wake word detected! Entering LISTENING state...");
-                set_state(STATE_LISTENING);
-                user_has_spoken = false;
-                last_speech_time = millis();
-                ws_tx_buffer_len = 0; // Сбрасываем батч-буфер при новом диалоге
-                client.send("{\"type\":\"wake_word_detected\"}");
-                
-                // Отправляем буфер предзаписи
-                if (is_connected) {
-                    int oldest_idx = pre_roll_head;
-                    int oldest_count = PRE_ROLL_SAMPLES - oldest_idx;
-                    client.sendBinary((const char*)(pre_roll_buffer + oldest_idx), oldest_count * 2);
-                    if (oldest_idx > 0) {
-                        client.sendBinary((const char*)pre_roll_buffer, oldest_idx * 2);
+        if (wake_word_mode == "server") {
+            // Серверный вейкворд: плата непрерывно транслирует аудио в WebSocket
+            if (is_connected && (millis() - last_sleep_time > 500)) {
+                send_mic_data_batched(mic_buffer_16, samples_read);
+            }
+        } else {
+            // ТОЛЬКО В РЕЖИМЕ IDLE ДЕТЕКТИРУЕТСЯ ВЕЙКВОРД!
+            bool detected = detect_wakeword(mic_buffer_16, samples_read);
+            if (millis() - last_sleep_time > 1500) {
+                if (detected) {
+                    Serial.println("Wake word detected! Entering LISTENING state...");
+                    set_state(STATE_LISTENING);
+                    user_has_spoken = false;
+                    last_speech_time = millis();
+                    ws_tx_buffer_len = 0; // Сбрасываем батч-буфер при новом диалоге
+                    client.send("{\"type\":\"wake_word_detected\"}");
+                    
+                    // Отправляем буфер предзаписи
+                    if (is_connected) {
+                        int oldest_idx = pre_roll_head;
+                        int oldest_count = PRE_ROLL_SAMPLES - oldest_idx;
+                        client.sendBinary((const char*)(pre_roll_buffer + oldest_idx), oldest_count * 2);
+                        if (oldest_idx > 0) {
+                            client.sendBinary((const char*)pre_roll_buffer, oldest_idx * 2);
+                        }
                     }
                 }
             }
