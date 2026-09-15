@@ -224,7 +224,7 @@ function renderDevicesGrid() {
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🎯 Порог WW:</span>
-              <input type="range" min="0.50" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" style="flex: 1;" oninput="document.getElementById('ww-thr-val-${dev.mac}').innerText = parseFloat(this.value).toFixed(2)" onchange="saveStreamerConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
+              <input type="range" min="0.30" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" style="flex: 1;" oninput="document.getElementById('ww-thr-val-${dev.mac}').innerText = parseFloat(this.value).toFixed(2)" onchange="saveStreamerConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
               <span id="ww-thr-val-${dev.mac}" style="font-family: monospace; font-size: 12px; min-width: 36px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
             </div>
           </div>
@@ -282,15 +282,29 @@ function renderDevicesGrid() {
             ${cfg.wake_word_mode === 'server' ? `
               <div class="slider-row">
                 <span>🎯 Порог WW:</span>
-                <input type="range" min="0.50" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" 
+                <input type="range" min="0.30" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" 
                   onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))"
                   oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)">
                 <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
               </div>
+              ${globalOptions.debug_mode !== false ? `
+                <div class="ww-debug-window" style="margin: 4px 0 8px 0; padding: 6px 10px; background: rgba(0, 0, 0, 0.35); border: 1px solid #30363d; border-radius: 6px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 11px; color: #8b949e; display: flex; align-items: center; gap: 4px;">
+                      <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#58a6ff'};"></span>
+                      🎯 Отладка WW (Live):
+                    </span>
+                    <span id="ww-score-val-${dev.mac}" style="font-family: monospace; font-size: 12px; font-weight: 700; color: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#8b949e'};">${(dev.ww_score || 0).toFixed(3)}</span>
+                  </div>
+                  <div style="width: 100%; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; position: relative;">
+                    <div id="ww-score-bar-${dev.mac}" style="height: 100%; width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)'}; border-radius: 3px; transition: width 0.15s;"></div>
+                  </div>
+                </div>
+              ` : ''}
             ` : `
               <div class="slider-row">
                 <span>🎯 Вейкворд:</span>
-                <input type="range" min="0.80" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
+                <input type="range" min="0.30" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
                   onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
                   oninput="this.nextElementSibling.innerText = this.value">
                 <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
@@ -781,8 +795,11 @@ async function handleBulkSubmit(e) {
   if (form.apply_speaker_volume.checked) {
     fields.speaker_volume = parseFloat(form.speaker_volume.value);
   }
-  if (form.apply_wake_word_threshold.checked) {
+  if (form.apply_wake_word_threshold && form.apply_wake_word_threshold.checked) {
     fields.wake_word_threshold = parseFloat(form.wake_word_threshold.value);
+  }
+  if (form.apply_ww_threshold && form.apply_ww_threshold.checked) {
+    fields.ww_threshold = parseFloat(form.ww_threshold.value);
   }
   if (form.apply_wake_word_window_size && form.apply_wake_word_window_size.checked) {
     fields.wake_word_window_size = parseInt(form.wake_word_window_size.value, 10);
@@ -1406,11 +1423,12 @@ function setupSSE() {
             scoreVal.innerText = score.toFixed(3);
             const dev = devices.find(d => d.mac === mac);
             const threshold = (dev && dev.config && dev.config.ww_threshold) || 0.94;
-            scoreVal.style.color = score >= threshold ? 'var(--accent-green)' : '#8b949e';
-          }
-          if (scoreBar) {
-            scoreBar.style.width = Math.round(score * 100) + '%';
-          }
+            const isTriggered = score >= threshold;
+            scoreVal.style.color = isTriggered ? 'var(--accent-green)' : '#8b949e';
+            if (scoreBar) {
+              scoreBar.style.width = Math.min(100, Math.round(score * 100)) + '%';
+              scoreBar.style.background = isTriggered ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)';
+            }
           // Обновляем в локальном стейте без перерисовки
           const devIdx = devices.findIndex(d => d.mac === mac);
           if (devIdx >= 0) devices[devIdx].ww_score = score;

@@ -524,7 +524,9 @@ async def handle_client(websocket):
                                 dev_obj = device_manager.get_device(client_mac) or {}
                                 if dev_obj.get("state") == "idle" and not session_state.get("is_gemini_speaking") and not session_state.get("is_thinking"):
                                     if ww_engine and ww_engine.is_ready:
-                                        score = ww_engine.process_chunk(message, client_mac)
+                                        dev_thresh = dev_cfg.get("ww_threshold")
+                                        active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
+                                        score = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
                                         device_manager.update_ww_score(client_mac, score)
                                         if ww_engine.is_triggered(client_mac):
                                             preroll = ww_engine.consume_preroll(client_mac)
@@ -1195,7 +1197,10 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             if isinstance(message, bytes):
                 # Прогоняем PCM через вейкворд
                 if ww_engine and ww_engine.is_ready:
-                    score = ww_engine.process_chunk(message, client_mac)
+                    dev_cfg = device_manager.get_device_config(client_mac)
+                    dev_thresh = dev_cfg.get("ww_threshold")
+                    active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
+                    score = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
                     device_manager.update_ww_score(client_mac, score)
 
                     if ww_engine.is_triggered(client_mac) and not session_active:

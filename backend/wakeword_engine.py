@@ -65,12 +65,13 @@ class WakeWordEngine:
             }
         return self._sources[device_id]
 
-    def process_chunk(self, pcm_bytes: bytes, device_id: str) -> float:
+    def process_chunk(self, pcm_bytes: bytes, device_id: str, custom_threshold: Optional[float] = None) -> float:
         if not self.is_ready:
             return 0.0
         src = self._get_source(device_id)
         src["preroll"].append(pcm_bytes)
         now = time.time()
+        thresh = custom_threshold if custom_threshold is not None else self.threshold
         if src["triggered"] or (now - src["last_trigger_time"]) < self.cooldown_s:
             return src["last_score"]
         try:
@@ -83,8 +84,15 @@ class WakeWordEngine:
             prediction = self._model.predict(chunk)
             score = float(prediction.get(self._model_name, 0.0))
             src["last_score"] = score
-            if score >= self.threshold:
-                logger.info(f"[WW] Detected! device={device_id} score={score:.4f}")
+
+            # Отладка вейкворда на сервере: подробный вывод в лог при скоре >= 0.20
+            last_log = src.get("last_log_time", 0.0)
+            if (score >= 0.20 or score >= thresh) and (now - last_log >= 0.25):
+                src["last_log_time"] = now
+                logger.info(f"[WW-DEBUG] [{device_id}] Score: {score:.3f} | Порог: {thresh:.2f} | Сработка: {score >= thresh}")
+
+            if score >= thresh:
+                logger.info(f"[WW-DETECTED] 🎉 Вейкворд обнаружен! Устройство: {device_id} | Скор: {score:.4f} >= Порог: {thresh:.2f}")
                 src["triggered"] = True
                 src["last_trigger_time"] = now
             return score
@@ -120,5 +128,5 @@ class WakeWordEngine:
         return src["last_score"] if src else 0.0
 
     def set_threshold(self, new_threshold: float):
-        self.threshold = max(0.5, min(1.0, float(new_threshold)))
+        self.threshold = max(0.1, min(1.0, float(new_threshold)))
         logger.info(f"[WW] Threshold updated to {self.threshold}")

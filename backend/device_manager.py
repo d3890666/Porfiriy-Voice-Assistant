@@ -683,8 +683,9 @@ class DeviceManager:
         dev = self.devices.get(clean_mac)
         if dev:
             dev["ww_score"] = round(score, 4)
-            # Лёгкое SSE-уведомление только при заметном изменении
-            if abs(score - dev.get("_last_notified_score", -1.0)) >= 0.05:
+            # Отправляем SSE обновление при любом изменении (>= 0.02) или при активности (score >= 0.20)
+            last_score = dev.get("_last_notified_score", -1.0)
+            if abs(score - last_score) >= 0.02 or (score >= 0.20 and abs(score - last_score) >= 0.01):
                 dev["_last_notified_score"] = score
                 self._notify("ww_score", {"mac": clean_mac, "ww_score": dev["ww_score"]})
 
