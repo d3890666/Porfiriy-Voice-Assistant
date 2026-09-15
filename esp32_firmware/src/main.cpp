@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.83"
+#define FIRMWARE_VERSION "0.0.85"
 
 #include "model.h"
 // TFLite
@@ -132,8 +132,8 @@ unsigned long ota_last_packet_time = 0;
 int32_t mic_buffer_32[BUFFER_SAMPLES];
 int16_t mic_buffer_16[BUFFER_SAMPLES];
 
-// Буфер для пакетной отправки (батчинга) в WebSocket (4096 байт)
-#define WS_TX_BUFFER_SIZE 4096
+// Буфер для пакетной отправки (батчинга) в WebSocket (1024 байта = 512 сэмплов = 32 мс)
+#define WS_TX_BUFFER_SIZE 1024
 uint8_t ws_tx_buffer[WS_TX_BUFFER_SIZE];
 size_t ws_tx_buffer_len = 0;
 
@@ -1229,10 +1229,25 @@ void loop() {
     i2s_read(I2S_NUM_0, mic_buffer_32, sizeof(mic_buffer_32), &bytes_read, portMAX_DELAY);
     int samples_read = bytes_read / 4;
     
+    // Цифровой Biquad High-Pass фильтр 2-го порядка (срез 100 Гц при 16 кГц)
+    // Эффективно подавляет сетевой гул 50/100 Гц и постоянное смещение (DC offset)
+    static float hp_x1 = 0.0f, hp_x2 = 0.0f;
+    static float hp_y1 = 0.0f, hp_y2 = 0.0f;
+    const float hp_b0 = 0.972614f, hp_b1 = -1.945228f, hp_b2 = 0.972614f;
+    const float hp_a1 = -1.944478f, hp_a2 = 0.945978f;
+
     int32_t sum_amp = 0;
     for (int i = 0; i < samples_read; i++) {
-        // Сдвиг на 14 бит вместо 16 дает аппаратное усиление x4 для INMP441
-        int32_t val = (int32_t)((mic_buffer_32[i] >> 14) * mic_gain);
+        // Сдвиг на 14 бит дает базовое масштабирование для 24-bit INMP441 в 32-bit I2S слоте
+        float x = (float)(mic_buffer_32[i] >> 14) * mic_gain;
+        // Biquad IIR фильтрация (100 Гц High-Pass)
+        float y = hp_b0 * x + hp_b1 * hp_x1 + hp_b2 * hp_x2 - hp_a1 * hp_y1 - hp_a2 * hp_y2;
+        hp_x2 = hp_x1;
+        hp_x1 = x;
+        hp_y2 = hp_y1;
+        hp_y1 = y;
+
+        int32_t val = (int32_t)roundf(y);
         if (val > 32767) val = 32767;
         if (val < -32768) val = -32768;
         mic_buffer_16[i] = (int16_t)val;

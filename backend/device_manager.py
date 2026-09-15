@@ -11,7 +11,25 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.83"
+TARGET_FIRMWARE_VERSION = "0.0.85"
+
+def filter_pcm16_highpass(pcm_data: bytes, cutoff_hz: float = 85.0, sample_rate: int = 16000) -> bytes:
+    """Удаление сетевого гула 50/100 Гц и постоянного смещения (DC offset) через High-Pass фильтр 2-го порядка."""
+    if not pcm_data:
+        return b""
+    try:
+        import numpy as np
+        from scipy import signal
+        samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
+        if len(samples) < 8:
+            return pcm_data
+        b, a = signal.butter(2, cutoff_hz, btype='highpass', fs=sample_rate)
+        filtered = signal.lfilter(b, a, samples)
+        clamped = np.clip(np.round(filtered), -32768, 32767).astype(np.int16)
+        return clamped.tobytes()
+    except Exception as e:
+        logger.debug(f"[FILTER] High-pass filter error: {e}")
+        return pcm_data
 
 def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     """Упаковка сырых 16-битных PCM сэмплов в стандартный RIFF WAV контейнер."""
@@ -81,7 +99,7 @@ def analyze_pcm16(pcm_data: bytes, sample_rate: int = 16000) -> Dict[str, Any]:
     }
 
 DEFAULT_DEVICE_CONFIG = {
-    "mic_gain": 1.3,
+    "mic_gain": 2.0,
     "speaker_volume": 0.5,
     "wake_word_threshold": 0.93,
     "wake_word_window_size": 3,
@@ -609,12 +627,13 @@ class DeviceManager:
         session["active"] = False
         chunks = session.get("chunks", [])
         raw_pcm = b"".join(chunks)
+        filtered_pcm = filter_pcm16_highpass(raw_pcm) if raw_pcm else b""
         
-        wav_bytes = pcm16_to_wav(raw_pcm) if raw_pcm else b""
-        stats = analyze_pcm16(raw_pcm)
+        wav_bytes = pcm16_to_wav(filtered_pcm) if filtered_pcm else b""
+        stats = analyze_pcm16(filtered_pcm)
         stats["mac"] = clean_mac
         stats["timestamp"] = time.time()
-        stats["has_audio"] = bool(raw_pcm and len(raw_pcm) >= 1600)
+        stats["has_audio"] = bool(filtered_pcm and len(filtered_pcm) >= 1600)
         
         self.mic_test_results[clean_mac] = {
             "wav": wav_bytes,
@@ -622,7 +641,7 @@ class DeviceManager:
             "timestamp": time.time()
         }
         
-        logger.info(f"[MIC-TEST] Finished test for {clean_mac}: {len(raw_pcm)} bytes PCM, {stats['duration_s']}s, RMS: {stats['rms_dbfs']} dBFS, Peak: {stats['peak']}, Clip: {stats['clipping_percent']}%")
+        logger.info(f"[MIC-TEST] Finished test for {clean_mac}: {len(filtered_pcm)} bytes PCM, {stats['duration_s']}s, RMS: {stats['rms_dbfs']} dBFS, Peak: {stats['peak']}, Clip: {stats['clipping_percent']}%")
         self._notify("mic_test_ready", {"mac": clean_mac, "stats": stats, "has_audio": stats["has_audio"]})
         return stats
 
@@ -636,8 +655,9 @@ class DeviceManager:
         if not pcm_data or len(pcm_data) < 1600:
             return
             
-        wav_bytes = pcm16_to_wav(pcm_data)
-        stats = analyze_pcm16(pcm_data)
+        filtered_pcm = filter_pcm16_highpass(pcm_data)
+        wav_bytes = pcm16_to_wav(filtered_pcm)
+        stats = analyze_pcm16(filtered_pcm)
         stats["mac"] = clean_mac
         stats["timestamp"] = time.time()
         
