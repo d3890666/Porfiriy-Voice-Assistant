@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.78"
+#define FIRMWARE_VERSION "0.0.79"
 
 #include "model.h"
 // TFLite
@@ -131,6 +131,11 @@ unsigned long ota_last_packet_time = 0;
 int32_t mic_buffer_32[BUFFER_SAMPLES];
 int16_t mic_buffer_16[BUFFER_SAMPLES];
 
+// Буфер для пакетной отправки (батчинга) в WebSocket (4096 байт)
+#define WS_TX_BUFFER_SIZE 4096
+uint8_t ws_tx_buffer[WS_TX_BUFFER_SIZE];
+size_t ws_tx_buffer_len = 0;
+
 // Pre-roll буфер (последняя 1 секунда звука = 16000 сэмплов)
 #define PRE_ROLL_SAMPLES 16000
 int16_t pre_roll_buffer[PRE_ROLL_SAMPLES];
@@ -172,7 +177,7 @@ CRGB hexToCRGB(String hex) {
 // Управление светодиодом
 void update_led() {
     static unsigned long last_led_update = 0;
-    if (millis() - last_led_update < 33) return; // ~30 FPS limit
+    if (millis() - last_led_update < 33) return; // Ограничение ~30 FPS для разгрузки CPU и I2S DMA
     last_led_update = millis();
 
     int active_mode = led_mode_idle;
@@ -237,6 +242,28 @@ void update_led() {
         FastLED.setBrightness(b);
     }
     FastLED.show();
+}
+
+// Отправка аудио батчами для снижения нагрузки на Wi-Fi
+void send_mic_data_batched(const int16_t* data, int samples) {
+    if (!is_connected) return;
+    int bytes_to_copy = samples * 2;
+    const uint8_t* ptr = (const uint8_t*)data;
+    
+    while (bytes_to_copy > 0) {
+        int space_left = WS_TX_BUFFER_SIZE - ws_tx_buffer_len;
+        int chunk = (bytes_to_copy < space_left) ? bytes_to_copy : space_left;
+        
+        memcpy(&ws_tx_buffer[ws_tx_buffer_len], ptr, chunk);
+        ws_tx_buffer_len += chunk;
+        ptr += chunk;
+        bytes_to_copy -= chunk;
+        
+        if (ws_tx_buffer_len >= WS_TX_BUFFER_SIZE) {
+            client.sendBinary((const char*)ws_tx_buffer, WS_TX_BUFFER_SIZE);
+            ws_tx_buffer_len = 0;
+        }
+    }
 }
 
 // HTML страница настроек (с дашбордом и AJAX)
@@ -1215,6 +1242,7 @@ void loop() {
                 set_state(STATE_LISTENING);
                 user_has_spoken = false;
                 last_speech_time = millis();
+                ws_tx_buffer_len = 0; // Сбрасываем батч-буфер при новом диалоге
                 client.send("{\"type\":\"wake_word_detected\"}");
                 
                 // Отправляем буфер предзаписи
@@ -1230,10 +1258,8 @@ void loop() {
         }
     }
     else if (current_state == STATE_LISTENING) {
-        // Передаем звук микрофона в WebSocket
-        if (is_connected) {
-            client.sendBinary((const char*)mic_buffer_16, samples_read * 2);
-        }
+        // Передаем звук микрофона в WebSocket батчами
+        send_mic_data_batched(mic_buffer_16, samples_read);
 
         // Локальный детектор тишины
         if (avg_amp > silence_threshold_energy) {
@@ -1247,9 +1273,7 @@ void loop() {
     }
     else if (current_state == STATE_SPEAKING) {
         // Отправляем звук микрофона на бэкенд для серверной обработки прерываний (Barge-in)
-        if (is_connected) {
-            client.sendBinary((const char*)mic_buffer_16, samples_read * 2);
-        }
+        send_mic_data_batched(mic_buffer_16, samples_read);
 
         // Локальный детектор на ESP32 сохранен, но принудительно отключен (enable_barge_in = false)
         if (enable_barge_in) {
@@ -1277,9 +1301,8 @@ void loop() {
     }
     else if (current_state == STATE_MIC_TEST) {
         // Передаем сырой звук микрофона в WebSocket для тестовой записи
-        if (is_connected) {
-            client.sendBinary((const char*)mic_buffer_16, samples_read * 2);
-        }
+        send_mic_data_batched(mic_buffer_16, samples_read);
+        
         if (millis() >= mic_test_end_time) {
             Serial.println("[MIC-TEST] Finished mic test duration. Returning to IDLE.");
             client.send("{\"type\":\"mic_test_complete\"}");

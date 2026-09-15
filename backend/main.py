@@ -670,7 +670,7 @@ async def handle_client(websocket):
                                         audio_logger.debug(f"Sending {len(pcm_audio)} bytes audio chunk from Gemini to WS Client (scaled to {speaker_vol*100:.0f}%)")
                                     
                                         # Чанкуем аудио на сервере, чтобы ESP32 не падала от нехватки памяти
-                                        CHUNK_SIZE = 2048
+                                        CHUNK_SIZE = 4096
                                         for i in range(0, len(pcm_audio), CHUNK_SIZE):
                                             chunk = pcm_audio[i:i+CHUNK_SIZE]
                                             await websocket.send(chunk)
