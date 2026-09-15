@@ -197,6 +197,42 @@ function renderDevicesGrid() {
             <span style="font-weight: 600;">${rssi} dBm</span>
             <span style="color: #888; font-size: 12px; margin-left: auto;">${rssiInfo.quality}</span>
           </div>
+        ` : dev.device_type === 'pc_streamer' ? `
+          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(100, 65, 200, 0.15), rgba(60, 130, 230, 0.1)); border: 1px solid rgba(100, 65, 200, 0.3); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 700; font-size: 13px;">🎙️ PC Streamer</span>
+            <span style="font-size: 11px; color: #8b949e; font-family: monospace; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 12px;">Серверный вейкворд</span>
+          </div>
+          <!-- WW Score Gauge -->
+          <div style="margin: 10px 0 6px 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <span style="font-size: 12px; color: #8b949e;">🎯 WW Score</span>
+              <span id="ww-score-val-${dev.mac}" style="font-family: monospace; font-size: 12px; font-weight: 700; color: ${(dev.ww_score || 0) >= (dev.config && dev.config.ww_threshold || 0.94) ? 'var(--accent-green)' : '#8b949e'};">${(dev.ww_score || 0).toFixed(3)}</span>
+            </div>
+            <div style="width: 100%; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden;">
+              <div id="ww-score-bar-${dev.mac}" style="height: 100%; width: ${Math.round((dev.ww_score || 0) * 100)}%; background: linear-gradient(90deg, #58a6ff, #00d2ff); border-radius: 3px; transition: width 0.3s;"></div>
+            </div>
+          </div>
+          <!-- Streamer Settings -->
+          <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🔊 Плеер:</span>
+              <select id="streamer-player-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveStreamerConfig('${dev.mac}', 'response_player', this.value)">
+                <option value="">— Не задан —</option>
+                ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.response_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                ${cfg.response_player && !availableMediaPlayers.some(p => p.entity_id === cfg.response_player) ? `<option value="${escapeHtml(cfg.response_player)}" selected>${escapeHtml(cfg.response_player)}</option>` : ''}
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🎯 Порог WW:</span>
+              <input type="range" min="0.50" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" style="flex: 1;" oninput="document.getElementById('ww-thr-val-${dev.mac}').innerText = parseFloat(this.value).toFixed(2)" onchange="saveStreamerConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
+              <span id="ww-thr-val-${dev.mac}" style="font-family: monospace; font-size: 12px; min-width: 36px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
+            </div>
+          </div>
+          <div style="margin-top: 8px;">
+            <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" title="Прослушать последний ответ Gemini для этого стримера" style="font-size: 12px; padding: 6px 12px; width: 100%;">
+              ▶ Прослушать ответ Gemini
+            </button>
+          </div>
         ` : `
           <div class="virtual-client-banner">
             <span>💻 Клиент (${escapeHtml(dev.device_type || 'ПК')})</span>
@@ -1166,7 +1202,8 @@ async function saveGlobalSettings(e) {
       prompt_persona: document.getElementById('cfg-prompt-persona')?.value || '',
       prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
       prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',
-      prompt_general: document.getElementById('cfg-prompt-general')?.value || ''
+      prompt_general: document.getElementById('cfg-prompt-general')?.value || '',
+      ww_server_threshold: parseFloat(document.getElementById('cfg-ww-threshold')?.value || 0.94)
     };
 
     const newKey = document.getElementById('cfg-api-key')?.value?.trim();
@@ -1291,6 +1328,25 @@ function setupSSE() {
             if (statusEl) statusEl.innerHTML = `<span style="color: var(--accent-blue);" title="Свежая реплика готова к прослушиванию">💬 Реплика готова</span>`;
           }
           return;
+        } else if (data.event === 'ww_score' && data.device && data.device.mac) {
+          // Лёгкое обновление только gauge вейкворда без перерисовки всей карточки
+          const mac = data.device.mac;
+          const score = data.device.ww_score || 0;
+          const scoreVal = document.getElementById(`ww-score-val-${mac}`);
+          const scoreBar = document.getElementById(`ww-score-bar-${mac}`);
+          if (scoreVal) {
+            scoreVal.innerText = score.toFixed(3);
+            const dev = devices.find(d => d.mac === mac);
+            const threshold = (dev && dev.config && dev.config.ww_threshold) || 0.94;
+            scoreVal.style.color = score >= threshold ? 'var(--accent-green)' : '#8b949e';
+          }
+          if (scoreBar) {
+            scoreBar.style.width = Math.round(score * 100) + '%';
+          }
+          // Обновляем в локальном стейте без перерисовки
+          const devIdx = devices.findIndex(d => d.mac === mac);
+          if (devIdx >= 0) devices[devIdx].ww_score = score;
+          return;
         } else if (data.device && data.device.mac) {
           // Обработка специального прогресса OTA
           if (data.event === 'ota_progress') {
@@ -1386,3 +1442,78 @@ window.renderOtaBanner = renderOtaBanner;
 window.handleBulkOta = handleBulkOta;
 window.triggerDeviceOta = triggerDeviceOta;
 window.showToast = showToast;
+
+// ------------------------------------------------------------------ //
+// pc_streamer: Сохранение настроек стримера
+// ------------------------------------------------------------------ //
+
+async function saveStreamerConfig(mac, field, value) {
+  try {
+    const d = devices.find(x => x.mac === mac);
+    if (d) {
+      if (!d.config) d.config = {};
+      d.config[field] = value;
+    }
+    const payload = {};
+    payload[field] = value;
+    const res = await fetch(`${API_BASE}/api/devices/${mac}/streamer_config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      showToast(`Настройка ${field} стримера обновлена`);
+    } else {
+      showToast(`Ошибка: ${res.status}`, true);
+    }
+  } catch (err) {
+    showToast('Ошибка обновления стримера', true);
+  }
+}
+window.saveStreamerConfig = saveStreamerConfig;
+
+// Прослушать последний ответ Gemini для pc_streamer
+async function playStreamerResponse(mac) {
+  const url = `${API_BASE}/api/virtual/${encodeURIComponent(mac)}/response.wav?t=${Date.now()}`;
+  try {
+    const res = await fetch(url, { method: 'HEAD' });
+    if (!res.ok) {
+      showToast('Ответ Gemini ещё не получен для этого стримера', true);
+      return;
+    }
+    const audio = new Audio(url);
+    audio.play();
+    showToast('▶ Воспроизведение ответа Gemini...');
+  } catch (err) {
+    showToast('Ошибка воспроизведения', true);
+  }
+}
+window.playStreamerResponse = playStreamerResponse;
+
+// Загрузка нового .onnx файла модели вейкворда
+async function uploadWwModel(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('model', file);
+  showToast('Загружаю модель...');
+  try {
+    const res = await fetch(`${API_BASE}/api/virtual/upload_model`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (data.success) {
+      const modelPathEl = document.getElementById('cfg-ww-model-path');
+      if (modelPathEl) modelPathEl.value = data.path || file.name;
+      showToast(`Модель загружена: ${file.name} (${Math.round((data.size || 0) / 1024)} KB)`);
+    } else {
+      showToast(`Ошибка загрузки: ${data.error || 'unknown'}`, true);
+    }
+  } catch (err) {
+    showToast('Сетевая ошибка при загрузке модели', true);
+  }
+  // Сбросить инпут чтобы можно было загрузить тот же файл повторно
+  input.value = '';
+}
+window.uploadWwModel = uploadWwModel;

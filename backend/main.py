@@ -16,9 +16,15 @@ from phrase_manager import PhraseManager
 from device_manager import DeviceManager
 from mqtt_discovery import MQTTDiscoveryManager
 from web_server import WebServer
+from wakeword_engine import WakeWordEngine
 
 phrase_manager = PhraseManager()
 device_manager = DeviceManager()
+
+# Серверный детектор вейкворда (один на весь процесс)
+_WW_MODEL_PATH = "porfiriy.onnx"
+_WW_DEFAULT_THRESHOLD = 0.94
+ww_engine: WakeWordEngine = None  # инициализируется в main()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("server")
@@ -283,7 +289,35 @@ async def handle_client(websocket):
     remote_ip = websocket.remote_address[0] if websocket.remote_address else "unknown"
     client_mac = f"esp32_{remote_ip.replace('.', '_')}"
     logger.info(f"Client connected from {websocket.remote_address} (session id: {client_mac})")
-    
+
+    # --- Быстрая проверка типа устройства ДО открытия Gemini-сессии ---
+    # Ждём первое сообщение. Если это register с device_type="pc_streamer" —
+    # маршрутизируем в handle_pc_streamer (серверный вейкворд), иначе идём дальше.
+    try:
+        first_msg = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+    except (asyncio.TimeoutError, ConnectionClosed):
+        logger.info(f"Client {client_mac} disconnected before sending register message.")
+        return
+
+    first_data = None
+    if isinstance(first_msg, str):
+        try:
+            first_data = json.loads(first_msg)
+        except Exception:
+            pass
+
+    if first_data and first_data.get("type") == "register":
+        client_mac = first_data.get("mac", client_mac).lower()
+        device_type = first_data.get("device_type", "esp32")
+        device_manager.register_device(client_mac, first_data, ws=websocket)
+        if device_type == "pc_streamer":
+            logger.info(f"[STREAMER] Routing {client_mac} to server-side wake word handler.")
+            await handle_pc_streamer(websocket, client_mac, first_data)
+            return
+    elif isinstance(first_msg, bytes):
+        # Редкий случай: клиент сразу льёт байты (старый debug_client)
+        pass  # обработаем ниже вместе с остальными
+
     ha_api = HomeAssistantAPI()
     
     # Проверяем, привязана ли уже эта колонка к комнате в HA
@@ -951,6 +985,196 @@ async def handle_client(websocket):
     finally:
         device_manager.set_device_offline(client_mac)
 
+async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
+    """
+    Обрабатывает подключение pc_streamer клиента:
+    - Непрерывно принимает PCM 16 kHz
+    - Детектирует вейкворд через WakeWordEngine (openWakeWord ONNX)
+    - При срабатывании — открывает сессию Gemini, собирает ответ
+    - Ответ сохраняется как WAV и передаётся на HA media_player
+    """
+    options = get_options()
+    ha_api = HomeAssistantAPI()
+    dev_config = device_manager.get_device_config(client_mac)
+    response_player = dev_config.get("response_player") or options.get("default_media_player", "auto")
+    area_name = reg_data.get("area_name") or device_manager.get_device_area(client_mac)
+    ww_threshold = float(dev_config.get("ww_threshold", _WW_DEFAULT_THRESHOLD))
+
+    logger.info(f"[STREAMER] {client_mac} listening. response_player={response_player}, threshold={ww_threshold}")
+    device_manager.set_device_state(client_mac, "listening")
+
+    # Буфер для накопления аудио во время активной сессии Gemini
+    session_active = False
+    gemini_audio_buf: list = []
+
+    async def _run_gemini_session(preroll: bytes):
+        """Открывает Gemini Live сессию, сливает ответ в WAV и кидает на media_player."""
+        nonlocal session_active
+        session_active = True
+        device_manager.set_device_state(client_mac, "listening")
+
+        api_key_str = (options.get("gemini_api_key") or "").strip()
+        api_key = get_active_api_key(api_key_str)
+        if not api_key:
+            logger.error("[STREAMER] Gemini API key missing, cannot start session.")
+            session_active = False
+            return
+
+        # Формируем системный промпт
+        devices_text = await ha_api.get_filtered_entities()
+        modular_parts = []
+        for key, title in [
+            ("prompt_persona", "PERSONA & CONTEXT"),
+            ("prompt_users", "USERS & ACOUSTIC IDENTIFICATION"),
+            ("prompt_smart_home", "SMART HOME EXECUTION RULES"),
+            ("prompt_general", "GENERAL DIALOGUE, SEARCH & MEDIA"),
+        ]:
+            if options.get(key, "").strip():
+                modular_parts.append(f"### {title}\n{options[key].strip()}")
+        prompt_base = "\n\n".join(modular_parts) or options.get("system_prompt", "")
+        anti_hallucination = (
+            "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
+            "unless you have explicitly called the corresponding tool."
+        )
+        full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
+        if area_name:
+            full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: Room '{area_name}'."
+
+        gemini_client = GeminiProxyClient(
+            api_key=api_key,
+            system_prompt=full_prompt,
+            ha_api=ha_api,
+            voice_name=options.get("voice_name", "Charon"),
+            model=options.get("gemini_model", "gemini-2.0-flash-exp"),
+            enable_google_search=options.get("enable_google_search", True),
+            vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600)
+        )
+
+        pcm_response_chunks = []
+        try:
+            async with gemini_client.connect() as session:
+                # Отправляем pre-roll (аудио до вейкворда)
+                if preroll:
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=preroll, mime_type="audio/pcm;rate=16000")
+                    )
+                # Отправляем накопленный буфер после вейкворда
+                for chunk in list(gemini_audio_buf):
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
+                    )
+                gemini_audio_buf.clear()
+
+                # Получаем ответ
+                device_manager.set_device_state(client_mac, "thinking")
+                async for response in session.receive():
+                    if response.server_content and response.server_content.model_turn:
+                        device_manager.set_device_state(client_mac, "speaking")
+                        for part in response.server_content.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+                                pcm_response_chunks.append(scale_pcm16(part.inline_data.data, speaker_vol))
+                    if response.server_content and getattr(response.server_content, "turn_complete", False):
+                        logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
+                        break
+        except Exception as e:
+            logger.error(f"[STREAMER] Gemini session error for {client_mac}: {e}")
+        finally:
+            session_active = False
+            device_manager.set_device_state(client_mac, "listening")
+
+        if not pcm_response_chunks:
+            logger.warning(f"[STREAMER] No audio received from Gemini for {client_mac}.")
+            return
+
+        # Упаковываем PCM в WAV
+        import io, wave as wave_lib
+        raw_pcm = b"".join(pcm_response_chunks)
+        buf = io.BytesIO()
+        with wave_lib.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(raw_pcm)
+        wav_bytes = buf.getvalue()
+        device_manager.save_response_wav(client_mac, wav_bytes)
+
+        # Определяем URL WAV для HA media_player
+        # Используем IP из SUPERVISOR_TOKEN окружения или fallback
+        ha_host = os.environ.get("HASSIO_TOKEN", None)
+        # Определяем базовый URL из переменных окружения HA (Ingress)
+        supervisor_host = "homeassistant"
+        wav_url = f"http://{supervisor_host}:8099/api/virtual/{client_mac}/response.wav"
+
+        player = response_player if response_player and response_player != "auto" else None
+        if not player:
+            logger.warning(f"[STREAMER] No response_player configured for {client_mac}. Set it in device settings.")
+            return
+
+        logger.info(f"[STREAMER] Playing response on {player}: {wav_url}")
+        try:
+            await ha_api.call_service("media_player", "play_media", {
+                "entity_id": player,
+                "media_content_id": wav_url,
+                "media_content_type": "music"
+            })
+        except Exception as e:
+            logger.error(f"[STREAMER] Failed to play media on {player}: {e}")
+
+    try:
+        async for message in websocket:
+            if isinstance(message, bytes):
+                # Прогоняем PCM через вейкворд
+                if ww_engine and ww_engine.is_ready:
+                    score = ww_engine.process_chunk(message, client_mac)
+                    device_manager.update_ww_score(client_mac, score)
+
+                    if ww_engine.is_triggered(client_mac) and not session_active:
+                        preroll = ww_engine.consume_preroll(client_mac)
+                        # Отправляем beep клиенту (опционально через WebSocket)
+                        try:
+                            speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+                            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+                        except Exception:
+                            pass
+                        asyncio.create_task(_run_gemini_session(preroll))
+
+                if session_active:
+                    gemini_audio_buf.append(message)
+
+            elif isinstance(message, str):
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get("type")
+                    if msg_type == "heartbeat":
+                        device_manager.update_heartbeat(
+                            client_mac,
+                            rssi=data.get("rssi", 0),
+                            uptime=data.get("uptime", 0),
+                            state=data.get("state")
+                        )
+                    elif msg_type == "update_config":
+                        # Клиент может обновить ww_threshold и response_player на лету
+                        cfg = data.get("config", {})
+                        if "ww_threshold" in cfg:
+                            ww_threshold = float(cfg["ww_threshold"])
+                            device_manager.update_device_config(client_mac, {"ww_threshold": ww_threshold})
+                        if "response_player" in cfg:
+                            response_player = cfg["response_player"]
+                            device_manager.update_device_config(client_mac, {"response_player": response_player})
+                except Exception as e:
+                    logger.debug(f"[STREAMER] Text message parse error: {e}")
+
+    except ConnectionClosed:
+        logger.info(f"[STREAMER] {client_mac} disconnected.")
+    except Exception as e:
+        logger.error(f"[STREAMER] Unexpected error for {client_mac}: {e}")
+    finally:
+        if ww_engine:
+            ww_engine.reset(client_mac)
+        device_manager.set_device_offline(client_mac)
+
+
 async def main():
     port = 8765
     logger.info(f"Porfiriy Backend Server starting on ws://0.0.0.0:{port} ...")
@@ -963,12 +1187,21 @@ async def main():
     # 0. Запуск динамического обнаружения доступных моделей Gemini
     asyncio.create_task(refresh_available_models())
 
-    # 1. Запуск MQTT Discovery Manager
+    # 1. Инициализация серверного WakeWordEngine (openWakeWord ONNX)
+    global ww_engine
+    ww_threshold_global = float(options.get("ww_server_threshold", _WW_DEFAULT_THRESHOLD))
+    ww_engine = WakeWordEngine(model_path=_WW_MODEL_PATH, threshold=ww_threshold_global)
+    if ww_engine.is_ready:
+        logger.info(f"[WW] Server-side wake word engine ready (threshold={ww_threshold_global}).")
+    else:
+        logger.warning("[WW] Server-side wake word engine NOT ready. Check porfiriy.onnx and openwakeword install.")
+
+    # 2. Запуск MQTT Discovery Manager
     ha_api = HomeAssistantAPI()
     mqtt_manager = MQTTDiscoveryManager(device_manager, options)
     asyncio.create_task(mqtt_manager.start())
     
-    # 2. Запуск Ingress Web Server (порт 8099)
+    # 3. Запуск Ingress Web Server (порт 8099)
     web_server = WebServer(
         device_manager, 
         ha_api, 
@@ -977,11 +1210,12 @@ async def main():
         phrase_manager=phrase_manager, 
         models_callback=lambda: _available_models,
         refresh_models_callback=refresh_available_models,
+        ww_engine_callback=lambda: ww_engine,
         port=8099
     )
     asyncio.create_task(web_server.start())
     
-    # 3. Поднимаем WebSocket аудио-сервер (порт 8765)
+    # 4. Поднимаем WebSocket аудио-сервер (порт 8765)
     async with websockets.serve(handle_client, "0.0.0.0", port):
         await asyncio.Future()  # run forever
 

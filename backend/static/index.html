@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.80">
+  <link rel="stylesheet" href="static/style.css?v=0.0.81">
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -486,7 +487,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.79</p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • v0.0.81</p>
         </div>
       </div>
       
@@ -1067,6 +1068,31 @@ PING:
             </div>
           </div>
 
+          <!-- Секция 4: Серверный вейкворд -->
+          <h3 class="settings-group-title" style="margin-top: 32px;">🎙️ Серверный вейкворд (pc_streamer)</h3>
+          <p class="section-desc">Настройки openWakeWord ONNX движка на стороне бэкенда. Используется для клиентов без встроенного вейкворда (Windows, веб-камера).</p>
+          <div class="settings-grid">
+
+            <!-- Модель вейкворда -->
+            <div class="form-field full-width">
+              <label for="cfg-ww-model-path">Активная модель ONNX</label>
+              <div class="input-with-action">
+                <input type="text" id="cfg-ww-model-path" name="ww_model_path" value="porfiriy.onnx" placeholder="Путь к .onnx файлу" readonly>
+                <label class="btn btn-secondary btn-small" for="ww-model-upload" title="Загрузить новый .onnx файл вейкворда">📁 Загрузить .onnx</label>
+                <input type="file" id="ww-model-upload" accept=".onnx" style="display:none" onchange="uploadWwModel(this)">
+              </div>
+              <small class="field-hint">Файл загружается в /data/ и применяется на лету без перезапуска аддона</small>
+            </div>
+
+            <!-- Глобальный порог вейкворда -->
+            <div class="form-field">
+              <label for="cfg-ww-threshold">Глобальный порог срабатывания: <span id="val-ww-server-threshold">0.94</span></label>
+              <input type="range" id="cfg-ww-threshold" name="ww_server_threshold" min="0.50" max="1.00" step="0.01" value="0.94" oninput="document.getElementById('val-ww-server-threshold').innerText = parseFloat(this.value).toFixed(2)">
+              <small class="field-hint">Порог для всех pc_streamer клиентов (дефолт: 0.94). Переопределяется индивидуально в карточке устройства.</small>
+            </div>
+
+          </div>
+
           <!-- Панель сохранения и действий -->
           <div class="global-actions-bar">
             <button type="button" class="btn btn-primary btn-large" id="btn-save-global" onclick="saveGlobalSettings(event)">
@@ -1081,6 +1107,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.80"></script>
+  <script src="static/app.js?v=0.0.81"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any, Callable, List
 logger = logging.getLogger("web_server")
 
 class WebServer:
-    def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, port: int = 8099):
+    def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
         self.device_manager = device_manager
         self.ha_api = ha_api
         self.options_callback = options_callback
@@ -19,6 +19,7 @@ class WebServer:
         self.phrase_manager = phrase_manager
         self.models_callback = models_callback
         self.refresh_models_callback = refresh_models_callback
+        self.ww_engine_callback = ww_engine_callback  # () -> WakeWordEngine | None
         self.port = port
         self.app = web.Application()
         self.sse_queues = set()
@@ -53,6 +54,10 @@ class WebServer:
         self.app.router.add_get("/api/devices/{mac}/last_utterance/status", self.handle_last_utterance_status)
         self.app.router.add_get("/api/events", self.handle_events)
         self.app.router.add_get("/static/{filename:.*}", self.handle_static)
+        # Виртуальные стримеры (pc_streamer)
+        self.app.router.add_get("/api/virtual/{mac}/response.wav", self.handle_virtual_response_wav)
+        self.app.router.add_post("/api/virtual/upload_model", self.handle_upload_ww_model)
+        self.app.router.add_patch("/api/devices/{mac}/streamer_config", self.handle_streamer_config)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -241,7 +246,8 @@ class WebServer:
                 "enable_barge_in", "barge_in_threshold_rms", "prompt_persona", "prompt_users",
                 "prompt_smart_home", "prompt_general",
                 "ducking_mode", "enable_media_ducking", "ducking_volume_factor", "default_media_player",
-                "ma_api_key", "regenerate_phrases"
+                "ma_api_key", "regenerate_phrases",
+                "ww_server_threshold"
             ]
             
             for field in allowed_fields:
@@ -275,6 +281,17 @@ class WebServer:
                     elif field in ["temperature", "ducking_volume_factor"]:
                         try:
                             updated_opts[field] = float(val)
+                        except (ValueError, TypeError):
+                            pass
+                    elif field == "ww_server_threshold":
+                        try:
+                            new_thr = max(0.5, min(1.0, float(val)))
+                            updated_opts[field] = new_thr
+                            # Hot-reload в WakeWordEngine
+                            if self.ww_engine_callback:
+                                engine = self.ww_engine_callback()
+                                if engine:
+                                    engine.set_threshold(new_thr)
                         except (ValueError, TypeError):
                             pass
                     elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases"]:
@@ -438,3 +455,86 @@ class WebServer:
         site = web.TCPSite(runner, "0.0.0.0", self.port)
         await site.start()
         logger.info(f"Porfiriy Ingress Web Server running on http://0.0.0.0:{self.port}")
+
+    # ------------------------------------------------------------------ #
+    # Виртуальные стримеры (pc_streamer)
+    # ------------------------------------------------------------------ #
+
+    async def handle_virtual_response_wav(self, request):
+        """Отдаёт последний WAV-ответ Gemini для данного pc_streamer.
+        Вызывается Home Assistant media_player.play_media."""
+        mac = request.match_info.get("mac", "").strip().lower()
+        wav = self.device_manager.get_response_wav(mac)
+        if not wav:
+            return web.Response(status=404, text=f"No response WAV for {mac}")
+        return web.Response(
+            body=wav,
+            content_type="audio/wav",
+            headers={
+                "Content-Disposition": f'inline; filename="response_{mac}.wav"',
+                "Cache-Control": "no-cache, no-store, must-revalidate"
+            }
+        )
+
+    async def handle_upload_ww_model(self, request):
+        """Загрузка нового .onnx файла вейкворда на сервер."""
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            if not field or field.name != "model":
+                return web.json_response({"success": False, "error": "Field 'model' not found"}, status=400)
+            filename = field.filename or "porfiriy.onnx"
+            if not filename.endswith(".onnx"):
+                return web.json_response({"success": False, "error": "Only .onnx files allowed"}, status=400)
+
+            # Сохраняем в /data/ (постоянное хранилище аддона)
+            save_dir = "/data"
+            if not os.path.exists(save_dir):
+                save_dir = os.path.dirname(__file__)  # fallback для локальной разработки
+            save_path = os.path.join(save_dir, filename)
+
+            with open(save_path, "wb") as f:
+                while True:
+                    chunk = await field.read_chunk(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            size = os.path.getsize(save_path)
+            logger.info(f"[WW] Uploaded new model: '{save_path}' ({size} bytes)")
+
+            # Перезагружаем движок с новой моделью
+            if self.ww_engine_callback:
+                engine = self.ww_engine_callback()
+                if engine:
+                    engine._model = None  # принудительный сброс
+                    engine.model_path = save_path
+                    engine._load_model()
+
+            return web.json_response({"success": True, "path": save_path, "size": size})
+        except Exception as e:
+            logger.error(f"[WW] Upload model error: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_streamer_config(self, request):
+        """Обновляет настройки pc_streamer: response_player, ww_threshold, area_name."""
+        mac = request.match_info.get("mac", "").strip().lower()
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+
+        allowed = {"response_player", "ww_threshold", "area_name", "speaker_volume"}
+        cfg = {k: v for k, v in data.items() if k in allowed}
+
+        if "ww_threshold" in cfg:
+            cfg["ww_threshold"] = float(cfg["ww_threshold"])
+            # Обновляем порог в движке на лету
+            if self.ww_engine_callback:
+                engine = self.ww_engine_callback()
+                if engine:
+                    engine.set_threshold(cfg["ww_threshold"])
+
+        success = await self.device_manager.update_device_config(mac, cfg)
+        return web.json_response({"success": success})
+

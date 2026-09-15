@@ -116,6 +116,8 @@ class DeviceManager:
         self.mic_test_sessions: Dict[str, Dict[str, Any]] = {}
         self.mic_test_results: Dict[str, Dict[str, Any]] = {}
         self.last_utterance_results: Dict[str, Dict[str, Any]] = {}
+        # Кэш WAV-ответов Gemini для виртуальных стримеров (pc_streamer)
+        self._response_wav: Dict[str, bytes] = {}
         self._load()
 
     def _load(self):
@@ -642,3 +644,29 @@ class DeviceManager:
     def get_last_utterance_result(self, mac: str) -> Optional[Dict[str, Any]]:
         clean_mac = mac.strip().lower()
         return self.last_utterance_results.get(clean_mac)
+
+    # ------------------------------------------------------------------ #
+    # Виртуальные стримеры (pc_streamer): ww_score и ответный WAV
+    # ------------------------------------------------------------------ #
+
+    def update_ww_score(self, mac: str, score: float):
+        """Обновляет live-score вейкворда для карточки в Web UI."""
+        clean_mac = mac.strip().lower()
+        dev = self.devices.get(clean_mac)
+        if dev:
+            dev["ww_score"] = round(score, 4)
+            # Лёгкое SSE-уведомление только при заметном изменении
+            if abs(score - dev.get("_last_notified_score", -1.0)) >= 0.05:
+                dev["_last_notified_score"] = score
+                self._notify("ww_score", {"mac": clean_mac, "ww_score": dev["ww_score"]})
+
+    def save_response_wav(self, mac: str, wav_bytes: bytes):
+        """Сохраняет WAV-ответ Gemini для последующей раздачи медиаплееру."""
+        clean_mac = mac.strip().lower()
+        self._response_wav[clean_mac] = wav_bytes
+        logger.info(f"[STREAMER] Saved response WAV for {clean_mac}: {len(wav_bytes)} bytes")
+
+    def get_response_wav(self, mac: str) -> Optional[bytes]:
+        """Возвращает последний WAV-ответ Gemini для данного стримера."""
+        clean_mac = mac.strip().lower()
+        return self._response_wav.get(clean_mac)
