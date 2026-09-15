@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.88"
+#define FIRMWARE_VERSION "0.0.89"
 
 #include "model.h"
 // TFLite
@@ -322,8 +322,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   <label style="color:#ff5555; font-size:12px;">* Изменение сети/сервера требует перезагрузки платы</label>
 
   <h2 style="margin-top:30px;">Тонкая настройка (На лету)</h2>
-  <label>Усиление микрофона (0.5 - 5.0, по умолч. 1.3)</label>
-  <input type="number" step="0.1" name="mic_gain" value="%MIC_GAIN%" min="0.5" max="5.0">
+  <label>Усиление микрофона (0.5 - 15.0, по умолч. 2.0)</label>
+  <input type="number" step="0.1" name="mic_gain" value="%MIC_GAIN%" min="0.5" max="15.0">
   <label>Таймаут тишины после фразы (мс, 300-3000)</label>
   <input type="number" name="silence_timeout_ms" value="%SILENCE_MS%" min="300" max="3000" step="50">
   <label>Макс. ожидание команды (сек, 3-15)</label>
@@ -1240,7 +1240,7 @@ void loop() {
 
     int32_t sum_amp = 0;
     for (int i = 0; i < samples_read; i++) {
-        float x = (float)(mic_buffer_32[i] >> 16) * mic_gain;
+        float x = (float)(mic_buffer_32[i] >> 16) * (mic_gain * 3.5f);
         float y = x - dc_x1 + R * dc_y1;
         dc_x1 = x;
         dc_y1 = y;

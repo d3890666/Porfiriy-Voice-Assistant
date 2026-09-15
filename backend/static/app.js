@@ -312,10 +312,10 @@ function renderDevicesGrid() {
             `}
             <div class="slider-row">
               <span>🎙️ Усиление (Gain):</span>
-              <input type="number" step="0.1" min="0.5" max="5.0" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
+              <input type="number" step="0.1" min="0.5" max="15.0" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
                 value="${cfg.mic_gain !== undefined ? cfg.mic_gain : 2.0}"
                 onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))"
-                title="Усиление микрофона (по умолчанию 2.0)">
+                title="Усиление микрофона (по умолчанию 2.0, диапазон 0.5 - 15.0)">
             </div>
           ` : ''}
           <div class="slider-row">
