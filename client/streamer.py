@@ -75,6 +75,31 @@ def clean_device_name(name: str) -> str:
     return name
 
 
+def resample_pcm(pcm_bytes: bytes, in_rate: int, out_rate: int) -> bytes:
+    """Конвертация частоты дискретизации для 16-бит моно PCM."""
+    if in_rate == out_rate or not pcm_bytes:
+        return pcm_bytes
+    try:
+        import audioop
+        converted, _ = audioop.ratecv(pcm_bytes, 2, 1, in_rate, out_rate, None)
+        return converted
+    except Exception:
+        import struct
+        count = len(pcm_bytes) // 2
+        samples = struct.unpack(f"<{count}h", pcm_bytes)
+        ratio = in_rate / float(out_rate)
+        out_count = int(count / ratio)
+        out_samples = []
+        for i in range(out_count):
+            src_idx = i * ratio
+            idx0 = int(src_idx)
+            idx1 = min(idx0 + 1, count - 1)
+            frac = src_idx - idx0
+            val = int(samples[idx0] * (1.0 - frac) + samples[idx1] * frac)
+            out_samples.append(max(-32768, min(32767, val)))
+        return struct.pack(f"<{len(out_samples)}h", *out_samples)
+
+
 def list_audio_devices():
     """Выводит детальный список всех доступных аудиоустройств."""
     p = pyaudio.PyAudio()
@@ -204,20 +229,54 @@ class StreamerClient:
         """Непрерывный захват микрофона и передача PCM 16kHz в WebSocket."""
         loop = asyncio.get_running_loop()
         stream = None
+        capture_rate = SAMPLE_RATE_INPUT
+
+        # Определение нативной частоты устройства
+        native_rate = 16000
         try:
-            stream = self.p.open(
-                format=AUDIO_FORMAT,
-                channels=AUDIO_CHANNELS,
-                rate=SAMPLE_RATE_INPUT,
-                input=True,
-                input_device_index=self.in_idx,
-                frames_per_buffer=CHUNK_SIZE
-            )
-            logger.info("🎙️ Поток микрофона запущен (16 кГц Mono PCM). Говорите 'Порфирий'...")
+            if self.in_idx is not None:
+                info = self.p.get_device_info_by_index(self.in_idx)
+                native_rate = int(info.get("defaultSampleRate", 16000))
+            else:
+                default_in = self.p.get_default_input_device_info()
+                native_rate = int(default_in.get("defaultSampleRate", 16000))
+        except Exception:
+            native_rate = 16000
+
+        try:
+            # 1. Пробуем открыть напрямую на 16000 Гц
+            try:
+                stream = self.p.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=SAMPLE_RATE_INPUT,
+                    input=True,
+                    input_device_index=self.in_idx,
+                    frames_per_buffer=CHUNK_SIZE
+                )
+                capture_rate = SAMPLE_RATE_INPUT
+                chunk_read = CHUNK_SIZE
+            except Exception as ex_open:
+                # 2. Если драйвер (например WASAPI) требует нативную частоту (48000 или 44100)
+                logger.info(f"Захват 16000 Гц не поддержан драйвером ({ex_open}). Переключаемся на нативную частоту {native_rate} Гц.")
+                chunk_read = int(CHUNK_SIZE * (native_rate / float(SAMPLE_RATE_INPUT)))
+                stream = self.p.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=native_rate,
+                    input=True,
+                    input_device_index=self.in_idx,
+                    frames_per_buffer=chunk_read
+                )
+                capture_rate = native_rate
+
+            logger.info(f"🎙️ Поток микрофона запущен ({capture_rate} Гц -> 16 кГц Mono PCM). Говорите 'Порфирий'...")
 
             while self.is_running:
-                data = await loop.run_in_executor(None, stream.read, CHUNK_SIZE, False)
+                data = await loop.run_in_executor(None, stream.read, chunk_read, False)
                 if data:
+                    if capture_rate != SAMPLE_RATE_INPUT:
+                        data = resample_pcm(data, capture_rate, SAMPLE_RATE_INPUT)
                     await ws.send(data)
                 await asyncio.sleep(0.001)
 
@@ -225,6 +284,7 @@ class StreamerClient:
             pass
         except Exception as e:
             logger.error(f"Ошибка захвата микрофона: {e}")
+            await asyncio.sleep(1.0)
         finally:
             if stream:
                 try:
@@ -247,19 +307,45 @@ class StreamerClient:
 
         loop = asyncio.get_running_loop()
         stream = None
+
+        native_out_rate = SAMPLE_RATE_OUTPUT
         try:
-            stream = self.p.open(
-                format=AUDIO_FORMAT,
-                channels=AUDIO_CHANNELS,
-                rate=SAMPLE_RATE_OUTPUT,
-                output=True,
-                output_device_index=self.out_idx
-            )
+            if self.out_idx is not None:
+                out_info = self.p.get_device_info_by_index(self.out_idx)
+                native_out_rate = int(out_info.get("defaultSampleRate", SAMPLE_RATE_OUTPUT))
+            else:
+                default_out = self.p.get_default_output_device_info()
+                native_out_rate = int(default_out.get("defaultSampleRate", SAMPLE_RATE_OUTPUT))
+        except Exception:
+            native_out_rate = SAMPLE_RATE_OUTPUT
+
+        try:
+            playback_rate = SAMPLE_RATE_OUTPUT
+            try:
+                stream = self.p.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=SAMPLE_RATE_OUTPUT,
+                    output=True,
+                    output_device_index=self.out_idx
+                )
+            except Exception as ex_out:
+                logger.info(f"Вывод 24000 Гц не поддержан ({ex_out}), переключаемся на {native_out_rate} Гц.")
+                stream = self.p.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=native_out_rate,
+                    output=True,
+                    output_device_index=self.out_idx
+                )
+                playback_rate = native_out_rate
 
             async def playback_worker():
                 while self.is_running:
                     try:
                         chunk = self.play_queue.get_nowait()
+                        if playback_rate != SAMPLE_RATE_OUTPUT:
+                            chunk = resample_pcm(chunk, SAMPLE_RATE_OUTPUT, playback_rate)
                         await loop.run_in_executor(None, stream.write, chunk)
                     except queue.Empty:
                         await asyncio.sleep(0.01)
