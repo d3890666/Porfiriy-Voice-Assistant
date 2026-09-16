@@ -1169,6 +1169,10 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
         device_manager.save_response_wav(client_mac, wav_bytes)
 
+        # Сохраняем голосовую реплику пользователя для кнопки «💬 Реплика»
+        if preroll or gemini_audio_buf:
+            device_manager.save_last_utterance(client_mac, preroll + b"".join(gemini_audio_buf))
+
         if out_mode == "external_player":
             player = response_player if response_player and response_player != "auto" else None
             if not player:
@@ -1195,6 +1199,13 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
     try:
         async for message in websocket:
             if isinstance(message, bytes):
+                # Проверяем, активен ли режим отладки/теста микрофона для этого устройства
+                if device_manager.is_mic_test_active(client_mac):
+                    device_manager.append_mic_test_chunk(client_mac, message)
+                    if time.time() >= device_manager.get_mic_test_end_time(client_mac):
+                        device_manager.finish_mic_test(client_mac)
+                    continue
+
                 # Прогоняем PCM через вейкворд
                 if ww_engine and ww_engine.is_ready:
                     dev_cfg = device_manager.get_device_config(client_mac)

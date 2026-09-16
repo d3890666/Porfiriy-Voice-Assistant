@@ -536,11 +536,19 @@ window.checkMicTestReady = async function(mac) {
       showToast(`Тестовая запись готова! RMS: ${data.stats.rms_dbfs} dBFS, Peak: ${data.stats.peak}`, false);
     } else {
       // 0 байт или на плате старая прошивка
-      const statusHtml = `<span style="color: var(--accent-yellow);" title="Колонка не передала звук (0 байт). Нажмите кнопку ⚡ OTA в карточке!">⚠️ 0 байт</span>`;
+      const statusHtml = `<span style="color: var(--accent-yellow);" title="Устройство не передало звук (0 байт)">⚠️ 0 байт</span>`;
       if (statusEl) statusEl.innerHTML = statusHtml;
       if (wrapEl) wrapEl.style.display = 'flex';
       if (audioEl) audioEl.style.display = 'none';
-      const warnHtml = `
+      const targetDev = devices.find(d => (d.mac || '').toLowerCase() === (mac || '').toLowerCase()) || {};
+      const isPc = targetDev.device_type === 'pc_streamer' || (targetDev.mac || '').startsWith('streamer_');
+      const warnHtml = isPc ? `
+        <div style="background: rgba(255, 171, 0, 0.12); border: 1px solid rgba(255, 171, 0, 0.35); border-radius: 6px; padding: 8px 10px; font-size: 11px; line-height: 1.4; color: #ffca28; width: 100%;">
+          <strong>⚠️ Аудио не получено (0 байт)</strong><br>
+          Клиент стримера на ПК не передал звук микрофона.<br>
+          Проверьте номер микрофона (параметр <code>--input-device</code>) в консоли ПК.
+        </div>
+      ` : `
         <div style="background: rgba(255, 171, 0, 0.12); border: 1px solid rgba(255, 171, 0, 0.35); border-radius: 6px; padding: 8px 10px; font-size: 11px; line-height: 1.4; color: #ffca28; width: 100%;">
           <strong>⚠️ Аудио не получено (0 байт)</strong><br>
           Плата ESP32 еще работает на старой прошивке без функции передачи звука при тесте.<br>
@@ -555,7 +563,7 @@ window.checkMicTestReady = async function(mac) {
         statusText: statusHtml,
         metricsHtml: warnHtml
       };
-      showToast('⚠️ Звук не получен (0 байт). Нажмите кнопку «⚡ OTA» в карточке устройства!', true);
+      showToast(isPc ? '⚠️ Звук с ПК не получен (0 байт). Проверьте микрофон!' : '⚠️ Звук не получен (0 байт). Нажмите кнопку «⚡ OTA» в карточке устройства!', true);
     }
   } catch (e) {
     if (statusEl) statusEl.innerText = 'Ошибка получения записи';
