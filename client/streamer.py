@@ -24,6 +24,14 @@ import logging
 import asyncio
 import argparse
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 try:
     import pyaudio
 except ImportError:
@@ -52,6 +60,16 @@ AUDIO_FORMAT = pyaudio.paInt16 # 16-бит знаковый PCM
 CHUNK_SIZE = 512              # 32 мс на 16 кГц
 
 
+def clean_device_name(name: str) -> str:
+    """Устраняет искажение русских символов в именах устройств PortAudio на Windows."""
+    if not isinstance(name, str):
+        return str(name)
+    try:
+        return name.encode("cp1251").decode("utf-8")
+    except Exception:
+        return name
+
+
 def list_audio_devices():
     """Выводит детальный список всех доступных аудиоустройств."""
     p = pyaudio.PyAudio()
@@ -69,7 +87,7 @@ def list_audio_devices():
             info = p.get_device_info_by_index(i)
             max_in = info.get("maxInputChannels", 0)
             max_out = info.get("maxOutputChannels", 0)
-            name = info.get("name", "Неизвестное устройство")
+            name = clean_device_name(info.get("name", "Неизвестное устройство"))
             default_rate = int(info.get("defaultSampleRate", 0))
 
             if max_in > 0:
@@ -125,7 +143,8 @@ def resolve_device_index(p: pyaudio.PyAudio, identifier, is_input: bool):
         try:
             info = p.get_device_info_by_index(i)
             channels = info.get("maxInputChannels", 0) if is_input else info.get("maxOutputChannels", 0)
-            if channels > 0 and target in info.get("name", "").lower():
+            dev_name = clean_device_name(info.get("name", "")).lower()
+            if channels > 0 and target in dev_name:
                 return i
         except Exception:
             pass
