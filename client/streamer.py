@@ -64,10 +64,15 @@ def clean_device_name(name: str) -> str:
     """Устраняет искажение русских символов в именах устройств PortAudio на Windows."""
     if not isinstance(name, str):
         return str(name)
-    try:
-        return name.encode("cp1251").decode("utf-8")
-    except Exception:
-        return name
+    for enc in ("cp1251", "cp1252", "latin1", "iso-8859-1"):
+        try:
+            raw = name.encode(enc, errors="ignore")
+            decoded = raw.decode("utf-8", errors="ignore")
+            if decoded and any(0x0400 <= ord(c) <= 0x04FF for c in decoded):
+                return decoded
+        except Exception:
+            pass
+    return name
 
 
 def list_audio_devices():
