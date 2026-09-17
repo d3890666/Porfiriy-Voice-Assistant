@@ -488,7 +488,8 @@ class WebServer:
         return web.json_response(data)
 
     async def start(self):
-        runner = web.AppRunner(self.app)
+        # Отключаем спам в системный журнал HA от периодического поллинга /api/ww_monitor
+        runner = web.AppRunner(self.app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", self.port)
         await site.start()

@@ -1246,6 +1246,9 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
 
                     if ww_engine.is_triggered(client_mac):
                         preroll = ww_engine.consume_preroll(client_mac)
+                        # Сбрасываем внутренний буфер и скор нейросети во избежание залипания
+                        ww_engine.reset(client_mac)
+                        device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=rms)
                         # Отправляем звуковой сигнал chime клиенту
                         try:
                             speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
