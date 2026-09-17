@@ -1008,6 +1008,8 @@ async def handle_client(websocket):
                                         await session.send_tool_response(function_responses=function_responses)
                                     session_state["is_tool_pending"] = False
                                     session_state["is_gemini_speaking"] = False
+                                    session_state["first_audio_sent"] = False
+                                    start_thinking_watchdog()
                                     
                 except asyncio.CancelledError:
                     pass
@@ -1080,8 +1082,8 @@ async def handle_client(websocket):
             pass
         await websocket.close()
     finally:
-        device_manager.unregister_wake_handler(client_mac)
-        device_manager.set_device_offline(client_mac)
+        device_manager.unregister_wake_handler(client_mac, _force_wake_esp)
+        device_manager.set_device_offline(client_mac, ws=websocket)
 
 async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
     """
@@ -1366,7 +1368,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         device_manager.unregister_wake_handler(client_mac)
         if ww_engine:
             ww_engine.reset(client_mac)
-        device_manager.set_device_offline(client_mac)
+        device_manager.set_device_offline(client_mac, ws=websocket)
 
 
 async def main():

@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.103"
+#define FIRMWARE_VERSION "0.0.104"
 
 #include "model.h"
 // TFLite
@@ -96,12 +96,16 @@ enum DeviceState {
 DeviceState current_state = STATE_IDLE;
 unsigned long state_enter_time = 0;
 unsigned long mic_test_end_time = 0;
+unsigned long last_audio_packet_time = 0;
 
 void set_state(DeviceState new_state) {
     if (current_state != new_state) {
         Serial.printf("[STATE] %d -> %d\n", current_state, new_state);
         current_state = new_state;
         state_enter_time = millis();
+        if (new_state == STATE_SPEAKING) {
+            last_audio_packet_time = millis();
+        }
     }
 }
 
@@ -792,10 +796,8 @@ void onMessageCallback(WebsocketsMessage message) {
             }
             return;
         }
-        if (current_state == STATE_LISTENING || current_state == STATE_IDLE) {
-            return;
-        }
         set_state(STATE_SPEAKING);
+        last_audio_packet_time = millis();
         
         const int16_t* pcm = (const int16_t*)message.c_str();
         int num_samples = message.length() / 2;
@@ -804,7 +806,7 @@ void onMessageCallback(WebsocketsMessage message) {
         for (int i = 0; i < num_samples; i += chunk_size) {
             int current_chunk = (num_samples - i < chunk_size) ? (num_samples - i) : chunk_size;
             size_t bytes_written;
-            i2s_write(I2S_NUM_1, (const char*)&pcm[i], current_chunk * 2, &bytes_written, portMAX_DELAY);
+            i2s_write(I2S_NUM_1, (const char*)&pcm[i], current_chunk * 2, &bytes_written, pdMS_TO_TICKS(200));
         }
     } else if (message.isText()) {
         Serial.println("Server text: " + message.data());
@@ -877,6 +879,7 @@ void onMessageCallback(WebsocketsMessage message) {
         else if (message.data().indexOf("\"type\":\"speaking\"") >= 0 || message.data().indexOf("\"type\": \"speaking\"") >= 0) {
             Serial.println("Server commanded SPEAKING.");
             set_state(STATE_SPEAKING);
+            last_audio_packet_time = millis();
         }
         else if (message.data().indexOf("\"type\":\"done_speaking\"") >= 0 || message.data().indexOf("\"type\": \"done_speaking\"") >= 0) {
             set_state(STATE_IDLE);
@@ -1230,8 +1233,7 @@ void loop() {
         return;
     }
 
-    if (!is_connected || !client.available()) {
-        is_connected = false;
+    if (!is_connected) {
         if (millis() - last_reconnect_time > (unsigned long)(reconnect_interval * 1000)) {
             Serial.println("Attempting to reconnect WebSocket...");
             last_reconnect_time = millis();
@@ -1257,8 +1259,8 @@ void loop() {
         last_sleep_time = millis();
     }
 
-    // 3. В режиме SPEAKING: если последний аудиопакет был более 3.5 секунд назад
-    if (current_state == STATE_SPEAKING && (millis() - state_enter_time > 3500)) {
+    // 3. В режиме SPEAKING: если последний аудиопакет был более 2.5 секунд назад
+    if (current_state == STATE_SPEAKING && (millis() - last_audio_packet_time > 2500)) {
         Serial.println("[WATCHDOG] Speaking timeout. Returning to IDLE.");
         set_state(STATE_IDLE);
         last_sleep_time = millis();

@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.103"
+TARGET_FIRMWARE_VERSION = "0.0.104"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -255,6 +255,13 @@ class DeviceManager:
         dev["last_seen"] = now
         
         if ws:
+            old_ws = self.active_sockets.get(clean_mac)
+            if old_ws and old_ws != ws and not getattr(old_ws, "closed", False):
+                try:
+                    logger.info(f"Closing previous socket for {clean_mac} upon new connection")
+                    asyncio.create_task(old_ws.close())
+                except Exception:
+                    pass
             self.active_sockets[clean_mac] = ws
             # Автоматически отправляем сохраненный на сервере конфиг на устройство при подключении
             cfg_to_send = dict(dev["config"])
@@ -290,9 +297,12 @@ class DeviceManager:
             dev["is_online"] = True
             self._notify("state_changed", dev)
 
-    def set_device_offline(self, mac: str):
-        """Фиксация отключения устройства."""
+    def set_device_offline(self, mac: str, ws: Any = None):
+        """Фиксация отключения устройства с защитой от ложного офлайна при реконнекте."""
         clean_mac = mac.strip().lower()
+        if ws is not None and clean_mac in self.active_sockets and self.active_sockets[clean_mac] != ws:
+            logger.info(f"Ignoring offline event for {clean_mac}: replaced by newer active socket")
+            return
         self._wake_handlers.pop(clean_mac, None)
         if clean_mac in self.active_sockets:
             del self.active_sockets[clean_mac]
@@ -392,9 +402,11 @@ class DeviceManager:
         clean_mac = mac.strip().lower()
         self._wake_handlers[clean_mac] = handler
 
-    def unregister_wake_handler(self, mac: str):
+    def unregister_wake_handler(self, mac: str, handler: Optional[Callable] = None):
         """Удаляет зарегистрированный обработчик вызова для устройства."""
         clean_mac = mac.strip().lower()
+        if handler is not None and self._wake_handlers.get(clean_mac) != handler:
+            return
         self._wake_handlers.pop(clean_mac, None)
 
     async def trigger_wake(self, mac: str) -> bool:
