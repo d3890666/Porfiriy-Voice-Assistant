@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.102"
+TARGET_FIRMWARE_VERSION = "0.0.103"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -256,9 +256,10 @@ class DeviceManager:
         
         if ws:
             self.active_sockets[clean_mac] = ws
-            # Автоматически отправляем сохраненный на сервере конфиг на ESP32 при подключении
+            # Автоматически отправляем сохраненный на сервере конфиг на устройство при подключении
             cfg_to_send = dict(dev["config"])
-            cfg_to_send["speaker_volume"] = 1.0  # На ESP32 держим 1.0, чтобы не было двойного затухания
+            if dev.get("device_type") == "esp32":
+                cfg_to_send["speaker_volume"] = 1.0  # На ESP32 держим 1.0, чтобы не было двойного затухания
             asyncio.create_task(self.send_command(clean_mac, {"type": "set_config", "config": cfg_to_send}))
             
         self._save()
@@ -447,9 +448,9 @@ class DeviceManager:
         dev["config"].update(new_config)
         self._save()
         
-        # На ESP32 держим speaker_volume = 1.0 (pass-through), так как сервер масштабирует PCM напрямую
+        # Только для ESP32 держим speaker_volume = 1.0 (pass-through), так как сервер масштабирует PCM напрямую
         cfg_to_send = dict(new_config)
-        if "speaker_volume" in cfg_to_send:
+        if dev.get("device_type") == "esp32" and "speaker_volume" in cfg_to_send:
             cfg_to_send["speaker_volume"] = 1.0
 
         await self.send_command(clean_mac, {
@@ -467,10 +468,6 @@ class DeviceManager:
         results = {}
         is_all = "all" in target_macs or len(target_macs) == 0
         norm_targets = [m.strip().lower() for m in target_macs]
-        
-        cfg_to_send = dict(field_mask_config)
-        if "speaker_volume" in cfg_to_send:
-            cfg_to_send["speaker_volume"] = 1.0
 
         for mac, dev in self.devices.items():
             clean_mac = mac.strip().lower()
@@ -478,11 +475,16 @@ class DeviceManager:
                 dev.setdefault("config", {})
                 dev["config"].update(field_mask_config)
                 
-                sent = await self.send_command(clean_mac, {
-                    "type": "set_config",
-                    "config": cfg_to_send
-                })
-                results[clean_mac] = sent
+                cfg_to_send = dict(field_mask_config)
+                if dev.get("device_type") == "esp32" and "speaker_volume" in cfg_to_send:
+                    cfg_to_send["speaker_volume"] = 1.0
+
+                if clean_mac in self.active_sockets:
+                    sent = await self.send_command(clean_mac, {
+                        "type": "set_config",
+                        "config": cfg_to_send
+                    })
+                    results[clean_mac] = sent
                 self._notify("config_updated", dev)
                 
         self._save()

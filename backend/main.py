@@ -1152,8 +1152,6 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         )
 
         pcm_response_chunks = []
-        out_mode = dev_config.get("audio_output_mode", "stream")
-        speaker_vol = float(dev_config.get("speaker_volume", 0.8))
         gemini_is_speaking = False
 
         async def _stream_mic_to_gemini(session):
@@ -1188,11 +1186,14 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 if response.server_content and response.server_content.model_turn:
                     gemini_is_speaking = True
                     device_manager.set_device_state(client_mac, "speaking")
+                    current_cfg = device_manager.get_device_config(client_mac)
+                    active_vol = float(current_cfg.get("speaker_volume", 0.5))
+                    active_out_mode = current_cfg.get("audio_output_mode", "stream")
                     for part in response.server_content.model_turn.parts:
                         if part.inline_data and part.inline_data.data:
-                            scaled_chunk = scale_pcm16(part.inline_data.data, speaker_vol)
+                            scaled_chunk = scale_pcm16(part.inline_data.data, active_vol)
                             pcm_response_chunks.append(scaled_chunk)
-                            if out_mode == "stream":
+                            if active_out_mode == "stream":
                                 try:
                                     await websocket.send(scaled_chunk)
                                 except Exception:
@@ -1200,7 +1201,9 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 if response.server_content and getattr(response.server_content, "turn_complete", False):
                     gemini_is_speaking = False
                     logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
-                    if out_mode == "stream":
+                    current_cfg = device_manager.get_device_config(client_mac)
+                    active_out_mode = current_cfg.get("audio_output_mode", "stream")
+                    if active_out_mode == "stream":
                         try:
                             await websocket.send(json.dumps({"type": "sleep"}))
                         except Exception:
@@ -1240,8 +1243,11 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             device_manager.save_last_utterance(client_mac, preroll + b"".join(gemini_audio_buf))
             gemini_audio_buf.clear()
 
+        current_cfg = device_manager.get_device_config(client_mac)
+        out_mode = current_cfg.get("audio_output_mode", "stream")
         if out_mode == "external_player":
-            player = response_player if response_player and response_player != "auto" else None
+            resp_p = current_cfg.get("response_player") or response_player
+            player = resp_p if resp_p and resp_p != "auto" else None
             if not player:
                 logger.warning(f"[STREAMER] No response_player configured for {client_mac}. Set it in device settings.")
                 return
@@ -1257,7 +1263,8 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 })
                 # Сигнал готовности на стример
                 try:
-                    await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+                    active_vol = float(current_cfg.get("speaker_volume", 0.5))
+                    await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
                 except Exception:
                     pass
             except Exception as e:

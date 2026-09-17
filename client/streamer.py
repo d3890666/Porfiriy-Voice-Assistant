@@ -200,6 +200,7 @@ class StreamerClient:
         self.play_queue = queue.Queue()
         self.is_running = True
         self.is_playing = False
+        self.speaker_volume = 1.0
         self.start_time = time.time()
 
     def _log_selected_devices(self):
@@ -412,6 +413,8 @@ class StreamerClient:
                 logger.info("🔔 Получен звуковой сигнал готовности.")
             elif m_type == "set_config":
                 cfg = data.get("config", {})
+                if "speaker_volume" in cfg:
+                    self.speaker_volume = float(cfg["speaker_volume"])
                 logger.info(f"⚙️ Синхронизирована конфигурация с сервера: {cfg}")
         except Exception as e:
             logger.debug(f"Ошибка парсинга сообщения: {e}")
