@@ -109,6 +109,7 @@ async function fetchDevices() {
       renderBulkTargets();
       renderOtaBanner();
       updateHeaderStats();
+      populateWwMonitorSources();
     }
   } catch (err) {
     console.error('Error fetching devices:', err);
@@ -202,15 +203,10 @@ function renderDevicesGrid() {
             <span style="font-weight: 700; font-size: 13px;">🎙️ PC Streamer</span>
             <span style="font-size: 11px; color: #8b949e; font-family: monospace; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 12px;">Серверный вейкворд</span>
           </div>
-          <!-- WW Score Gauge -->
-          <div style="margin: 10px 0 6px 0;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <span style="font-size: 12px; color: #8b949e;">🎯 WW Score</span>
-              <span id="ww-score-val-${dev.mac}" style="font-family: monospace; font-size: 12px; font-weight: 700; color: ${(dev.ww_score || 0) >= (dev.config && dev.config.ww_threshold || 0.94) ? 'var(--accent-green)' : '#8b949e'};">${(dev.ww_score || 0).toFixed(3)}</span>
-            </div>
-            <div style="width: 100%; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden;">
-              <div id="ww-score-bar-${dev.mac}" style="height: 100%; width: ${Math.round((dev.ww_score || 0) * 100)}%; background: linear-gradient(90deg, #58a6ff, #00d2ff); border-radius: 3px; transition: width 0.3s;"></div>
-            </div>
+          <!-- Отсылка на монитор интеллекта -->
+          <div style="font-size: 11px; color: #8b949e; margin: 6px 0 4px 0; padding: 4px 8px; background: rgba(255,255,255,0.03); border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+            <span>🎯 Серверный отклик:</span>
+            <span style="color: #58a6ff;">Монитор на вкладке 🧠 Интеллект</span>
           </div>
           <!-- Streamer Settings -->
           <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
@@ -354,20 +350,9 @@ function renderDevicesGrid() {
                       oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)">
                     <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
                   </div>
-                  ${globalOptions.debug_mode !== false ? `
-                    <div class="ww-debug-window" style="margin: 2px 0 6px 0; padding: 6px 10px; background: rgba(0, 0, 0, 0.35); border: 1px solid #30363d; border-radius: 6px;">
-                      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                        <span style="font-size: 11px; color: #8b949e; display: flex; align-items: center; gap: 4px;">
-                          <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#58a6ff'};"></span>
-                          🎯 Live Score:
-                        </span>
-                        <span id="ww-score-val-${dev.mac}" style="font-family: monospace; font-size: 12px; font-weight: 700; color: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#8b949e'};">${(dev.ww_score || 0).toFixed(3)}</span>
-                      </div>
-                      <div style="width: 100%; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; position: relative;">
-                        <div id="ww-score-bar-${dev.mac}" style="height: 100%; width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)'}; border-radius: 3px; transition: width 0.15s;"></div>
-                      </div>
-                    </div>
-                  ` : ''}
+                  <div style="font-size: 11px; color: #58a6ff; margin: 4px 0 6px 0; padding: 5px 8px; background: rgba(88, 166, 255, 0.08); border-radius: 6px; display: flex; align-items: center; gap: 6px;">
+                    <span>ℹ️ Монитор отклика и отладка открыты на вкладке <strong>🧠 Интеллект</strong></span>
+                  </div>
                 ` : `
                   <div class="slider-row">
                     <span>🎯 Порог вейкворда:</span>
@@ -1181,6 +1166,18 @@ function populateGlobalSettingsForm() {
   setVal('cfg-prompt-smart-home', getPromptVal('prompt_smart_home', 'smart-home'));
   setVal('cfg-prompt-general', getPromptVal('prompt_general', 'general'));
 
+  // Настройки серверного вейкворда (openWakeWord)
+  const wwThresh = globalOptions.ww_server_threshold !== undefined ? globalOptions.ww_server_threshold : 0.94;
+  setVal('cfg-ww-threshold', wwThresh);
+  const valWw = document.getElementById('val-ww-server-threshold');
+  if (valWw) valWw.innerText = parseFloat(wwThresh).toFixed(2);
+  if (typeof updateMonitorThreshold === 'function') {
+    updateMonitorThreshold(parseFloat(wwThresh));
+  }
+  if (typeof populateWwMonitorSources === 'function') {
+    populateWwMonitorSources();
+  }
+
   updatePromptCharCounters();
 
   // Привязка счетчиков символов
@@ -1451,6 +1448,111 @@ function pollPhrasesProgress() {
   }, 3000);
 }
 
+// Централизованный монитор отладки серверного вейкворда (вкладка Интеллект)
+let lastWwMonitorTriggerTime = 0;
+
+window.handleWwMonitorSourceChange = function(val) {
+  // Выбор конкретного источника или auto
+};
+
+window.updateMonitorThreshold = function(thresh) {
+  const line = document.getElementById('ww-monitor-thresh-line');
+  const txt = document.getElementById('ww-monitor-thresh-val');
+  if (line) line.style.left = `${Math.min(100, Math.max(0, thresh * 100))}%`;
+  if (txt) txt.innerText = `Порог: ${thresh.toFixed(2)}`;
+};
+
+window.populateWwMonitorSources = function() {
+  const sel = document.getElementById('ww-monitor-stream-select');
+  if (!sel) return;
+  const current = sel.value || 'auto';
+  const candidates = devices.filter(d => 
+    d.is_online && (d.device_type === 'pc_streamer' || (d.config && d.config.wake_word_mode === 'server'))
+  );
+  let html = `<option value="auto" ${current === 'auto' ? 'selected' : ''}>— Авто (любой активный) —</option>`;
+  candidates.forEach(d => {
+    const isSel = (d.mac === current) ? 'selected' : '';
+    html += `<option value="${escapeHtml(d.mac)}" ${isSel}>${escapeHtml(d.name || d.mac)} (${escapeHtml(d.area_name || d.device_type)})</option>`;
+  });
+  sel.innerHTML = html;
+};
+
+window.updateWwMonitorTelemetry = function(info) {
+  const sel = document.getElementById('ww-monitor-stream-select');
+  const activeFilter = sel ? sel.value : 'auto';
+  if (activeFilter !== 'auto' && activeFilter !== info.mac) {
+    return;
+  }
+
+  const scoreEl = document.getElementById('ww-monitor-score-val');
+  const peakEl = document.getElementById('ww-monitor-peak-val');
+  const threshEl = document.getElementById('ww-monitor-thresh-val');
+  const rmsEl = document.getElementById('ww-monitor-rms-val');
+  const barEl = document.getElementById('ww-monitor-score-bar');
+  const lineEl = document.getElementById('ww-monitor-thresh-line');
+  const devNameEl = document.getElementById('ww-monitor-device-name');
+  const logEl = document.getElementById('ww-monitor-events-log');
+
+  const isTriggered = info.score >= info.threshold;
+  if (scoreEl) {
+    scoreEl.innerText = info.score.toFixed(3);
+    scoreEl.style.color = isTriggered ? 'var(--accent-green)' : (info.score >= 0.20 ? '#58a6ff' : '#8b949e');
+  }
+  if (peakEl) {
+    peakEl.innerText = `Пик: ${info.peak.toFixed(3)}`;
+    peakEl.style.borderColor = (info.peak >= info.threshold) ? 'var(--accent-green)' : 'rgba(88, 166, 255, 0.25)';
+    peakEl.style.color = (info.peak >= info.threshold) ? 'var(--accent-green)' : '#58a6ff';
+  }
+  if (threshEl) {
+    threshEl.innerText = `Порог: ${info.threshold.toFixed(2)}`;
+  }
+  if (lineEl) {
+    lineEl.style.left = `${Math.min(100, Math.max(0, info.threshold * 100))}%`;
+  }
+  if (barEl) {
+    barEl.style.width = `${Math.min(100, Math.round(info.score * 100))}%`;
+    barEl.style.background = isTriggered 
+      ? 'var(--accent-green)' 
+      : 'linear-gradient(90deg, #58a6ff, #00d2ff)';
+  }
+  if (rmsEl) {
+    let qual = 'Тишина';
+    let qualColor = '#8b949e';
+    if (info.rms > -16) {
+      qual = 'Очень громко';
+      qualColor = 'var(--accent-amber)';
+    } else if (info.rms > -32) {
+      qual = 'Хорошая слышимость';
+      qualColor = 'var(--accent-green)';
+    } else if (info.rms > -46) {
+      qual = 'Тихая речь';
+      qualColor = 'var(--accent-cyan)';
+    }
+    rmsEl.innerHTML = `<span style="color:${qualColor};">${info.rms.toFixed(1)} dBFS</span> (${qual})`;
+  }
+  if (devNameEl) {
+    devNameEl.innerText = `Поток: ${info.name || info.mac}`;
+  }
+
+  // Запись в журнал при сработке или пике
+  const now = Date.now();
+  if (isTriggered && (now - lastWwMonitorTriggerTime > 1500)) {
+    lastWwMonitorTriggerTime = now;
+    if (logEl) {
+      const timeStr = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.innerHTML = `<span style="color:#8b949e;">[${timeStr}]</span> <strong style="color:var(--accent-green);">🎉 СРАБОТКА:</strong> <strong>${info.score.toFixed(3)}</strong> &gt;= ${info.threshold.toFixed(2)} (${escapeHtml(info.name)})`;
+      if (logEl.children.length === 1 && logEl.children[0].style.fontStyle === 'italic') {
+        logEl.innerHTML = '';
+      }
+      logEl.prepend(entry);
+      while (logEl.children.length > 5) {
+        logEl.removeChild(logEl.lastChild);
+      }
+    }
+  }
+};
+
 // Server-Sent Events (Live Telemetry)
 function setupSSE() {
   try {
@@ -1475,25 +1577,32 @@ function setupSSE() {
           }
           return;
         } else if (data.event === 'ww_score' && data.device && data.device.mac) {
-          // Лёгкое обновление только gauge вейкворда без перерисовки всей карточки
-          const mac = data.device.mac;
-          const score = data.device.ww_score || 0;
-          const scoreVal = document.getElementById(`ww-score-val-${mac}`);
-          const scoreBar = document.getElementById(`ww-score-bar-${mac}`);
-          if (scoreVal) {
-            scoreVal.innerText = score.toFixed(3);
-            const dev = devices.find(d => d.mac === mac);
-            const threshold = (dev && dev.config && dev.config.ww_threshold) || 0.94;
-            const isTriggered = score >= threshold;
-            scoreVal.style.color = isTriggered ? 'var(--accent-green)' : '#8b949e';
-            if (scoreBar) {
-              scoreBar.style.width = Math.min(100, Math.round(score * 100)) + '%';
-              scoreBar.style.background = isTriggered ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)';
-            }
-          }
-          // Обновляем в локальном стейте без перерисовки
+          const info = data.device;
+          const mac = info.mac;
+          const score = info.ww_score || 0;
+          const peak = info.ww_peak !== undefined ? info.ww_peak : score;
+          const rms = info.rms_dbfs !== undefined ? info.rms_dbfs : -60.0;
+          const threshold = info.threshold || 0.94;
+          const name = info.name || mac;
+
+          // Обновляем в локальном стейте
           const devIdx = devices.findIndex(d => d.mac === mac);
-          if (devIdx >= 0) devices[devIdx].ww_score = score;
+          if (devIdx >= 0) {
+            devices[devIdx].ww_score = score;
+            devices[devIdx].ww_peak = peak;
+          }
+
+          // Обновляем централизованный монитор на вкладке Интеллект
+          if (typeof updateWwMonitorTelemetry === 'function') {
+            updateWwMonitorTelemetry({
+              mac,
+              name,
+              score,
+              peak,
+              rms,
+              threshold
+            });
+          }
           return;
         } else if (data.device && data.device.mac) {
           // Обработка специального прогресса OTA

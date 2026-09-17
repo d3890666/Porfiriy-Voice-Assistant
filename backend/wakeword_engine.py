@@ -61,44 +61,85 @@ class WakeWordEngine:
                 "last_trigger_time": 0.0,
                 "triggered": False,
                 "last_score": 0.0,
+                "peak_score": 0.0,
+                "peak_time": 0.0,
+                "rms_dbfs": -60.0,
+                "buffer": bytearray(),
                 "preroll": collections.deque(maxlen=PREROLL_CHUNKS),
             }
         return self._sources[device_id]
 
-    def process_chunk(self, pcm_bytes: bytes, device_id: str, custom_threshold: Optional[float] = None) -> float:
-        if not self.is_ready:
-            return 0.0
+    def process_chunk(self, pcm_bytes: bytes, device_id: str, custom_threshold: Optional[float] = None) -> tuple:
+        """
+        Обрабатывает кусок аудио произвольного размера (например, 1024 байта от ESP32 или 2048 от ПК).
+        Сэмплы накапливаются в буфер, и инференс вызывается строго блоками по 1280 сэмплов (2560 байт) без нулей.
+        Возвращает кортеж (score: float, peak_score: float, rms_dbfs: float).
+        """
+        if not self.is_ready or not pcm_bytes:
+            return 0.0, 0.0, -60.0
         src = self._get_source(device_id)
         src["preroll"].append(pcm_bytes)
         now = time.time()
         thresh = custom_threshold if custom_threshold is not None else self.threshold
+
         if src["triggered"] or (now - src["last_trigger_time"]) < self.cooldown_s:
-            return src["last_score"]
+            return src["last_score"], src["peak_score"], src["rms_dbfs"]
+
+        src["buffer"].extend(pcm_bytes)
+        bytes_per_chunk = CHUNK_SAMPLES * 2  # 1280 * 2 = 2560 байт
+
+        # Если накопилось меньше 1280 сэмплов — ждем следующего пакета
+        if len(src["buffer"]) < bytes_per_chunk:
+            # Обновляем затухание пика
+            if now - src["peak_time"] > 3.0:
+                src["peak_score"] = max(0.0, src["peak_score"] * 0.92)
+            return src["last_score"], src["peak_score"], src["rms_dbfs"]
+
         try:
             import numpy as np
-            chunk = np.frombuffer(pcm_bytes, dtype=np.int16)
-            if len(chunk) < CHUNK_SAMPLES:
-                chunk = np.pad(chunk, (0, CHUNK_SAMPLES - len(chunk)))
-            elif len(chunk) > CHUNK_SAMPLES:
-                chunk = chunk[:CHUNK_SAMPLES]
-            prediction = self._model.predict(chunk)
-            score = float(prediction.get(self._model_name, 0.0))
-            src["last_score"] = score
+            latest_score = src["last_score"]
 
-            # Отладка вейкворда на сервере: подробный вывод в лог при скоре >= 0.20
-            last_log = src.get("last_log_time", 0.0)
-            if (score >= 0.20 or score >= thresh) and (now - last_log >= 0.25):
-                src["last_log_time"] = now
-                logger.info(f"[WW-DEBUG] [{device_id}] Score: {score:.3f} | Порог: {thresh:.2f} | Сработка: {score >= thresh}")
+            while len(src["buffer"]) >= bytes_per_chunk:
+                chunk_bytes = bytes(src["buffer"][:bytes_per_chunk])
+                del src["buffer"][:bytes_per_chunk]
 
-            if score >= thresh:
-                logger.info(f"[WW-DETECTED] 🎉 Вейкворд обнаружен! Устройство: {device_id} | Скор: {score:.4f} >= Порог: {thresh:.2f}")
-                src["triggered"] = True
-                src["last_trigger_time"] = now
-            return score
+                chunk = np.frombuffer(chunk_bytes, dtype=np.int16)
+                
+                # Расчет RMS dBFS для монитора громкости
+                chunk_f = chunk.astype(np.float32)
+                rms = float(np.sqrt(np.mean(chunk_f**2)))
+                rms_dbfs = round(20.0 * np.log10(max(1.0, rms) / 32768.0), 1)
+                src["rms_dbfs"] = rms_dbfs
+
+                prediction = self._model.predict(chunk)
+                score = float(prediction.get(self._model_name, 0.0))
+                latest_score = score
+                src["last_score"] = score
+
+                # Обновление пикового значения (Peak Hold с временем удержания 3 секунды)
+                if score > src["peak_score"] or (now - src["peak_time"] > 3.0):
+                    src["peak_score"] = score
+                    src["peak_time"] = now
+                else:
+                    src["peak_score"] = max(score, src["peak_score"] * 0.97)
+
+                # Отладка вейкворда на сервере: подробный вывод в лог при скоре >= 0.20
+                last_log = src.get("last_log_time", 0.0)
+                if (score >= 0.20 or score >= thresh) and (now - last_log >= 0.25):
+                    src["last_log_time"] = now
+                    logger.info(f"[WW-DEBUG] [{device_id}] Score: {score:.3f} (Пик: {src['peak_score']:.3f}) | RMS: {rms_dbfs} dBFS | Порог: {thresh:.2f} | Сработка: {score >= thresh}")
+
+                if score >= thresh:
+                    logger.info(f"[WW-DETECTED] 🎉 Вейкворд обнаружен! Устройство: {device_id} | Скор: {score:.4f} >= Порог: {thresh:.2f}")
+                    src["triggered"] = True
+                    src["last_trigger_time"] = now
+                    break
+
+            return latest_score, src["peak_score"], src["rms_dbfs"]
         except Exception as e:
             logger.error(f"[WW] Inference error: {e}")
-            return 0.0
+            return 0.0, 0.0, -60.0
+
 
     def is_triggered(self, device_id: str) -> bool:
         src = self._sources.get(device_id)

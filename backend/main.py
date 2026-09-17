@@ -526,11 +526,11 @@ async def handle_client(websocket):
                                     if ww_engine and ww_engine.is_ready:
                                         dev_thresh = dev_cfg.get("ww_threshold")
                                         active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
-                                        score = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
-                                        device_manager.update_ww_score(client_mac, score)
+                                        score, peak, rms = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
+                                        device_manager.update_ww_score(client_mac, score, peak_score=peak, rms_dbfs=rms)
                                         if ww_engine.is_triggered(client_mac):
                                             preroll = ww_engine.consume_preroll(client_mac)
-                                            logger.info(f"[WW-SERVER] Server-side wake word triggered for {client_mac} (score={score:.3f})")
+                                            logger.info(f"[WW-SERVER] Server-side wake word triggered for {client_mac} (score={score:.3f}, peak={peak:.3f})")
                                             session_state["utterance_buffer"] = collections.deque(maxlen=150)
                                             device_manager.set_device_state(client_mac, "listening")
                                             cancel_thinking_watchdog()
@@ -1211,8 +1211,8 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                     dev_cfg = device_manager.get_device_config(client_mac)
                     dev_thresh = dev_cfg.get("ww_threshold")
                     active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
-                    score = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
-                    device_manager.update_ww_score(client_mac, score)
+                    score, peak, rms = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
+                    device_manager.update_ww_score(client_mac, score, peak_score=peak, rms_dbfs=rms)
 
                     if ww_engine.is_triggered(client_mac) and not session_active:
                         preroll = ww_engine.consume_preroll(client_mac)
