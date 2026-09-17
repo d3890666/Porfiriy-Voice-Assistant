@@ -30,10 +30,15 @@ class WakeWordEngine:
         try:
             import numpy as np
             from openwakeword.model import Model
+            base_name = os.path.basename(self.model_path)
             candidates = [
                 self.model_path,
                 os.path.join(os.path.dirname(__file__), self.model_path),
+                os.path.join(os.path.dirname(__file__), base_name),
                 os.path.join(os.path.dirname(__file__), "..", self.model_path),
+                os.path.join("/data", base_name),
+                os.path.join("/backend", base_name),
+                os.path.join("/", base_name),
             ]
             resolved = None
             for c in candidates:

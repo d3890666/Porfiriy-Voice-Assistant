@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.96"
+#define FIRMWARE_VERSION "0.0.97"
 
 #include "model.h"
 // TFLite
