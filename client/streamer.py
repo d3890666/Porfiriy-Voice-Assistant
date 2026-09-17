@@ -406,6 +406,8 @@ class StreamerClient:
             elif m_type == "sleep":
                 logger.info("💤 Ответ сервера завершен.")
                 self.is_playing = False
+            elif m_type == "listen":
+                logger.info("🎙️ Активирован режим прослушивания (вызов ассистента).")
             elif m_type == "beep":
                 logger.info("🔔 Получен звуковой сигнал готовности.")
             elif m_type == "set_config":

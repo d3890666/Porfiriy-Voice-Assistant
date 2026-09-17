@@ -1035,6 +1035,39 @@ async def handle_client(websocket):
                         pass
                     await unduck_media()
 
+            async def _force_wake_esp():
+                logger.info(f"[ESP32] ⚡ Force wake triggered via Web UI for {client_mac}")
+                session_state["utterance_buffer"] = collections.deque(maxlen=150)
+                device_manager.set_device_state(client_mac, "listening")
+                cancel_thinking_watchdog()
+                session_state["is_gemini_speaking"] = False
+                session_state["is_tool_pending"] = False
+                session_state["first_audio_sent"] = False
+                session_state["first_audio_received"] = False
+                await duck_media()
+                try:
+                    await websocket.send(json.dumps({"type": "listen"}))
+                except Exception:
+                    pass
+                if session_state.get("area_name"):
+                    room_name = session_state["area_name"]
+                    room_ctx = (
+                        f"[КОНТЕКСТ ВЫЗОВА]: Тебя вызвали из комнаты: «{room_name}». "
+                        f"Если запрос касается устройств без явного указания комнаты (например 'включи свет' или 'закрой шторы'), "
+                        f"приоритетно управляй устройствами именно в комнате «{room_name}»."
+                    )
+                    try:
+                        async with gemini_send_lock:
+                            await session.send_client_content(
+                                turns=[types.Content(parts=[types.Part(text=room_ctx)], role="user")],
+                                turn_complete=False
+                            )
+                    except Exception:
+                        pass
+                return True
+
+            device_manager.register_wake_handler(client_mac, _force_wake_esp)
+
             # Запускаем задачи параллельно
             tg.create_task(receive_from_client())
             tg.create_task(receive_from_gemini())
@@ -1047,6 +1080,7 @@ async def handle_client(websocket):
             pass
         await websocket.close()
     finally:
+        device_manager.unregister_wake_handler(client_mac)
         device_manager.set_device_offline(client_mac)
 
 async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
@@ -1229,6 +1263,28 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             except Exception as e:
                 logger.error(f"[STREAMER] Failed to play media on {player}: {e}")
 
+    async def _force_wake_streamer():
+        nonlocal session_active, audio_queue
+        if session_active:
+            logger.info(f"[STREAMER] Session already active for {client_mac}, ignoring duplicate force wake.")
+            return True
+        logger.info(f"[STREAMER] ⚡ Force wake triggered via Web UI for {client_mac}")
+        try:
+            await websocket.send(json.dumps({"type": "listen"}))
+        except Exception:
+            pass
+        try:
+            speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
+            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+        except Exception:
+            pass
+        gemini_audio_buf.clear()
+        audio_queue = asyncio.Queue()
+        asyncio.create_task(_run_gemini_session(b""))
+        return True
+
+    device_manager.register_wake_handler(client_mac, _force_wake_streamer)
+
     try:
         async for message in websocket:
             if isinstance(message, bytes):
@@ -1300,6 +1356,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
     except Exception as e:
         logger.error(f"[STREAMER] Unexpected error for {client_mac}: {e}")
     finally:
+        device_manager.unregister_wake_handler(client_mac)
         if ww_engine:
             ww_engine.reset(client_mac)
         device_manager.set_device_offline(client_mac)

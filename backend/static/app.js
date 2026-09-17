@@ -233,9 +233,12 @@ function renderDevicesGrid() {
               <span id="ww-thr-val-${dev.mac}" style="font-family: monospace; font-size: 12px; min-width: 36px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
             </div>
           </div>
-          <div style="margin-top: 8px;">
-            <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" title="Прослушать последний ответ Gemini для этого стримера" style="font-size: 12px; padding: 6px 12px; width: 100%;">
-              ▶ Прослушать ответ Gemini
+          <div style="margin-top: 8px; display: flex; gap: 8px;">
+            <button class="btn btn-sm" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия без произнесения вейкворда (активировать прослушивание)" style="flex: 1.2; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #ffffff; font-size: 12px; font-weight: 600; padding: 7px 10px; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);">
+              <span>⚡ Принудительный вызов</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" title="Прослушать последний ответ Gemini для этого стримера" style="flex: 1; font-size: 12px; padding: 7px 10px;">
+              ▶ Ответ Gemini
             </button>
           </div>
         ` : `
@@ -313,8 +316,11 @@ function renderDevicesGrid() {
           </div>
         </div>
 
-        ${isEsp ? `
-          <div class="card-actions">
+        <div class="card-actions">
+          <button class="btn btn-secondary btn-icon" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия (начать слушать)" style="color: #a78bfa; border-color: rgba(167, 139, 250, 0.4); font-weight: 600;">
+            ⚡ Вызов
+          </button>
+          ${isEsp ? `
             <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'beep')" title="Проиграть звуковой сигнал">
               🔔 Звук
             </button>
@@ -331,8 +337,10 @@ function renderDevicesGrid() {
                 🌐 Web UI
               </a>
             ` : ''}
-          </div>
+          ` : ''}
+        </div>
 
+        ${isEsp ? `
           <!-- Сворачиваемый блок тонкой настройки -->
           ${(() => {
             const isAdvancedOpen = !!(window.cardAccordionOpen && window.cardAccordionOpen[dev.mac]);
@@ -972,6 +980,34 @@ async function triggerDeviceAction(mac, action) {
     showToast('Ошибка вызова действия', true);
   }
 }
+
+// Принудительный вызов ассистента (эмуляция сработки вейкворда)
+async function triggerDeviceWake(mac) {
+  try {
+    showToast('⚡ Активация режима прослушивания...');
+    const res = await fetch(`${API_BASE}/api/devices/${mac}/wake`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`⚡ Вызов активирован! Порфирий слушает.`);
+    } else {
+      showToast(`Устройство офлайн или сессия уже активна`, true);
+    }
+  } catch (err) {
+    showToast('Ошибка принудительного вызова', true);
+  }
+}
+window.triggerDeviceWake = triggerDeviceWake;
+
+function triggerSelectedMonitorWake() {
+  const sel = document.getElementById('ww-monitor-stream-select');
+  const target = (sel && sel.value && sel.value !== 'auto') ? sel.value : (window.lastWwActiveDevice || '');
+  if (!target) {
+    showToast('Выберите устройство в селекторе выше', true);
+    return;
+  }
+  triggerDeviceWake(target);
+}
+window.triggerSelectedMonitorWake = triggerSelectedMonitorWake;
 
 // Заполнение формы глобальных настроек
 function renderBrainInfo() {

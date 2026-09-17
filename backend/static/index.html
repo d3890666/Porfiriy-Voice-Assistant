@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.101">
+  <link rel="stylesheet" href="static/style.css?v=0.0.102">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1198,6 +1198,9 @@ PING:
                   <select id="ww-monitor-stream-select" onfocus="populateWwMonitorSources()" onmousedown="populateWwMonitorSources()" style="background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 10px; border-radius: 6px; font-size: 12px;">
                     <option value="auto">— Авто (любой активный) —</option>
                   </select>
+                  <button class="btn btn-sm" onclick="triggerSelectedMonitorWake()" title="Принудительно вызвать Порфирия на выбранном источнике" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 11.5px; font-weight: 600; padding: 4px 10px; border: none; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
+                    ⚡ Вызов
+                  </button>
                 </div>
               </div>
 
@@ -1254,6 +1257,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.101"></script>
+  <script src="static/app.js?v=0.0.102"></script>
 </body>
 </html>

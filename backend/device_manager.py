@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.101"
+TARGET_FIRMWARE_VERSION = "0.0.102"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -156,6 +156,8 @@ class DeviceManager:
         self.last_utterance_results: Dict[str, Dict[str, Any]] = {}
         # Кэш WAV-ответов Gemini для виртуальных стримеров (pc_streamer)
         self._response_wav: Dict[str, bytes] = {}
+        # Обработчики принудительного вызова ассистента
+        self._wake_handlers: Dict[str, Callable] = {}
         self._load()
 
     def _load(self):
@@ -290,6 +292,7 @@ class DeviceManager:
     def set_device_offline(self, mac: str):
         """Фиксация отключения устройства."""
         clean_mac = mac.strip().lower()
+        self._wake_handlers.pop(clean_mac, None)
         if clean_mac in self.active_sockets:
             del self.active_sockets[clean_mac]
         if clean_mac in self.devices:
@@ -381,6 +384,48 @@ class DeviceManager:
                 return False
 
         logger.warning(f"send_command failed for {clean_mac}: socket not found or closed. Active sockets: {list(self.active_sockets.keys())}")
+        return False
+
+    def register_wake_handler(self, mac: str, handler: Callable):
+        """Регистрирует обработчик принудительного вызова для устройства."""
+        clean_mac = mac.strip().lower()
+        self._wake_handlers[clean_mac] = handler
+
+    def unregister_wake_handler(self, mac: str):
+        """Удаляет зарегистрированный обработчик вызова для устройства."""
+        clean_mac = mac.strip().lower()
+        self._wake_handlers.pop(clean_mac, None)
+
+    async def trigger_wake(self, mac: str) -> bool:
+        """Принудительный вызов ассистента (эмуляция сработки вейкворда)."""
+        clean_mac = mac.strip().lower()
+        dev = self.devices.get(clean_mac)
+        if not dev or not dev.get("is_online"):
+            # Поиск без двоеточий / дефисов
+            clean_mac_norm = clean_mac.replace(":", "").replace("-", "")
+            for k, d in self.devices.items():
+                if k.replace(":", "").replace("-", "") == clean_mac_norm and d.get("is_online"):
+                    clean_mac = k
+                    dev = d
+                    break
+
+        handler = self._wake_handlers.get(clean_mac)
+        if handler:
+            try:
+                res = handler()
+                if asyncio.iscoroutine(res):
+                    return await res
+                return bool(res)
+            except Exception as e:
+                logger.error(f"[WAKE] Error executing wake handler for {clean_mac}: {e}")
+                return False
+
+        # Fallback: для подключенных плат отправляем команду listen
+        if clean_mac in self.active_sockets:
+            logger.info(f"[WAKE] Sending 'listen' fallback command to {clean_mac}")
+            return await self.send_command(clean_mac, {"type": "listen"})
+
+        logger.warning(f"[WAKE] Device {clean_mac} is offline or has no active connection")
         return False
 
     async def update_device_config(self, mac: str, new_config: Dict[str, Any]) -> bool:
