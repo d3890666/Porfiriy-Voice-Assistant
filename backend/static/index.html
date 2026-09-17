@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.95">
+  <link rel="stylesheet" href="static/style.css?v=0.0.96">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -561,7 +561,7 @@ PING:
       </button>
       <button class="nav-tab" data-tab="tab-brain">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.3 2 6.1 5 7.4V20a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2.6c3-1.3 5-4.1 5-7.4a8 8 0 0 0-8-8z"/></svg>
-        Мозг & Личность
+        Мозг & Вейкворд
       </button>
     </nav>
 
@@ -1194,7 +1194,7 @@ PING:
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <label for="ww-monitor-stream-select" style="font-size: 12px; color: #8b949e; margin: 0;">Источник:</label>
-                  <select id="ww-monitor-stream-select" style="background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 10px; border-radius: 6px; font-size: 12px;">
+                  <select id="ww-monitor-stream-select" onfocus="populateWwMonitorSources()" onmousedown="populateWwMonitorSources()" style="background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 10px; border-radius: 6px; font-size: 12px;">
                     <option value="auto">— Авто (любой активный) —</option>
                   </select>
                 </div>
@@ -1253,6 +1253,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.95"></script>
+  <script src="static/app.js?v=0.0.96"></script>
 </body>
 </html>

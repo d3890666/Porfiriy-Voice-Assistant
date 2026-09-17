@@ -93,7 +93,12 @@ function setupTabs() {
       btn.classList.add('active');
       const tabId = btn.getAttribute('data-tab');
       const target = document.getElementById(tabId);
-      if (target) target.classList.add('active');
+      if (target) {
+        target.classList.add('active');
+        if (tabId === 'tab-brain' && typeof populateWwMonitorSources === 'function') {
+          populateWwMonitorSources();
+        }
+      }
     });
   });
 }
@@ -202,11 +207,6 @@ function renderDevicesGrid() {
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(100, 65, 200, 0.15), rgba(60, 130, 230, 0.1)); border: 1px solid rgba(100, 65, 200, 0.3); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
             <span style="font-weight: 700; font-size: 13px;">🎙️ PC Streamer</span>
             <span style="font-size: 11px; color: #8b949e; font-family: monospace; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 12px;">Серверный вейкворд</span>
-          </div>
-          <!-- Отсылка на монитор интеллекта -->
-          <div style="font-size: 11px; color: #8b949e; margin: 6px 0 4px 0; padding: 4px 8px; background: rgba(255,255,255,0.03); border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
-            <span>🎯 Серверный отклик:</span>
-            <span style="color: #58a6ff;">Монитор на вкладке 🧠 Интеллект</span>
           </div>
           <!-- Streamer Settings -->
           <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
@@ -1466,22 +1466,46 @@ window.populateWwMonitorSources = function() {
   const sel = document.getElementById('ww-monitor-stream-select');
   if (!sel) return;
   const current = sel.value || 'auto';
+  // Находим все клиенты, использующие серверный вейкворд
   const candidates = devices.filter(d => 
-    d.is_online && (d.device_type === 'pc_streamer' || (d.config && d.config.wake_word_mode === 'server'))
+    d.device_type === 'pc_streamer' || 
+    (d.mac && d.mac.startsWith('streamer_')) ||
+    (d.config && d.config.wake_word_mode === 'server')
   );
   let html = `<option value="auto" ${current === 'auto' ? 'selected' : ''}>— Авто (любой активный) —</option>`;
   candidates.forEach(d => {
     const isSel = (d.mac === current) ? 'selected' : '';
-    html += `<option value="${escapeHtml(d.mac)}" ${isSel}>${escapeHtml(d.name || d.mac)} (${escapeHtml(d.area_name || d.device_type)})</option>`;
+    const isOnline = d.is_online || d.state !== 'offline';
+    const statusDot = isOnline ? '🟢' : '⚪';
+    const title = `${statusDot} ${d.name || d.mac} (${d.area_name || d.device_type || 'микрофон'})`;
+    html += `<option value="${escapeHtml(d.mac)}" ${isSel}>${escapeHtml(title)}</option>`;
   });
   sel.innerHTML = html;
 };
 
 window.updateWwMonitorTelemetry = function(info) {
   const sel = document.getElementById('ww-monitor-stream-select');
+  if (sel && info.mac) {
+    // Если этого устройства ещё нет в селекторе, динамически добавляем его
+    let opt = sel.querySelector(`option[value="${info.mac}"]`);
+    if (!opt) {
+      opt = document.createElement('option');
+      opt.value = info.mac;
+      opt.innerText = `🟢 ${info.name || info.mac} (live)`;
+      sel.appendChild(opt);
+    }
+  }
+
   const activeFilter = sel ? sel.value : 'auto';
   if (activeFilter !== 'auto' && activeFilter !== info.mac) {
     return;
+  }
+
+  // Индикатор живого потока
+  const liveDot = document.getElementById('ww-monitor-live-dot');
+  if (liveDot) {
+    liveDot.style.background = 'var(--accent-green)';
+    liveDot.style.boxShadow = '0 0 8px var(--accent-green)';
   }
 
   const scoreEl = document.getElementById('ww-monitor-score-val');
@@ -1630,6 +1654,9 @@ function setupSSE() {
             renderBulkTargets();
             renderOtaBanner();
             updateHeaderStats();
+            if (typeof populateWwMonitorSources === 'function') {
+              populateWwMonitorSources();
+            }
           }
         }
       } catch (err) {}

@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.95"
+TARGET_FIRMWARE_VERSION = "0.0.96"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -704,11 +704,27 @@ class DeviceManager:
             dev["ww_peak_score"] = round(peak_score, 4)
             dev["ww_rms_dbfs"] = rms_dbfs
             last_score = dev.get("_last_notified_score", -1.0)
+            last_rms = dev.get("_last_notified_rms", -99.0)
             now = time.time()
             last_notify_t = dev.get("_last_ww_notify_time", 0.0)
-            # Отправляем SSE обновление при изменении или активности
-            if abs(score - last_score) >= 0.02 or (score >= 0.15 and (now - last_notify_t >= 0.18)):
+
+            # Отправка телеметрии:
+            # 1. При высокой вероятности вейкворда (score >= 0.10) - отправляем моментально с мягким троттлом 100 мс
+            # 2. При наличии звука/речи - регулярный срез 4 раза в секунду (раз в 250 мс)
+            # 3. При резком скачке уровня звука (RMS delta >= 4.0 dB)
+            should_notify = False
+            if score >= 0.10 and (now - last_notify_t >= 0.10):
+                should_notify = True
+            elif abs(score - last_score) >= 0.02:
+                should_notify = True
+            elif (now - last_notify_t >= 0.25):
+                should_notify = True
+            elif abs(rms_dbfs - last_rms) >= 4.0 and (now - last_notify_t >= 0.12):
+                should_notify = True
+
+            if should_notify:
                 dev["_last_notified_score"] = score
+                dev["_last_notified_rms"] = rms_dbfs
                 dev["_last_ww_notify_time"] = now
                 self._notify("ww_score", {
                     "mac": clean_mac,
