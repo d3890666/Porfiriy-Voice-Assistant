@@ -25,6 +25,10 @@ COPY backend /backend/
 COPY porfiriy.onnx /backend/porfiriy.onnx
 COPY porfiriy.onnx /porfiriy.onnx
 
+# Ensure openWakeWord has melspectrogram and embedding models pre-installed in library directory
+RUN mkdir -p /usr/local/lib/python3.11/dist-packages/openwakeword/resources/models && \
+    cp -fv /backend/models/*.onnx /usr/local/lib/python3.11/dist-packages/openwakeword/resources/models/ || true
+
 RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]

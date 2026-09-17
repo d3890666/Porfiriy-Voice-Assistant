@@ -1596,6 +1596,24 @@ window.startWwMonitorPolling = function() {
       const res = await fetch(`${API_BASE}/api/ww_monitor`);
       if (!res.ok) return;
       const data = await res.json();
+
+      // Обновление бейджа статуса нейросети
+      const engineBadge = document.getElementById('ww-engine-status-badge');
+      if (engineBadge && data.__engine__) {
+        const eng = data.__engine__;
+        if (eng.is_ready) {
+          engineBadge.style.background = 'rgba(46, 160, 67, 0.15)';
+          engineBadge.style.color = '#3fb950';
+          engineBadge.innerText = `🟢 Модель: ${eng.model_name || 'porfiriy'} активна`;
+          engineBadge.title = 'Серверный детектор openWakeWord успешно загружен и готов';
+        } else {
+          engineBadge.style.background = 'rgba(248, 81, 73, 0.15)';
+          engineBadge.style.color = '#f85149';
+          engineBadge.innerText = eng.error ? `🔴 ${eng.error}` : '🔴 Нейросеть не готова';
+          engineBadge.title = eng.error || 'Ошибка загрузки модели вейкворда';
+        }
+      }
+
       const sel = document.getElementById('ww-monitor-stream-select');
       const activeMac = sel ? sel.value : 'auto';
       
@@ -1603,9 +1621,8 @@ window.startWwMonitorPolling = function() {
       if (activeMac !== 'auto' && data[activeMac]) {
         target = data[activeMac];
       } else {
-        const keys = Object.keys(data);
+        const keys = Object.keys(data).filter(k => k !== '__engine__');
         if (keys.length > 0) {
-          // Ищем первый онлайн или с наибольшим скором
           target = data[keys[0]];
         }
       }

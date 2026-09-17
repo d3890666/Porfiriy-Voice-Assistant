@@ -38,6 +38,13 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.99 (Bundled openWakeWord Feature Models & Live Engine Status)
+*   **Включение базовых моделей openWakeWord в Docker-образ**: Устранена ошибка `[ONNXRuntimeError] : 3 : NO_SUCHFILE : melspectrogram.onnx`. Модели `melspectrogram.onnx` и `embedding_model.onnx` скопированы в `backend/models/`, в `Dockerfile` прописана их автоустановка в директорию пакета `openwakeword/resources/models/`.
+*   **Многоуровневый поиск и фолбэк путей**: В `WakeWordEngine` добавлен поиск моделей в `backend/models/`, передача аргументов `melspec_model_path` и `embedding_model_path` в `Model(...)`, автокопирование и загрузка через `openwakeword.utils.download_models()`.
+*   **Индикация статуса нейросети в UI**: В монитор отладки вейкворда добавлен динамический бейдж статуса (`🟢 Модель: porfiriy активна` или детальная ошибка `🔴`), транслируемый через `/api/ww_monitor`.
+*   **Сборка бинарника**: PlatformIO собрал свежий бинарник `0.0.99`, скопирован в `backend/firmware/firmware.bin`.
+*   **Синхронизация версий**: В `config.yaml`, `device_manager.py`, `esp32_firmware/src/main.cpp`, `CHANGELOG.md` и `index.html` установлена версия `0.0.99`.
+
 ### Версия 0.0.98 (Ingress SSE Buffering Fix, REST Polling Fallback & Raw RMS Telemetry)
 *   **Устранение буферизации SSE в Home Assistant Ingress**: Прокси NGINX внутри Ingress задерживал легковесные SSE-пакеты телеметрии (~80 байт). Добавлены заголовки `X-Accel-Buffering: no`, `Cache-Control: no-cache, no-transform` и вызов `await response.drain()`.
 *   **Гарантированный REST Polling Fallback**: Добавлен эндпоинт `/api/ww_monitor` и опрос раз в 250 мс со стороны интерфейса (`startWwMonitorPolling`). Даже если браузер или прокси задерживают SSE-стрим, шкалы телеметрии в реальном времени гарантированно оживают.

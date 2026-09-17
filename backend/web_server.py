@@ -467,6 +467,24 @@ class WebServer:
                     "threshold": float(dev.get("config", {}).get("ww_threshold", 0.94)),
                     "is_online": bool(dev.get("is_online", False))
                 }
+
+        engine_info = {
+            "is_ready": False,
+            "model_name": None,
+            "error": None
+        }
+        if self.ww_engine_callback:
+            try:
+                engine = self.ww_engine_callback()
+                if engine:
+                    engine_info = {
+                        "is_ready": bool(engine.is_ready),
+                        "model_name": getattr(engine, "model_name", None),
+                        "error": getattr(engine, "last_error", None)
+                    }
+            except Exception:
+                pass
+        data["__engine__"] = engine_info
         return web.json_response(data)
 
     async def start(self):

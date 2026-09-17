@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.98"
+TARGET_FIRMWARE_VERSION = "0.0.99"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""

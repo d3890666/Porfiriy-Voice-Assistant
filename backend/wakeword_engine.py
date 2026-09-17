@@ -23,12 +23,15 @@ class WakeWordEngine:
         self.model_path = model_path
         self._model = None
         self._model_name: Optional[str] = None
+        self.last_error: Optional[str] = None
         self._sources: Dict[str, dict] = {}
         self._load_model()
 
     def _load_model(self):
         try:
             import numpy as np
+            import shutil
+            import pathlib
             from openwakeword.model import Model
             base_name = os.path.basename(self.model_path)
             candidates = [
@@ -46,19 +49,80 @@ class WakeWordEngine:
                     resolved = os.path.abspath(c)
                     break
             if not resolved:
-                logger.error(f"[WW] Model not found: '{self.model_path}'. Server-side wake word DISABLED.")
+                err = f"Model not found: '{self.model_path}' in candidates: {candidates}"
+                self.last_error = err
+                logger.error(f"[WW] {err}. Server-side wake word DISABLED.")
                 return
-            self._model = Model(wakeword_models=[resolved], inference_framework="onnx")
+
+            # Поиск базовых моделей openWakeWord (melspectrogram.onnx и embedding_model.onnx)
+            models_dir = os.path.join(os.path.dirname(__file__), "models")
+            melspec_candidates = [
+                os.path.join(models_dir, "melspectrogram.onnx"),
+                os.path.join("/backend/models", "melspectrogram.onnx"),
+                os.path.join(os.path.dirname(__file__), "melspectrogram.onnx"),
+                os.path.join("/backend", "melspectrogram.onnx"),
+            ]
+            embed_candidates = [
+                os.path.join(models_dir, "embedding_model.onnx"),
+                os.path.join("/backend/models", "embedding_model.onnx"),
+                os.path.join(os.path.dirname(__file__), "embedding_model.onnx"),
+                os.path.join("/backend", "embedding_model.onnx"),
+            ]
+            resolved_melspec = next((c for c in melspec_candidates if os.path.exists(c)), "")
+            resolved_embed = next((c for c in embed_candidates if os.path.exists(c)), "")
+
+            # Копируем в директорию пакета openwakeword/resources/models, если они там отсутствуют
+            try:
+                import openwakeword
+                pkg_models_dir = os.path.join(pathlib.Path(openwakeword.__file__).parent.resolve(), "resources", "models")
+                os.makedirs(pkg_models_dir, exist_ok=True)
+                pkg_mel = os.path.join(pkg_models_dir, "melspectrogram.onnx")
+                pkg_emb = os.path.join(pkg_models_dir, "embedding_model.onnx")
+
+                if resolved_melspec and not os.path.exists(pkg_mel):
+                    shutil.copy2(resolved_melspec, pkg_mel)
+                    logger.info(f"[WW] Copied melspectrogram to {pkg_mel}")
+                if resolved_embed and not os.path.exists(pkg_emb):
+                    shutil.copy2(resolved_embed, pkg_emb)
+                    logger.info(f"[WW] Copied embedding_model to {pkg_emb}")
+
+                # Если моделей не было в backend/models, пробуем встроенный download
+                if not os.path.exists(pkg_mel) or not os.path.exists(pkg_emb):
+                    logger.info("[WW] Downloading missing base models via openwakeword.utils.download_models()...")
+                    import openwakeword.utils
+                    openwakeword.utils.download_models()
+
+                if not resolved_melspec and os.path.exists(pkg_mel):
+                    resolved_melspec = pkg_mel
+                if not resolved_embed and os.path.exists(pkg_emb):
+                    resolved_embed = pkg_emb
+            except Exception as e_copy:
+                logger.warning(f"[WW] Base models sync note: {e_copy}")
+
+            model_kwargs = {}
+            if resolved_melspec:
+                model_kwargs["melspec_model_path"] = resolved_melspec
+            if resolved_embed:
+                model_kwargs["embedding_model_path"] = resolved_embed
+
+            self._model = Model(wakeword_models=[resolved], inference_framework="onnx", **model_kwargs)
             self._model_name = os.path.splitext(os.path.basename(resolved))[0]
-            logger.info(f"[WW] Loaded: '{resolved}' (key='{self._model_name}', threshold={self.threshold})")
+            self.last_error = None
+            logger.info(f"[WW] Loaded: '{resolved}' (key='{self._model_name}', threshold={self.threshold}, melspec={bool(resolved_melspec)}, embed={bool(resolved_embed)})")
         except ImportError as e:
+            self.last_error = f"openwakeword not installed: {e}"
             logger.error(f"[WW] openwakeword not installed: {e}. DISABLED.")
         except Exception as e:
+            self.last_error = f"Load error: {e}"
             logger.error(f"[WW] Load error: {e}")
 
     @property
     def is_ready(self) -> bool:
         return self._model is not None and self._model_name is not None
+
+    @property
+    def model_name(self) -> Optional[str]:
+        return self._model_name
 
     def _get_source(self, device_id: str) -> dict:
         if device_id not in self._sources:
