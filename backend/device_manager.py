@@ -11,7 +11,22 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.89"
+TARGET_FIRMWARE_VERSION = "0.0.93"
+
+def is_newer_version(target: str, current: str) -> bool:
+    """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
+    try:
+        def parse_v(v_str):
+            if not v_str:
+                return []
+            return [int(x) for x in str(v_str).lower().replace("v", "").strip().split(".") if x.isdigit()]
+        t_parts = parse_v(target)
+        c_parts = parse_v(current)
+        if not t_parts or not c_parts:
+            return False
+        return t_parts > c_parts
+    except Exception:
+        return False
 
 def filter_pcm16_highpass(pcm_data: bytes, cutoff_hz: float = 85.0, sample_rate: int = 16000) -> bytes:
     """Удаление сетевого гула 50/100 Гц и постоянного смещения (DC offset) через High-Pass фильтр 2-го порядка."""
@@ -228,8 +243,11 @@ class DeviceManager:
         dev["target_firmware"] = TARGET_FIRMWARE_VERSION
         dev["has_update"] = (
             dev.get("device_type") == "esp32" and 
-            dev.get("firmware") != TARGET_FIRMWARE_VERSION
+            is_newer_version(TARGET_FIRMWARE_VERSION, dev.get("firmware", ""))
         )
+        # Сброс зависшего статуса OTA при успешном подключении платы
+        dev["ota_status"] = None
+        dev["ota_progress"] = 0
         dev["is_online"] = True
         dev["state"] = "idle"
         dev["last_seen"] = now
@@ -316,7 +334,7 @@ class DeviceManager:
         outdated = []
         for d in self.get_all_devices():
             if d.get("device_type") == "esp32" and d.get("is_online", False):
-                if d.get("firmware") != TARGET_FIRMWARE_VERSION:
+                if is_newer_version(TARGET_FIRMWARE_VERSION, d.get("firmware", "")):
                     outdated.append(d)
         return outdated
 
@@ -328,7 +346,7 @@ class DeviceManager:
             dev_copy["has_update"] = (
                 dev_copy.get("device_type") == "esp32" and 
                 dev_copy.get("is_online", False) and 
-                dev_copy.get("firmware") != TARGET_FIRMWARE_VERSION
+                is_newer_version(TARGET_FIRMWARE_VERSION, dev_copy.get("firmware", ""))
             )
             result.append(dev_copy)
         return result

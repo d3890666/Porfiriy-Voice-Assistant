@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.89"
+#define FIRMWARE_VERSION "0.0.93"
 
 #include "model.h"
 // TFLite
@@ -141,6 +141,54 @@ size_t ws_tx_buffer_len = 0;
 #define PRE_ROLL_SAMPLES 16000
 int16_t pre_roll_buffer[PRE_ROLL_SAMPLES];
 int pre_roll_head = 0;
+
+// Классический DSP пиковый лимитер с быстрой атакой и плавным релизом (WebRTC/ITU-T style)
+class AudioLimiter {
+private:
+    float envelope = 0.0f;
+    float attack_coeff = 0.0f;
+    float release_coeff = 0.0f;
+    float target_threshold = 26000.0f; // Порог мягкого сжатия (-2 dBFS)
+    float base_gain = 3.6f;
+
+public:
+    void init(float sample_rate, float attack_ms = 2.0f, float release_ms = 200.0f, float threshold = 26000.0f, float gain = 3.6f) {
+        attack_coeff = expf(-1.0f / (sample_rate * (attack_ms / 1000.0f)));
+        release_coeff = expf(-1.0f / (sample_rate * (release_ms / 1000.0f)));
+        target_threshold = threshold;
+        base_gain = gain;
+        envelope = 0.0f;
+    }
+
+    void set_gain(float g) {
+        base_gain = g;
+    }
+
+    inline int16_t process(float sample_after_dc) {
+        float boosted = sample_after_dc * base_gain;
+        float abs_s = fabsf(boosted);
+
+        if (abs_s > envelope) {
+            envelope = attack_coeff * envelope + (1.0f - attack_coeff) * abs_s;
+        } else {
+            envelope = release_coeff * envelope + (1.0f - release_coeff) * abs_s;
+        }
+
+        float gain_reduction = 1.0f;
+        if (envelope > target_threshold) {
+            gain_reduction = target_threshold / envelope;
+        }
+
+        float out = boosted * gain_reduction;
+
+        if (out > 32767.0f) out = 32767.0f;
+        if (out < -32768.0f) out = -32768.0f;
+
+        return (int16_t)roundf(out);
+    }
+};
+
+AudioLimiter limiter;
 
 // --- TFLite и Препроцессор ---
 #define PREPROCESSOR_FEATURE_SIZE 40
@@ -520,7 +568,7 @@ void handleSave() {
     if (server.hasArg("port") && server.arg("port").toInt() != ws_port) { network_changed = true; ws_port = server.arg("port").toInt(); preferences.putUInt("port", ws_port); }
     
     // Тонкие настройки (На лету)
-    if (server.hasArg("mic_gain")) { mic_gain = server.arg("mic_gain").toFloat(); preferences.putFloat("mic_gain_f", mic_gain); }
+    if (server.hasArg("mic_gain")) { mic_gain = server.arg("mic_gain").toFloat(); preferences.putFloat("mic_gain_f", mic_gain); limiter.set_gain(mic_gain * 1.8f); }
     if (server.hasArg("silence_timeout_ms")) { silence_timeout_ms = server.arg("silence_timeout_ms").toInt(); preferences.putInt("sil_ms", silence_timeout_ms); }
     if (server.hasArg("listen_timeout_s")) { listen_timeout_s = server.arg("listen_timeout_s").toInt(); preferences.putInt("listen_to", listen_timeout_s); }
     if (server.hasArg("silence_threshold_energy")) { silence_threshold_energy = server.arg("silence_threshold_energy").toInt(); preferences.putInt("sil_thres", silence_threshold_energy); }
@@ -591,7 +639,8 @@ void setup_wifi() {
         Serial.print("Connecting to WiFi: ");
         Serial.println(ssid);
         WiFi.begin(ssid.c_str(), password.c_str());
-        esp_wifi_set_ps(WIFI_PS_NONE); // Disable Power Save for I2S DMA stability
+        WiFi.setTxPower(WIFI_POWER_11dBm); // Снижает импульсные броски тока с 450мА до ~180мА
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM); // Энергосбережение модема между пакетами
         
         int attempts = 0;
         while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -948,6 +997,7 @@ void handle_remote_config(String json) {
     };
 
     parse_float("mic_gain", mic_gain, "mic_gain_f");
+    limiter.set_gain(mic_gain * 1.8f);
     parse_float("speaker_volume", speaker_volume, "spk_vol");
     parse_float("wake_word_threshold", wake_word_threshold, "ww_thres");
     parse_string("wake_word_mode", wake_word_mode, "ww_mode_str");
@@ -1133,6 +1183,7 @@ void setup() {
     }
 
     load_preferences();
+    limiter.init(SAMPLE_RATE, 2.0f, 200.0f, 26000.0f, mic_gain * 1.8f);
 
     // Настройка светодиода
     FastLED.addLeds<WS2812, LED_BOARD_PIN, GRB>(leds, NUM_LEDS);
@@ -1231,24 +1282,22 @@ void loop() {
     int samples_read = bytes_read / 4;
     
     // Высококачественная обработка микрофона INMP441:
-    // Сдвиг на 16 бит берет чистые старшие 16 бит из 32-битного слота и ПОЛНОСТЬЮ отсекает
-    // 8 плавающих мусорных бит (Z-state), устраняя цифровой треск.
-    // 1-й порядок DC-блокер (Leaky Integrator) чисто убирает постоянное смещение без резонансного звона.
+    // Сдвиг на 12 бит берет оптимальные 20 бит из 24-битного слова INMP441.
+    // 1-й порядок DC-блокер (Leaky Integrator) чисто убирает постоянное смещение без звона.
+    // WebRTC Peak Limiter мягко компрессирует громкие звуки (атака 2мс, порог 26000),
+    // не допуская клиппинга и хрипа при крике, сохраняя чистый и разборчивый шепот.
     static float dc_x1 = 0.0f;
     static float dc_y1 = 0.0f;
     const float R = 0.985f;
 
     int32_t sum_amp = 0;
     for (int i = 0; i < samples_read; i++) {
-        float x = (float)(mic_buffer_32[i] >> 16) * (mic_gain * 3.5f);
+        float x = (float)(mic_buffer_32[i] >> 12);
         float y = x - dc_x1 + R * dc_y1;
         dc_x1 = x;
         dc_y1 = y;
 
-        int32_t val = (int32_t)roundf(y);
-        if (val > 32767) val = 32767;
-        if (val < -32768) val = -32768;
-        mic_buffer_16[i] = (int16_t)val;
+        mic_buffer_16[i] = limiter.process(y);
         sum_amp += abs(mic_buffer_16[i]);
         
         pre_roll_buffer[pre_roll_head] = mic_buffer_16[i];

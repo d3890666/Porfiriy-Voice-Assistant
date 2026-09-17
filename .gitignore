@@ -27,3 +27,4 @@ options.json
 
 # Wake word test scripts (not for production)
 detect_from_microphone.py
+debug_recordings/

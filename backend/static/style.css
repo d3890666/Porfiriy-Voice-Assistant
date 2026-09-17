@@ -843,33 +843,39 @@ body {
 }
 
 .mic-player-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 4px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .mic-audio-element {
-  width: 100%;
-  height: 32px;
+  width: 100% !important;
+  min-width: 0;
+  height: 36px;
   outline: none;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .mic-metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
 }
 
 .mic-badge {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 2px 6px;
+  padding: 3px 8px;
   border-radius: 4px;
   font-family: var(--font-mono);
+  display: inline-flex;
+  align-items: center;
 }
 
 .mic-badge.badge-neutral {
@@ -901,4 +907,118 @@ body {
   border: 1px solid rgba(255, 50, 50, 0.4);
   font-weight: 700;
 }
+
+/* Device Card Collapsible Accordion (Advanced Settings) */
+.card-advanced-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 6px;
+  transition: all 0.2s ease;
+}
+
+.card-advanced-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.card-advanced-toggle .adv-arrow {
+  font-size: 10px;
+  transition: transform 0.25s ease;
+}
+
+.card-advanced-toggle.open {
+  background: rgba(0, 210, 255, 0.05);
+  border-color: rgba(0, 210, 255, 0.25);
+  color: var(--accent-cyan);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.card-advanced-toggle.open .adv-arrow {
+  transform: rotate(180deg);
+}
+
+.card-advanced-body {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(0, 210, 255, 0.2);
+  border-top: none;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  padding: 12px;
+  margin-bottom: 6px;
+}
+
+.card-advanced-body.open {
+  display: flex;
+}
+
+/* Firmware badges & pulse */
+.fw-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fw-up-to-date {
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+.fw-update-available {
+  color: var(--accent-amber);
+  font-weight: 600;
+}
+
+.ota-device-badge {
+  background: rgba(255, 170, 0, 0.2);
+  color: var(--accent-amber);
+  border: 1px solid rgba(255, 170, 0, 0.4);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.ota-pulse-btn {
+  background: linear-gradient(135deg, #0088cc, #00c3ff) !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  border: none !important;
+  box-shadow: 0 0 10px rgba(0, 195, 255, 0.4);
+  animation: pulse-glow 2s infinite alternate;
+}
+
+@keyframes pulse-glow {
+  0% { box-shadow: 0 0 6px rgba(0, 195, 255, 0.3); }
+  100% { box-shadow: 0 0 14px rgba(0, 195, 255, 0.7); }
+}
+
+.rms-threshold-input {
+  width: 100px !important;
+  padding: 3px 8px;
+  font-size: 12px;
+  text-align: center;
+  background: #1e222b;
+  border: 1px solid #3b4252;
+  color: #fff;
+  border-radius: 4px;
+}
+
 

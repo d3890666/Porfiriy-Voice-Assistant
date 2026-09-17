@@ -245,8 +245,12 @@ function renderDevicesGrid() {
           <div>MAC: ${dev.mac}</div>
           <div>Аптайм: ${formatUptime(dev.uptime)}</div>
           <div>Тип: ${dev.device_type || 'ESP32'}</div>
-          <div>Прошивка: <strong>v${escapeHtml(dev.firmware || '0.0.54')}</strong>
-            ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая прошивка v${dev.target_firmware}">➔ v${dev.target_firmware}</span>` : ''}
+          <div style="grid-column: 1 / -1; display: flex; align-items: center; gap: 6px;">
+            <span>Прошивка:</span>
+            <span class="fw-badge ${dev.has_update ? 'fw-update-available' : 'fw-up-to-date'}">
+              <strong>v${escapeHtml(dev.firmware || '0.0.54')}</strong>
+              ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая прошивка v${dev.target_firmware}">➔ v${dev.target_firmware}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
+            </span>
           </div>
         </div>
 
@@ -268,102 +272,19 @@ function renderDevicesGrid() {
             <input type="range" min="0.1" max="2.0" step="0.05" value="${cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5}" 
               onchange="updateSingleDeviceConfig('${dev.mac}', 'speaker_volume', parseFloat(this.value))"
               oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">
-            <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${volumePercent}%</span>
-          </div>
-          ${isEsp ? `
-            <div class="slider-row">
-              <span>🧠 Режим вейкворда:</span>
-              <select style="background: #1e222b; border: 1px solid #3b4252; color: #fff; padding: 3px 6px; border-radius: 4px; font-size: 11px; margin-left: auto;" 
-                onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_mode', this.value)">
-                <option value="local" ${cfg.wake_word_mode !== 'server' ? 'selected' : ''}>Локальный (TFLite)</option>
-                <option value="server" ${cfg.wake_word_mode === 'server' ? 'selected' : ''}>Серверный (openWakeWord)</option>
-              </select>
-            </div>
-            ${cfg.wake_word_mode === 'server' ? `
-              <div class="slider-row">
-                <span>🎯 Порог WW:</span>
-                <input type="range" min="0.30" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" 
-                  onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))"
-                  oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)">
-                <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
-              </div>
-              ${globalOptions.debug_mode !== false ? `
-                <div class="ww-debug-window" style="margin: 4px 0 8px 0; padding: 6px 10px; background: rgba(0, 0, 0, 0.35); border: 1px solid #30363d; border-radius: 6px;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                    <span style="font-size: 11px; color: #8b949e; display: flex; align-items: center; gap: 4px;">
-                      <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#58a6ff'};"></span>
-                      🎯 Отладка WW (Live):
-                    </span>
-                    <span id="ww-score-val-${dev.mac}" style="font-family: monospace; font-size: 12px; font-weight: 700; color: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#8b949e'};">${(dev.ww_score || 0).toFixed(3)}</span>
-                  </div>
-                  <div style="width: 100%; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; position: relative;">
-                    <div id="ww-score-bar-${dev.mac}" style="height: 100%; width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)'}; border-radius: 3px; transition: width 0.15s;"></div>
-                  </div>
-                </div>
-              ` : ''}
-            ` : `
-              <div class="slider-row">
-                <span>🎯 Вейкворд:</span>
-                <input type="range" min="0.30" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
-                  onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
-                  oninput="this.nextElementSibling.innerText = this.value">
-                <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
-              </div>
-            `}
-            <div class="slider-row">
-              <span>🎙️ Усиление (Gain):</span>
-              <input type="number" step="0.1" min="0.5" max="15.0" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
-                value="${cfg.mic_gain !== undefined ? cfg.mic_gain : 2.0}"
-                onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))"
-                title="Усиление микрофона (по умолчанию 2.0, диапазон 0.5 - 15.0)">
-            </div>
-          ` : ''}
-          <div class="slider-row">
-            <span>🛑 RMS порог:</span>
-            <input type="number" style="width: 75px; padding: 2px 6px; font-size: 12px; background: #1e222b; border: 1px solid #3b4252; color: #fff; border-radius: 4px;" 
-              placeholder="${globalOptions.barge_in_threshold_rms || 600} (общ)" 
-              value="${cfg.barge_in_threshold_rms !== undefined && cfg.barge_in_threshold_rms !== null ? cfg.barge_in_threshold_rms : ''}"
-              onchange="updateSingleDeviceConfig('${dev.mac}', 'barge_in_threshold_rms', this.value ? parseInt(this.value, 10) : null)"
-              title="Индивидуальный порог RMS перебивания. Пустое поле = использовать общий (${globalOptions.barge_in_threshold_rms || 600})">
-          </div>
-          <div class="slider-row" style="margin-top: 4px;">
-            <span>🔇 Приглушать медиа:</span>
-            <label class="checkbox-label" style="margin-left: auto; cursor: pointer; gap: 6px;">
-              <input type="checkbox" ${cfg.enable_ducking !== false ? 'checked' : ''} 
-                onchange="updateSingleDeviceConfig('${dev.mac}', 'enable_ducking', this.checked); this.nextElementSibling.innerText = this.checked ? 'Вкл' : 'Выкл'; this.nextElementSibling.style.color = this.checked ? 'var(--accent-green)' : '#888';"
-                title="Разрешить приглушать медиаплееры при разговоре через эту колонку">
-              <span style="font-size: 11px; font-weight: 700; color: ${cfg.enable_ducking !== false ? 'var(--accent-green)' : '#888'};">
-                ${cfg.enable_ducking !== false ? 'Вкл' : 'Выкл'}
-              </span>
-            </label>
+            <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${volumePercent}%</span>
           </div>
 
-          <!-- Универсальный блок выбора вывода звука ответа -->
-          <div class="audio-output-box" style="margin-top: 10px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px 10px;">
-            <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700; margin-bottom: 6px;">🔊 Вывод звука ответа:</div>
-            <div style="display: flex; gap: 12px; margin-bottom: ${cfg.audio_output_mode === 'external_player' ? '8px' : '2px'}; font-size: 12px;">
-              <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                <input type="radio" name="out_mode_${dev.mac}" value="stream" ${cfg.audio_output_mode !== 'external_player' ? 'checked' : ''} 
-                  onchange="updateSingleDeviceConfig('${dev.mac}', 'audio_output_mode', 'stream')">
-                <span>${isEsp ? 'Встроенный динамик' : 'В стрим (динамик ПК)'}</span>
-              </label>
-              <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
-                <input type="radio" name="out_mode_${dev.mac}" value="external_player" ${cfg.audio_output_mode === 'external_player' ? 'checked' : ''} 
-                  onchange="updateSingleDeviceConfig('${dev.mac}', 'audio_output_mode', 'external_player')">
-                <span>Внешний плеер HA</span>
-              </label>
+          ${isEsp ? `
+            <div class="slider-row">
+              <span>🎙️ Чувствительность:</span>
+              <input type="range" min="0.5" max="10.0" step="0.1" value="${cfg.mic_gain !== undefined ? cfg.mic_gain : 2.0}" 
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))"
+                oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(1) + 'x'"
+                title="Усиление микрофона (по умолчанию 2.0x, диапазон 0.5x - 10.0x)">
+              <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${(cfg.mic_gain !== undefined ? cfg.mic_gain : 2.0).toFixed(1)}x</span>
             </div>
-            ${cfg.audio_output_mode === 'external_player' ? `
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <select style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px;" 
-                  onchange="updateSingleDeviceConfig('${dev.mac}', 'response_player', this.value)">
-                  <option value="">— Выберите медиаплеер HA —</option>
-                  ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.response_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
-                  ${cfg.response_player && !availableMediaPlayers.some(p => p.entity_id === cfg.response_player) ? `<option value="${escapeHtml(cfg.response_player)}" selected>${escapeHtml(cfg.response_player)}</option>` : ''}
-                </select>
-              </div>
-            ` : ''}
-          </div>
+          ` : ''}
         </div>
 
         <div class="mic-debug-box" id="mic-box-${dev.mac}">
@@ -396,8 +317,8 @@ function renderDevicesGrid() {
               🔄 Рестарт
             </button>
             ${dev.has_update && dev.is_online ? `
-              <button class="btn btn-secondary btn-icon" onclick="triggerDeviceOta('${dev.mac}')" style="color: var(--accent-blue); border-color: rgba(0, 210, 255, 0.4);" title="Обновить прошивку по воздуху">
-                ⚡ OTA
+              <button class="btn btn-icon ota-pulse-btn" onclick="triggerDeviceOta('${dev.mac}')" title="Доступна новая прошивка v${dev.target_firmware}! Обновить по воздуху">
+                ⚡ OTA (v${dev.target_firmware})
               </button>
             ` : ''}
             ${dev.ip && dev.ip !== '---' ? `
@@ -406,11 +327,133 @@ function renderDevicesGrid() {
               </a>
             ` : ''}
           </div>
+
+          <!-- Сворачиваемый блок тонкой настройки -->
+          ${(() => {
+            const isAdvancedOpen = !!(window.cardAccordionOpen && window.cardAccordionOpen[dev.mac]);
+            return `
+              <button class="card-advanced-toggle ${isAdvancedOpen ? 'open' : ''}" id="card-adv-toggle-${dev.mac}" onclick="toggleCardAdvanced('${dev.mac}')">
+                <span>⚙️ Тонкая настройка</span>
+                <span class="adv-arrow">▼</span>
+              </button>
+              <div class="card-advanced-body ${isAdvancedOpen ? 'open' : ''}" id="card-adv-body-${dev.mac}">
+                <div class="slider-row">
+                  <span>🧠 Режим вейкворда:</span>
+                  <select style="background: #1e222b; border: 1px solid #3b4252; color: #fff; padding: 4px 8px; border-radius: 6px; font-size: 11px; margin-left: auto;" 
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_mode', this.value)">
+                    <option value="local" ${cfg.wake_word_mode !== 'server' ? 'selected' : ''}>Локальный (TFLite на ESP32)</option>
+                    <option value="server" ${cfg.wake_word_mode === 'server' ? 'selected' : ''}>Серверный (openWakeWord)</option>
+                  </select>
+                </div>
+                ${cfg.wake_word_mode === 'server' ? `
+                  <div class="slider-row">
+                    <span>🎯 Порог WW:</span>
+                    <input type="range" min="0.30" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" 
+                      onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))"
+                      oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)">
+                    <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
+                  </div>
+                  ${globalOptions.debug_mode !== false ? `
+                    <div class="ww-debug-window" style="margin: 2px 0 6px 0; padding: 6px 10px; background: rgba(0, 0, 0, 0.35); border: 1px solid #30363d; border-radius: 6px;">
+                      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-size: 11px; color: #8b949e; display: flex; align-items: center; gap: 4px;">
+                          <span style="display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#58a6ff'};"></span>
+                          🎯 Live Score:
+                        </span>
+                        <span id="ww-score-val-${dev.mac}" style="font-family: monospace; font-size: 12px; font-weight: 700; color: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : '#8b949e'};">${(dev.ww_score || 0).toFixed(3)}</span>
+                      </div>
+                      <div style="width: 100%; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; position: relative;">
+                        <div id="ww-score-bar-${dev.mac}" style="height: 100%; width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; background: ${(dev.ww_score || 0) >= (cfg.ww_threshold || 0.94) ? 'var(--accent-green)' : 'linear-gradient(90deg, #58a6ff, #00d2ff)'}; border-radius: 3px; transition: width 0.15s;"></div>
+                      </div>
+                    </div>
+                  ` : ''}
+                ` : `
+                  <div class="slider-row">
+                    <span>🎯 Порог вейкворда:</span>
+                    <input type="range" min="0.30" max="0.99" step="0.01" value="${cfg.wake_word_threshold || 0.93}" 
+                      onchange="updateSingleDeviceConfig('${dev.mac}', 'wake_word_threshold', parseFloat(this.value))"
+                      oninput="this.nextElementSibling.innerText = this.value">
+                    <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.wake_word_threshold || 0.93}</span>
+                  </div>
+                `}
+                <div class="slider-row">
+                  <span>🛑 RMS перебивания:</span>
+                  <input type="number" class="rms-threshold-input" 
+                    placeholder="${globalOptions.barge_in_threshold_rms || 600} (общ)" 
+                    value="${cfg.barge_in_threshold_rms !== undefined && cfg.barge_in_threshold_rms !== null ? cfg.barge_in_threshold_rms : ''}"
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'barge_in_threshold_rms', this.value ? parseInt(this.value, 10) : null)"
+                    title="Индивидуальный порог RMS перебивания. Пустое поле = использовать общий (${globalOptions.barge_in_threshold_rms || 600})">
+                </div>
+                <div class="slider-row">
+                  <span>🔇 Приглушать медиа:</span>
+                  <label class="checkbox-label" style="margin-left: auto; cursor: pointer; gap: 6px;">
+                    <input type="checkbox" ${cfg.enable_ducking !== false ? 'checked' : ''} 
+                      onchange="updateSingleDeviceConfig('${dev.mac}', 'enable_ducking', this.checked); this.nextElementSibling.innerText = this.checked ? 'Вкл' : 'Выкл'; this.nextElementSibling.style.color = this.checked ? 'var(--accent-green)' : '#888';"
+                      title="Разрешить приглушать медиаплееры при разговоре через эту колонку">
+                    <span style="font-size: 11px; font-weight: 700; color: ${cfg.enable_ducking !== false ? 'var(--accent-green)' : '#888'};">
+                      ${cfg.enable_ducking !== false ? 'Вкл' : 'Выкл'}
+                    </span>
+                  </label>
+                </div>
+                <!-- Маршрутизация звука ответа -->
+                <div class="audio-output-box" style="margin-top: 4px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 8px 10px;">
+                  <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700; margin-bottom: 6px;">🔊 Вывод звука ответа:</div>
+                  <div style="display: flex; gap: 12px; margin-bottom: ${cfg.audio_output_mode === 'external_player' ? '8px' : '2px'}; font-size: 12px;">
+                    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                      <input type="radio" name="out_mode_${dev.mac}" value="stream" ${cfg.audio_output_mode !== 'external_player' ? 'checked' : ''} 
+                        onchange="updateSingleDeviceConfig('${dev.mac}', 'audio_output_mode', 'stream')">
+                      <span>Встроенный динамик</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                      <input type="radio" name="out_mode_${dev.mac}" value="external_player" ${cfg.audio_output_mode === 'external_player' ? 'checked' : ''} 
+                        onchange="updateSingleDeviceConfig('${dev.mac}', 'audio_output_mode', 'external_player')">
+                      <span>Внешний плеер HA</span>
+                    </label>
+                  </div>
+                  ${cfg.audio_output_mode === 'external_player' ? `
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <select style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px;" 
+                        onchange="updateSingleDeviceConfig('${dev.mac}', 'response_player', this.value)">
+                        <option value="">— Выберите медиаплеер HA —</option>
+                        ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.response_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                        ${cfg.response_player && !availableMediaPlayers.some(p => p.entity_id === cfg.response_player) ? `<option value="${escapeHtml(cfg.response_player)}" selected>${escapeHtml(cfg.response_player)}</option>` : ''}
+                      </select>
+                    </div>
+                  ` : ''}
+                </div>
+                ${!dev.has_update && isEsp && dev.is_online ? `
+                  <div style="margin-top: 6px; display: flex; justify-content: flex-end;">
+                    <button class="btn btn-secondary btn-sm" onclick="triggerDeviceOta('${dev.mac}')" style="font-size: 11px; padding: 4px 8px; opacity: 0.75;" title="Принудительно перепрошить прошивку по воздуху">
+                      ⚡ Принудительно прошить OTA
+                    </button>
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          })()}
         ` : ''}
       </div>
     `;
   }).join('');
 }
+
+// Глобальное состояние аккордеонов карточек
+window.cardAccordionOpen = window.cardAccordionOpen || {};
+window.toggleCardAdvanced = function(mac) {
+  window.cardAccordionOpen[mac] = !window.cardAccordionOpen[mac];
+  const body = document.getElementById(`card-adv-body-${mac}`);
+  const btn = document.getElementById(`card-adv-toggle-${mac}`);
+  if (body) {
+    if (window.cardAccordionOpen[mac]) {
+      body.classList.add('open');
+      if (btn) btn.classList.add('open');
+    } else {
+      body.classList.remove('open');
+      if (btn) btn.classList.remove('open');
+    }
+  }
+};
+
 
 // Глобальное состояние записей микрофонов колонок
 window.micRecordingsState = window.micRecordingsState || {};
