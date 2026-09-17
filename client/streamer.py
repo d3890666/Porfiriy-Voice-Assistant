@@ -199,6 +199,7 @@ class StreamerClient:
 
         self.play_queue = queue.Queue()
         self.is_running = True
+        self.is_playing = False
         self.start_time = time.time()
 
     def _log_selected_devices(self):
@@ -277,7 +278,10 @@ class StreamerClient:
                 if data:
                     if capture_rate != SAMPLE_RATE_INPUT:
                         data = resample_pcm(data, capture_rate, SAMPLE_RATE_INPUT)
-                    await ws.send(data)
+                    # Во время воспроизведения речи ассистента через динамики ПК
+                    # не транслируем звук микрофона, исключая акустическое эхо и самоперебивание
+                    if not self.is_playing:
+                        await ws.send(data)
                 await asyncio.sleep(0.001)
 
         except asyncio.CancelledError:
@@ -344,12 +348,21 @@ class StreamerClient:
                 while self.is_running:
                     try:
                         chunk = self.play_queue.get_nowait()
+                        self.is_playing = True
                         if playback_rate != SAMPLE_RATE_OUTPUT:
                             chunk = resample_pcm(chunk, SAMPLE_RATE_OUTPUT, playback_rate)
-                        await loop.run_in_executor(None, stream.write, chunk)
+                        if stream and not stream.is_stopped():
+                            await loop.run_in_executor(None, stream.write, chunk)
                     except queue.Empty:
+                        self.is_playing = False
                         await asyncio.sleep(0.01)
+                    except asyncio.CancelledError:
+                        self.is_playing = False
+                        break
                     except Exception as ex:
+                        self.is_playing = False
+                        if not stream or stream.is_stopped():
+                            break
                         logger.error(f"Ошибка воспроизведения аудио: {ex}")
                         await asyncio.sleep(0.05)
 
@@ -367,6 +380,9 @@ class StreamerClient:
         except Exception as e:
             logger.error(f"Ошибка приема из сокета: {e}")
         finally:
+            self.is_playing = False
+            if playback_task and not playback_task.done():
+                playback_task.cancel()
             if stream:
                 try:
                     stream.stop_stream()
@@ -386,6 +402,10 @@ class StreamerClient:
                         self.play_queue.get_nowait()
                     except queue.Empty:
                         break
+                self.is_playing = False
+            elif m_type == "sleep":
+                logger.info("💤 Ответ сервера завершен.")
+                self.is_playing = False
             elif m_type == "beep":
                 logger.info("🔔 Получен звуковой сигнал готовности.")
             elif m_type == "set_config":

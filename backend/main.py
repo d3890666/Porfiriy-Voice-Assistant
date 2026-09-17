@@ -1120,6 +1120,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         pcm_response_chunks = []
         out_mode = dev_config.get("audio_output_mode", "stream")
         speaker_vol = float(dev_config.get("speaker_volume", 0.8))
+        gemini_is_speaking = False
 
         async def _stream_mic_to_gemini(session):
             """Непрерывно перекачивает аудио из очереди микрофона в Gemini Live."""
@@ -1134,6 +1135,10 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                     chunk = await audio_queue.get()
                     if chunk is None:
                         break
+                    # Если Gemini в данный момент воспроизводит речь, не отправляем звук микрофона
+                    # в сокет Gemini Live, чтобы не вызывать ложное самоперебивание (AEC/Barge-in lock)
+                    if gemini_is_speaking:
+                        continue
                     await session.send_realtime_input(
                         audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
                     )
@@ -1143,9 +1148,11 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 logger.debug(f"[STREAMER] Mic streaming worker note for {client_mac}: {e_stream}")
 
         async def _receive_from_gemini(session):
+            nonlocal gemini_is_speaking
             """Принимает аудиоответ от Gemini до наступления turn_complete."""
             async for response in session.receive():
                 if response.server_content and response.server_content.model_turn:
+                    gemini_is_speaking = True
                     device_manager.set_device_state(client_mac, "speaking")
                     for part in response.server_content.model_turn.parts:
                         if part.inline_data and part.inline_data.data:
@@ -1157,6 +1164,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                                 except Exception:
                                     pass
                 if response.server_content and getattr(response.server_content, "turn_complete", False):
+                    gemini_is_speaking = False
                     logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
                     if out_mode == "stream":
                         try:
