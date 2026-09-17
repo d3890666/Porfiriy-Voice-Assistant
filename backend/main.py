@@ -1067,13 +1067,14 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
     logger.info(f"[STREAMER] {client_mac} listening. response_player={response_player}, threshold={ww_threshold}")
     device_manager.set_device_state(client_mac, "listening")
 
-    # Буфер для накопления аудио во время активной сессии Gemini
+    # Буфер и очередь для стриминга аудио во время активной сессии Gemini
     session_active = False
+    audio_queue: Optional[asyncio.Queue] = None
     gemini_audio_buf: list = []
 
     async def _run_gemini_session(preroll: bytes):
-        """Открывает Gemini Live сессию, сливает ответ в WAV и кидает на media_player."""
-        nonlocal session_active
+        """Открывает Gemini Live сессию, в реальном времени стримит микрофон и воспроизводит ответ."""
+        nonlocal session_active, audio_queue
         session_active = True
         device_manager.set_device_state(client_mac, "listening")
 
@@ -1082,6 +1083,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         if not api_key:
             logger.error("[STREAMER] Gemini API key missing, cannot start session.")
             session_active = False
+            audio_queue = None
             return
 
         # Формируем системный промпт
@@ -1104,6 +1106,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         if area_name:
             full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: Room '{area_name}'."
 
+        vad_silence = int(options.get("vad_silence_duration_ms", 600))
         gemini_client = GeminiProxyClient(
             api_key=api_key,
             system_prompt=full_prompt,
@@ -1111,53 +1114,74 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             voice_name=options.get("voice_name", "Charon"),
             model=options.get("gemini_model", "gemini-2.0-flash-exp"),
             enable_google_search=options.get("enable_google_search", True),
-            vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600)
+            vad_silence_duration_ms=vad_silence
         )
 
         pcm_response_chunks = []
-        try:
-            async with gemini_client.connect() as session:
-                # Отправляем pre-roll (аудио до вейкворда)
+        out_mode = dev_config.get("audio_output_mode", "stream")
+        speaker_vol = float(dev_config.get("speaker_volume", 0.8))
+
+        async def _stream_mic_to_gemini(session):
+            """Непрерывно перекачивает аудио из очереди микрофона в Gemini Live."""
+            try:
+                # 1. Отправляем pre-roll (звук до вейкворда)
                 if preroll:
                     await session.send_realtime_input(
                         audio=types.Blob(data=preroll, mime_type="audio/pcm;rate=16000")
                     )
-                # Отправляем накопленный буфер после вейкворда
-                for chunk in list(gemini_audio_buf):
+                # 2. Непрерывно пересылаем входящие куски голоса пользователя
+                while session_active:
+                    chunk = await audio_queue.get()
+                    if chunk is None:
+                        break
                     await session.send_realtime_input(
                         audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
                     )
-                gemini_audio_buf.clear()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e_stream:
+                logger.debug(f"[STREAMER] Mic streaming worker note for {client_mac}: {e_stream}")
 
-                # Получаем ответ
-                device_manager.set_device_state(client_mac, "thinking")
-                out_mode = dev_config.get("audio_output_mode", "stream")
-                speaker_vol = float(dev_config.get("speaker_volume", 0.8))
+        async def _receive_from_gemini(session):
+            """Принимает аудиоответ от Gemini до наступления turn_complete."""
+            async for response in session.receive():
+                if response.server_content and response.server_content.model_turn:
+                    device_manager.set_device_state(client_mac, "speaking")
+                    for part in response.server_content.model_turn.parts:
+                        if part.inline_data and part.inline_data.data:
+                            scaled_chunk = scale_pcm16(part.inline_data.data, speaker_vol)
+                            pcm_response_chunks.append(scaled_chunk)
+                            if out_mode == "stream":
+                                try:
+                                    await websocket.send(scaled_chunk)
+                                except Exception:
+                                    pass
+                if response.server_content and getattr(response.server_content, "turn_complete", False):
+                    logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
+                    if out_mode == "stream":
+                        try:
+                            await websocket.send(json.dumps({"type": "sleep"}))
+                        except Exception:
+                            pass
+                    break
 
-                async for response in session.receive():
-                    if response.server_content and response.server_content.model_turn:
-                        device_manager.set_device_state(client_mac, "speaking")
-                        for part in response.server_content.model_turn.parts:
-                            if part.inline_data and part.inline_data.data:
-                                scaled_chunk = scale_pcm16(part.inline_data.data, speaker_vol)
-                                pcm_response_chunks.append(scaled_chunk)
-                                if out_mode == "stream":
-                                    try:
-                                        await websocket.send(scaled_chunk)
-                                    except Exception:
-                                        pass
-                    if response.server_content and getattr(response.server_content, "turn_complete", False):
-                        logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
-                        if out_mode == "stream":
-                            try:
-                                await websocket.send(json.dumps({"type": "sleep"}))
-                            except Exception:
-                                pass
-                        break
+        sender_task = None
+        try:
+            async with gemini_client.connect() as session:
+                sender_task = asyncio.create_task(_stream_mic_to_gemini(session))
+                # Ограничиваем сессию таймаутом 35 секунд на случай молчания
+                await asyncio.wait_for(_receive_from_gemini(session), timeout=35.0)
+        except asyncio.TimeoutError:
+            logger.info(f"[STREAMER] Gemini session completed by silence timeout for {client_mac}.")
         except Exception as e:
             logger.error(f"[STREAMER] Gemini session error for {client_mac}: {e}")
         finally:
             session_active = False
+            if audio_queue:
+                audio_queue.put_nowait(None)
+            if sender_task and not sender_task.done():
+                sender_task.cancel()
+            audio_queue = None
             device_manager.set_device_state(client_mac, "listening")
 
         if not pcm_response_chunks:
@@ -1172,6 +1196,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         # Сохраняем голосовую реплику пользователя для кнопки «💬 Реплика»
         if preroll or gemini_audio_buf:
             device_manager.save_last_utterance(client_mac, preroll + b"".join(gemini_audio_buf))
+            gemini_audio_buf.clear()
 
         if out_mode == "external_player":
             player = response_player if response_player and response_player != "auto" else None
@@ -1206,31 +1231,35 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                         device_manager.finish_mic_test(client_mac)
                     continue
 
-                # Прогоняем PCM через вейкворд
-                if ww_engine and ww_engine.is_ready:
+                # Если сессия диалога с Gemini активна — непрерывно транслируем звук в очередь Gemini
+                if session_active and audio_queue is not None:
+                    audio_queue.put_nowait(message)
+                    gemini_audio_buf.append(message)
+
+                # Прогоняем PCM через вейкворд (когда нет активного ответа)
+                if not session_active and ww_engine and ww_engine.is_ready:
                     dev_cfg = device_manager.get_device_config(client_mac)
                     dev_thresh = dev_cfg.get("ww_threshold")
                     active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
                     score, peak, rms = ww_engine.process_chunk(message, client_mac, custom_threshold=active_thresh)
                     device_manager.update_ww_score(client_mac, score, peak_score=peak, rms_dbfs=rms)
 
-                    if ww_engine.is_triggered(client_mac) and not session_active:
+                    if ww_engine.is_triggered(client_mac):
                         preroll = ww_engine.consume_preroll(client_mac)
-                        # Отправляем beep клиенту (опционально через WebSocket)
+                        # Отправляем звуковой сигнал chime клиенту
                         try:
                             speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
                             await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
                         except Exception:
                             pass
+                        gemini_audio_buf.clear()
+                        audio_queue = asyncio.Queue()
                         asyncio.create_task(_run_gemini_session(preroll))
-                else:
+                elif not session_active:
                     # Резервный расчет громкости микрофона (гарантирует живую шкалу даже если модель не загружена)
                     raw_rms = calculate_pcm_rms(message)
                     calc_dbfs = float(round(20.0 * math.log10(max(1.0, raw_rms) / 32768.0), 1))
                     device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=calc_dbfs)
-
-                if session_active:
-                    gemini_audio_buf.append(message)
 
             elif isinstance(message, str):
                 try:
