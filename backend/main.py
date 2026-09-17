@@ -1223,6 +1223,11 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                         except Exception:
                             pass
                         asyncio.create_task(_run_gemini_session(preroll))
+                else:
+                    # Резервный расчет громкости микрофона (гарантирует живую шкалу даже если модель не загружена)
+                    raw_rms = calculate_pcm_rms(message)
+                    calc_dbfs = float(round(20.0 * math.log10(max(1.0, raw_rms) / 32768.0), 1))
+                    device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=calc_dbfs)
 
                 if session_active:
                     gemini_audio_buf.append(message)

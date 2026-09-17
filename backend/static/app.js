@@ -95,8 +95,17 @@ function setupTabs() {
       const target = document.getElementById(tabId);
       if (target) {
         target.classList.add('active');
-        if (tabId === 'tab-brain' && typeof populateWwMonitorSources === 'function') {
-          populateWwMonitorSources();
+        if (tabId === 'tab-brain') {
+          if (typeof populateWwMonitorSources === 'function') {
+            populateWwMonitorSources();
+          }
+          if (typeof startWwMonitorPolling === 'function') {
+            startWwMonitorPolling();
+          }
+        } else {
+          if (typeof stopWwMonitorPolling === 'function') {
+            stopWwMonitorPolling();
+          }
         }
       }
     });
@@ -1574,6 +1583,50 @@ window.updateWwMonitorTelemetry = function(info) {
         logEl.removeChild(logEl.lastChild);
       }
     }
+  }
+};
+
+// Активный опрос телеметрии для вкладки Мозг & Вейкворд (гарантирует отклик при буферизации Ingress)
+let wwPollingTimer = null;
+
+window.startWwMonitorPolling = function() {
+  if (wwPollingTimer) return;
+  wwPollingTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/ww_monitor`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const sel = document.getElementById('ww-monitor-stream-select');
+      const activeMac = sel ? sel.value : 'auto';
+      
+      let target = null;
+      if (activeMac !== 'auto' && data[activeMac]) {
+        target = data[activeMac];
+      } else {
+        const keys = Object.keys(data);
+        if (keys.length > 0) {
+          // Ищем первый онлайн или с наибольшим скором
+          target = data[keys[0]];
+        }
+      }
+      if (target && typeof updateWwMonitorTelemetry === 'function') {
+        updateWwMonitorTelemetry({
+          mac: target.mac,
+          name: target.name,
+          score: target.score,
+          peak: target.peak,
+          rms: target.rms,
+          threshold: target.threshold
+        });
+      }
+    } catch (e) {}
+  }, 250);
+};
+
+window.stopWwMonitorPolling = function() {
+  if (wwPollingTimer) {
+    clearInterval(wwPollingTimer);
+    wwPollingTimer = null;
   }
 };
 

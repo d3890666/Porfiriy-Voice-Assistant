@@ -53,6 +53,7 @@ class WebServer:
         self.app.router.add_get("/api/devices/{mac}/last_utterance/audio", self.handle_last_utterance_audio)
         self.app.router.add_get("/api/devices/{mac}/last_utterance/status", self.handle_last_utterance_status)
         self.app.router.add_get("/api/events", self.handle_events)
+        self.app.router.add_get("/api/ww_monitor", self.handle_ww_monitor)
         self.app.router.add_get("/static/{filename:.*}", self.handle_static)
         # Виртуальные стримеры (pc_streamer)
         self.app.router.add_get("/api/virtual/{mac}/response.wav", self.handle_virtual_response_wav)
@@ -424,22 +425,25 @@ class WebServer:
             reason='OK',
             headers={
                 'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
+                'Cache-Control': 'no-cache, no-transform',
                 'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
                 'Access-Control-Allow-Origin': '*'
             }
         )
         await response.prepare(request)
         
-        q = asyncio.Queue(maxsize=50)
+        q = asyncio.Queue(maxsize=100)
         self.sse_queues.add(q)
         
         try:
-            # Отправляем приветственное событие
-            await response.write(b"data: {\"event\": \"connected\"}\n\n")
+            # Отправляем приветственное событие и сразу принудительно сбрасываем буфер
+            await response.write(b": keepalive\n\ndata: {\"event\": \"connected\"}\n\n")
+            await response.drain()
             while True:
                 msg = await q.get()
                 await response.write(f"data: {msg}\n\n".encode("utf-8"))
+                await response.drain()
         except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, aiohttp.ClientConnectionResetError, aiohttp.ClientPayloadError):
             pass
         except Exception as e:
@@ -448,6 +452,22 @@ class WebServer:
             self.sse_queues.discard(q)
             
         return response
+
+    async def handle_ww_monitor(self, request):
+        """Быстрый REST-эндпоинт живой телеметрии вейкворда (гарантированный fallback)."""
+        data = {}
+        for mac, dev in self.device_manager.devices.items():
+            if dev.get("device_type") == "pc_streamer" or (dev.get("config") and dev.get("config").get("wake_word_mode") == "server"):
+                data[mac] = {
+                    "mac": mac,
+                    "name": str(dev.get("name", mac)),
+                    "score": float(dev.get("ww_score", 0.0)),
+                    "peak": float(dev.get("ww_peak_score", 0.0)),
+                    "rms": float(dev.get("ww_rms_dbfs", -60.0)),
+                    "threshold": float(dev.get("config", {}).get("ww_threshold", 0.94)),
+                    "is_online": bool(dev.get("is_online", False))
+                }
+        return web.json_response(data)
 
     async def start(self):
         runner = web.AppRunner(self.app)

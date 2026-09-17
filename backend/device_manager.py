@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.97"
+TARGET_FIRMWARE_VERSION = "0.0.98"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -700,9 +700,9 @@ class DeviceManager:
         clean_mac = mac.strip().lower()
         dev = self.devices.get(clean_mac)
         if dev:
-            dev["ww_score"] = round(score, 4)
-            dev["ww_peak_score"] = round(peak_score, 4)
-            dev["ww_rms_dbfs"] = rms_dbfs
+            dev["ww_score"] = float(round(score, 4))
+            dev["ww_peak_score"] = float(round(peak_score, 4))
+            dev["ww_rms_dbfs"] = float(rms_dbfs)
             last_score = dev.get("_last_notified_score", -1.0)
             last_rms = dev.get("_last_notified_rms", -99.0)
             now = time.time()
@@ -723,16 +723,16 @@ class DeviceManager:
                 should_notify = True
 
             if should_notify:
-                dev["_last_notified_score"] = score
-                dev["_last_notified_rms"] = rms_dbfs
+                dev["_last_notified_score"] = float(score)
+                dev["_last_notified_rms"] = float(rms_dbfs)
                 dev["_last_ww_notify_time"] = now
                 self._notify("ww_score", {
                     "mac": clean_mac,
-                    "name": dev.get("name", clean_mac),
-                    "ww_score": dev["ww_score"],
-                    "ww_peak": dev["ww_peak_score"],
-                    "rms_dbfs": dev["ww_rms_dbfs"],
-                    "threshold": dev.get("config", {}).get("ww_threshold", 0.94)
+                    "name": str(dev.get("name", clean_mac)),
+                    "ww_score": float(dev["ww_score"]),
+                    "ww_peak": float(dev["ww_peak_score"]),
+                    "rms_dbfs": float(dev["ww_rms_dbfs"]),
+                    "threshold": float(dev.get("config", {}).get("ww_threshold", 0.94))
                 })
 
 
