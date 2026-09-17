@@ -4,13 +4,59 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.93">
+  <link rel="stylesheet" href="static/style.css?v=0.0.94">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
   <style>
-    /* Ingress Embedded Core Styles */
+    /* Ingress Embedded Core Styles & Accordion Guarantee */
+    .card-advanced-toggle {
+      width: 100% !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      background: rgba(255, 255, 255, 0.05) !important;
+      border: 1px solid rgba(255, 255, 255, 0.12) !important;
+      border-radius: 8px !important;
+      padding: 8px 12px !important;
+      color: #cdd6f4 !important;
+      font-size: 12px !important;
+      font-weight: 600 !important;
+      cursor: pointer !important;
+      margin-top: 6px !important;
+      transition: all 0.2s ease !important;
+      box-sizing: border-box !important;
+    }
+    .card-advanced-toggle:hover {
+      background: rgba(255, 255, 255, 0.09) !important;
+      border-color: rgba(255, 255, 255, 0.2) !important;
+      color: #fff !important;
+    }
+    .card-advanced-toggle.open {
+      background: rgba(0, 210, 255, 0.08) !important;
+      border-color: rgba(0, 210, 255, 0.3) !important;
+      color: #00d2ff !important;
+      border-bottom-left-radius: 0 !important;
+      border-bottom-right-radius: 0 !important;
+    }
+    .card-advanced-body {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid rgba(0, 210, 255, 0.2);
+      border-top: none;
+      border-bottom-left-radius: 8px;
+      border-bottom-right-radius: 8px;
+      padding: 12px;
+      margin-bottom: 6px;
+      box-sizing: border-box;
+    }
+    .card-advanced-body.open {
+      display: flex !important;
+    }
+
     .settings-group-title {
       font-size: 16px;
       font-weight: 700;
@@ -1155,6 +1201,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.93"></script>
+  <script src="static/app.js?v=0.0.94"></script>
 </body>
 </html>

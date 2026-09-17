@@ -332,11 +332,12 @@ function renderDevicesGrid() {
           ${(() => {
             const isAdvancedOpen = !!(window.cardAccordionOpen && window.cardAccordionOpen[dev.mac]);
             return `
-              <button class="card-advanced-toggle ${isAdvancedOpen ? 'open' : ''}" id="card-adv-toggle-${dev.mac}" onclick="toggleCardAdvanced('${dev.mac}')">
+              <button type="button" class="card-advanced-toggle ${isAdvancedOpen ? 'open' : ''}" id="card-adv-toggle-${dev.mac}" onclick="toggleCardAdvanced('${dev.mac}', event)" style="background: rgba(255, 255, 255, 0.05); color: #cdd6f4; border: 1px solid rgba(255, 255, 255, 0.12); width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600; box-sizing: border-box; margin-top: 6px;">
                 <span>⚙️ Тонкая настройка</span>
-                <span class="adv-arrow">▼</span>
+                <span class="adv-arrow" id="card-adv-arrow-${dev.mac}" style="display: inline-block; transition: transform 0.2s; font-size: 10px; ${isAdvancedOpen ? 'transform: rotate(180deg);' : ''}">▼</span>
               </button>
-              <div class="card-advanced-body ${isAdvancedOpen ? 'open' : ''}" id="card-adv-body-${dev.mac}">
+              <div class="card-advanced-body ${isAdvancedOpen ? 'open' : ''}" id="card-adv-body-${dev.mac}" style="${isAdvancedOpen ? 'display: flex;' : 'display: none;'}">
+
                 <div class="slider-row">
                   <span>🧠 Режим вейкворда:</span>
                   <select style="background: #1e222b; border: 1px solid #3b4252; color: #fff; padding: 4px 8px; border-radius: 6px; font-size: 11px; margin-left: auto;" 
@@ -439,18 +440,27 @@ function renderDevicesGrid() {
 
 // Глобальное состояние аккордеонов карточек
 window.cardAccordionOpen = window.cardAccordionOpen || {};
-window.toggleCardAdvanced = function(mac) {
+window.toggleCardAdvanced = function(mac, event) {
+  if (event) {
+    try { event.preventDefault(); event.stopPropagation(); } catch (_) {}
+  }
   window.cardAccordionOpen[mac] = !window.cardAccordionOpen[mac];
+  const isOpen = !!window.cardAccordionOpen[mac];
   const body = document.getElementById(`card-adv-body-${mac}`);
   const btn = document.getElementById(`card-adv-toggle-${mac}`);
+  const arrow = document.getElementById(`card-adv-arrow-${mac}`);
   if (body) {
-    if (window.cardAccordionOpen[mac]) {
+    body.style.display = isOpen ? 'flex' : 'none';
+    if (isOpen) {
       body.classList.add('open');
       if (btn) btn.classList.add('open');
     } else {
       body.classList.remove('open');
       if (btn) btn.classList.remove('open');
     }
+  }
+  if (arrow) {
+    arrow.style.transform = isOpen ? 'rotate(180deg)' : 'rotate(0deg)';
   }
 };
 
