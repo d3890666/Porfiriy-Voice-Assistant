@@ -198,7 +198,12 @@ function renderDevicesGrid() {
             <span class="dev-name">${escapeHtml(dev.name)}</span>
             <span class="area-badge">${roomText}</span>
           </div>
-          <span class="state-badge ${stateClass}">${stateLabel}</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="state-badge ${stateClass}">${stateLabel}</span>
+            <button class="btn-delete-device" onclick="deleteDevice('${dev.mac}', '${escapeHtml(dev.name)}')" title="Удалить устройство из списка">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+            </button>
+          </div>
         </div>
 
         ${isEsp ? `
@@ -222,7 +227,7 @@ function renderDevicesGrid() {
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🔊 Плеер:</span>
               <select id="streamer-player-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveStreamerConfig('${dev.mac}', 'response_player', this.value)">
-                <option value="">— Не задан —</option>
+                <option value="">— Не задан (динамики ПК) —</option>
                 ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.response_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
                 ${cfg.response_player && !availableMediaPlayers.some(p => p.entity_id === cfg.response_player) ? `<option value="${escapeHtml(cfg.response_player)}" selected>${escapeHtml(cfg.response_player)}</option>` : ''}
               </select>
@@ -253,13 +258,15 @@ function renderDevicesGrid() {
           <div>MAC: ${dev.mac}</div>
           <div>Аптайм: ${formatUptime(dev.uptime)}</div>
           <div>Тип: ${dev.device_type || 'ESP32'}</div>
-          <div style="grid-column: 1 / -1; display: flex; align-items: center; gap: 6px;">
-            <span>Прошивка:</span>
-            <span class="fw-badge ${dev.has_update ? 'fw-update-available' : 'fw-up-to-date'}">
-              <strong>v${escapeHtml(dev.firmware || '0.0.54')}</strong>
-              ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая прошивка v${dev.target_firmware}">➔ v${dev.target_firmware}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
-            </span>
-          </div>
+          ${isEsp ? `
+            <div style="grid-column: 1 / -1; display: flex; align-items: center; gap: 6px;">
+              <span>Прошивка:</span>
+              <span class="fw-badge ${dev.has_update ? 'fw-update-available' : 'fw-up-to-date'}">
+                <strong>v${escapeHtml(dev.firmware || '0.0.54')}</strong>
+                ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая прошивка v${dev.target_firmware}">➔ v${dev.target_firmware}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
+              </span>
+            </div>
+          ` : ''}
         </div>
 
         ${dev.ota_status && dev.ota_status !== 'error' ? `
@@ -301,9 +308,11 @@ function renderDevicesGrid() {
             <span class="mic-debug-status" id="mic-status-${dev.mac}">${micRecState && micRecState.statusText ? micRecState.statusText : ''}</span>
           </div>
           <div class="mic-debug-controls">
-            <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать" ${micRecState && micRecState.isTesting ? 'disabled' : ''}>
-              ${micRecState && micRecState.buttonText ? micRecState.buttonText : '⏺ Тест 5 сек'}
-            </button>
+            ${isEsp ? `
+              <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать" ${micRecState && micRecState.isTesting ? 'disabled' : ''}>
+                ${micRecState && micRecState.buttonText ? micRecState.buttonText : '⏺ Тест 5 сек'}
+              </button>
+            ` : ''}
             <button class="btn btn-secondary btn-sm mic-btn" id="btn-lastutt-${dev.mac}" onclick="playLastUtterance('${dev.mac}')" title="Прослушать последнюю распознанную живую реплику">
               💬 Реплика
             </button>
@@ -316,29 +325,31 @@ function renderDevicesGrid() {
           </div>
         </div>
 
-        <div class="card-actions">
-          <button class="btn btn-secondary btn-icon" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия (начать слушать)" style="color: #a78bfa; border-color: rgba(167, 139, 250, 0.4); font-weight: 600;">
-            ⚡ Вызов
-          </button>
-          ${isEsp ? `
-            <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'beep')" title="Проиграть звуковой сигнал">
-              🔔 Звук
+        ${dev.device_type !== 'pc_streamer' ? `
+          <div class="card-actions">
+            <button class="btn btn-secondary btn-icon" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия (начать слушать)" style="color: #a78bfa; border-color: rgba(167, 139, 250, 0.4); font-weight: 600;">
+              ⚡ Вызов
             </button>
-            <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'reboot')" title="Перезагрузить плату">
-              🔄 Рестарт
-            </button>
-            ${dev.has_update && dev.is_online ? `
-              <button class="btn btn-icon ota-pulse-btn" onclick="triggerDeviceOta('${dev.mac}')" title="Доступна новая прошивка v${dev.target_firmware}! Обновить по воздуху">
-                ⚡ OTA (v${dev.target_firmware})
+            ${isEsp ? `
+              <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'beep')" title="Проиграть звуковой сигнал">
+                🔔 Звук
               </button>
+              <button class="btn btn-secondary btn-icon" onclick="triggerDeviceAction('${dev.mac}', 'reboot')" title="Перезагрузить плату">
+                🔄 Рестарт
+              </button>
+              ${dev.has_update && dev.is_online ? `
+                <button class="btn btn-icon ota-pulse-btn" onclick="triggerDeviceOta('${dev.mac}')" title="Доступна новая прошивка v${dev.target_firmware}! Обновить по воздуху">
+                  ⚡ OTA (v${dev.target_firmware})
+                </button>
+              ` : ''}
+              ${dev.ip && dev.ip !== '---' ? `
+                <a href="http://${dev.ip}" target="_blank" class="btn btn-secondary btn-icon dev-web-btn" title="Встроенный Web UI колонки">
+                  🌐 Web UI
+                </a>
+              ` : ''}
             ` : ''}
-            ${dev.ip && dev.ip !== '---' ? `
-              <a href="http://${dev.ip}" target="_blank" class="btn btn-secondary btn-icon dev-web-btn" title="Встроенный Web UI колонки">
-                🌐 Web UI
-              </a>
-            ` : ''}
-          ` : ''}
-        </div>
+          </div>
+        ` : ''}
 
         ${isEsp ? `
           <!-- Сворачиваемый блок тонкой настройки -->
@@ -997,6 +1008,47 @@ async function triggerDeviceWake(mac) {
   }
 }
 window.triggerDeviceWake = triggerDeviceWake;
+
+// Полное удаление устройства из списка и хранилища
+async function deleteDevice(mac, name) {
+  const displayName = name || mac;
+  if (!confirm(`Удалить устройство "${displayName}" (${mac}) из списка?`)) {
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      showToast(`Устройство "${displayName}" удалено`);
+      devices = devices.filter(d => (d.mac || '').toLowerCase() !== mac.toLowerCase());
+      const card = document.getElementById(`card-${mac}`);
+      if (card) {
+        card.style.transition = 'all 0.25s ease';
+        card.style.opacity = '0';
+        card.style.transform = 'scale(0.9)';
+        setTimeout(() => {
+          if (card.parentNode) card.parentNode.removeChild(card);
+          updateHeaderStats();
+        }, 250);
+      } else {
+        renderDevicesGrid();
+        updateHeaderStats();
+      }
+      renderBulkTargets();
+      renderOtaBanner();
+      if (typeof populateWwMonitorSources === 'function') {
+        populateWwMonitorSources();
+      }
+    } else {
+      showToast(`Ошибка удаления: ${data.error || res.statusText}`, true);
+    }
+  } catch (e) {
+    showToast(`Ошибка при удалении устройства: ${e.message || e}`, true);
+  }
+}
+window.deleteDevice = deleteDevice;
 
 function triggerSelectedMonitorWake() {
   const sel = document.getElementById('ww-monitor-stream-select');
@@ -1734,6 +1786,22 @@ function setupSSE() {
             });
           }
           return;
+        } else if (data.event === 'device_deleted' && data.device && data.device.mac) {
+          const delMac = data.device.mac;
+          devices = devices.filter(d => (d.mac || '').toLowerCase() !== delMac.toLowerCase());
+          const card = document.getElementById(`card-${delMac}`);
+          if (card) {
+            card.remove();
+          } else {
+            renderDevicesGrid();
+          }
+          renderBulkTargets();
+          renderOtaBanner();
+          updateHeaderStats();
+          if (typeof populateWwMonitorSources === 'function') {
+            populateWwMonitorSources();
+          }
+          return;
         } else if (data.device && data.device.mac) {
           // Обработка специального прогресса OTA
           if (data.event === 'ota_progress') {
@@ -1846,6 +1914,11 @@ async function saveStreamerConfig(mac, field, value) {
     }
     const payload = {};
     payload[field] = value;
+    if (field === 'response_player') {
+      const mode = value ? 'external_player' : 'stream';
+      payload['audio_output_mode'] = mode;
+      if (d && d.config) d.config['audio_output_mode'] = mode;
+    }
     const res = await fetch(`${API_BASE}/api/devices/${mac}/streamer_config`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

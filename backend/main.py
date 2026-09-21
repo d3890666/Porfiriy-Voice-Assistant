@@ -350,6 +350,9 @@ async def handle_client(websocket):
         "Devices under domain 'switch' can also control lights or appliances; use them when appropriate."
     )
     full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
+    data_actions_text = await ha_api.get_data_actions_prompt()
+    if data_actions_text:
+        full_prompt += f"\n\n{data_actions_text}"
     if area_name:
         full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: The user is speaking through the device in room '{area_name}'. When handling ambiguous smart home requests (e.g. 'turn on light', 'close curtains'), ALWAYS prioritize devices located in '{area_name}'."
     logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
@@ -837,45 +840,48 @@ async def handle_client(websocket):
                                         service = raw_args.get("service")
                                         entity_id = raw_args.get("entity_id")
                                     
-                                        # Forward all parameters (position, temperature, etc.)
+                                        # Forward all parameters (position, temperature, stop_id, etc.)
                                         service_data = {
                                             k: v for k, v in raw_args.items()
-                                            if k not in ("domain", "service") and v is not None
+                                            if k not in ("domain", "service", "parameters") and v is not None
                                         }
+                                        if "parameters" in raw_args and isinstance(raw_args["parameters"], dict):
+                                            service_data.update(raw_args["parameters"])
                                         if entity_id and "entity_id" not in service_data:
                                             service_data["entity_id"] = entity_id
                                     
                                         tool_logger.info(f"Gemini Calling Tool: {domain}.{service} with service_data: {service_data}")
                                     
-                                        # Выполняем действие в Home Assistant
-                                        result = await ha_api.call_service(
+                                        # Выполняем действие в Home Assistant через универсальный метод
+                                        action_res = await ha_api.call_ha_action(
                                             domain=domain,
                                             service=service,
                                             service_data=service_data
                                         )
                                     
-                                        tool_logger.info(f"HA Action Result: {result}")
+                                        tool_logger.info(f"HA Action Result: {action_res}")
                                     
-                                        # Отправляем звуковой отклик (Earcon / Phrase) клиенту напрямую
                                         speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                                        if "error" in result:
+                                        has_data = action_res.get("has_response_data", False)
+                                        
+                                        if action_res.get("status") == "error":
                                             phrase = phrase_manager.get_phrase("device_error")
                                             if phrase:
                                                 await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
                                             else:
                                                 await websocket.send(scale_pcm16(ERROR_CHIME, speaker_vol))
+                                            safe_result = {"status": "error", "error": action_res.get("error", "Unknown error")}
                                         else:
-                                            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
-                                        
-                                        # Формируем безопасный словарь для ответа, чтобы Gemini не ругался на пустые списки
-                                        safe_result = {"status": "success"}
-                                        if result:
-                                            if isinstance(result, list):
-                                                safe_result["data"] = result
-                                            elif isinstance(result, dict):
-                                                safe_result = result
-                                            else:
-                                                safe_result["data"] = str(result)
+                                            # Если действие вернуло живые данные (например, расписание транспорта),
+                                            # НЕ воспроизводим щелчок реле (SUCCESS_CHIME), чтобы дать Gemini чисто ответить речью.
+                                            if not has_data:
+                                                await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+                                            
+                                            safe_result = {"status": "success"}
+                                            if has_data:
+                                                safe_result["data"] = action_res.get("data")
+                                            elif action_res.get("result"):
+                                                safe_result["data"] = action_res.get("result")
                                             
                                         function_responses.append(types.FunctionResponse(
                                             name=fc.name,
@@ -1139,6 +1145,9 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             "unless you have explicitly called the corresponding tool."
         )
         full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
+        data_actions_text = await ha_api.get_data_actions_prompt()
+        if data_actions_text:
+            full_prompt += f"\n\n{data_actions_text}"
         if area_name:
             full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: Room '{area_name}'."
 
@@ -1200,6 +1209,148 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                                     await websocket.send(scaled_chunk)
                                 except Exception:
                                     pass
+                if response.tool_call:
+                    logger.info(f"[STREAMER] RAW Tool Call from Gemini: {response.tool_call}")
+                    function_responses = []
+                    for fc in response.tool_call.function_calls:
+                        name = fc.name
+                        if name == "call_ha_service":
+                            raw_args = dict(fc.args) if fc.args else {}
+                            domain = raw_args.get("domain")
+                            service = raw_args.get("service")
+                            entity_id = raw_args.get("entity_id")
+                            service_data = {
+                                k: v for k, v in raw_args.items()
+                                if k not in ("domain", "service", "parameters") and v is not None
+                            }
+                            if "parameters" in raw_args and isinstance(raw_args["parameters"], dict):
+                                service_data.update(raw_args["parameters"])
+                            if entity_id and "entity_id" not in service_data:
+                                service_data["entity_id"] = entity_id
+
+                            action_res = await ha_api.call_ha_action(domain, service, service_data)
+                            has_data = action_res.get("has_response_data", False)
+                            current_cfg = device_manager.get_device_config(client_mac)
+                            active_vol = float(current_cfg.get("speaker_volume", 0.5))
+
+                            if action_res.get("status") == "error":
+                                safe_result = {"status": "error", "error": action_res.get("error", "Unknown error")}
+                                try:
+                                    await websocket.send(scale_pcm16(ERROR_CHIME, active_vol))
+                                except Exception:
+                                    pass
+                            else:
+                                if not has_data:
+                                    try:
+                                        await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
+                                    except Exception:
+                                        pass
+                                safe_result = {"status": "success"}
+                                if has_data:
+                                    safe_result["data"] = action_res.get("data")
+                                elif action_res.get("result"):
+                                    safe_result["data"] = action_res.get("result")
+
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response=safe_result
+                            ))
+                        elif name == "get_ha_state":
+                            raw_args = dict(fc.args) if fc.args else {}
+                            entity_id = raw_args.get("entity_id")
+                            state_obj = await ha_api.get_entity_state(entity_id)
+                            if isinstance(state_obj, dict) and "state" in state_obj:
+                                safe_result = {
+                                    "status": "success",
+                                    "entity_id": entity_id,
+                                    "state": state_obj.get("state"),
+                                    "unit": state_obj.get("attributes", {}).get("unit_of_measurement"),
+                                    "friendly_name": state_obj.get("attributes", {}).get("friendly_name"),
+                                    "attributes": state_obj.get("attributes", {}),
+                                }
+                            else:
+                                safe_result = state_obj if isinstance(state_obj, dict) else {"status": "error", "message": str(state_obj)}
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response=safe_result
+                            ))
+                        elif name == "search_music_assistant":
+                            args = dict(fc.args) if fc.args else {}
+                            if "media_type" in args:
+                                args["media_type"] = [args["media_type"]]
+                            ma_entry_id = await ha_api.get_music_assistant_entry_id()
+                            if ma_entry_id:
+                                args["config_entry_id"] = ma_entry_id
+                            result = await ha_api.call_service_ws(
+                                domain="music_assistant",
+                                service="search",
+                                service_data=args,
+                                return_response=True
+                            )
+                            simplified_result = []
+                            if isinstance(result, dict) and "error" not in result:
+                                actual_response = result.get("response", result)
+                                if isinstance(actual_response, dict):
+                                    for cat, items in actual_response.items():
+                                        if isinstance(items, list):
+                                            for item in items[:5]:
+                                                simplified_result.append({
+                                                    "name": item.get("name"),
+                                                    "uri": item.get("uri"),
+                                                    "type": cat
+                                                })
+                                result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
+                            safe_result = {"status": "success"}
+                            if result:
+                                if isinstance(result, list):
+                                    safe_result["data"] = result
+                                elif isinstance(result, dict):
+                                    safe_result = result
+                                else:
+                                    safe_result["data"] = str(result)
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response=safe_result
+                            ))
+                        elif name == "play_music_assistant":
+                            args = dict(fc.args) if fc.args else {}
+                            uri = args.get("uri")
+                            player = args.get("player") or options.get("default_media_player", "media_player.living_room")
+                            result = await ha_api.call_service(
+                                domain="media_player",
+                                service="play_media",
+                                service_data={
+                                    "entity_id": player,
+                                    "media_content_id": uri,
+                                    "media_content_type": "music"
+                                }
+                            )
+                            current_cfg = device_manager.get_device_config(client_mac)
+                            active_vol = float(current_cfg.get("speaker_volume", 0.5))
+                            try:
+                                if "error" in result:
+                                    await websocket.send(scale_pcm16(ERROR_CHIME, active_vol))
+                                else:
+                                    await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
+                            except Exception:
+                                pass
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"status": "success"}
+                            ))
+                        else:
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"error": "Unknown tool"}
+                            ))
+                    if function_responses:
+                        logger.info(f"[STREAMER] Sending Tool Responses: {function_responses}")
+                        await session.send_tool_response(function_responses=function_responses)
                 if response.server_content and getattr(response.server_content, "turn_complete", False):
                     gemini_is_speaking = False
                     logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")

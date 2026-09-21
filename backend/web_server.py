@@ -10,6 +10,26 @@ from typing import Optional, Dict, Any, Callable, List
 
 logger = logging.getLogger("web_server")
 
+def get_addon_version() -> str:
+    """Считывает актуальную версию аддона напрямую из config.yaml (Single Source of Truth)."""
+    candidates = [
+        "/backend/config.yaml",
+        os.path.join(os.path.dirname(__file__), "config.yaml"),
+        os.path.join(os.path.dirname(__file__), "..", "config.yaml"),
+        "/config.yaml"
+    ]
+    for p in candidates:
+        if os.path.exists(p) and os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    content = f.read()
+                m = re.search(r'version:\s*["\']?([^"\'\s]+)["\']?', content)
+                if m:
+                    return m.group(1).strip()
+            except Exception as e:
+                logger.debug(f"Error reading {p}: {e}")
+    return "0.0.106"
+
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
         self.device_manager = device_manager
@@ -33,6 +53,7 @@ class WebServer:
     def _setup_routes(self):
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/api/devices", self.handle_get_devices)
+        self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
         self.app.router.add_post("/api/devices/{mac}/config", self.handle_device_config)
         self.app.router.add_post("/api/devices/bulk_config", self.handle_bulk_config)
         self.app.router.add_post("/api/devices/{mac}/beep", self.handle_device_beep)
@@ -73,9 +94,21 @@ class WebServer:
     async def handle_index(self, request):
         index_file = os.path.join(self.static_dir, "index.html")
         app_js_file = os.path.join(self.static_dir, "app.js")
+        version = get_addon_version()
         if os.path.exists(index_file):
             with open(index_file, "r", encoding="utf-8") as f:
                 content = f.read()
+
+            # Динамически подставляем актуальную версию из config.yaml в шапку страницы
+            content = re.sub(
+                r'Голосовой алгоритмический следователь\s*•\s*(?:<span id="app-version">)?v[0-9.]+(?:</span>)?',
+                f'Голосовой алгоритмический следователь • <span id="app-version">v{version}</span>',
+                content
+            )
+            content = content.replace("{{VERSION}}", version)
+            # Обновляем кэш-бастеры скриптов и стилей (?v=X.X.XX)
+            content = re.sub(r'(\?v=)[0-9.]+', rf'\g<1>{version}', content)
+
             # Автоматически инлайним свежий app.js прямо в HTML для 100% защиты от кэширования в Ingress
             if os.path.exists(app_js_file):
                 try:
@@ -133,6 +166,17 @@ class WebServer:
                     self.device_manager.set_device_area(d["mac"], area_name)
                     
         return web.json_response({"devices": devices})
+
+    async def handle_delete_device(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        try:
+            success = self.device_manager.delete_device(mac)
+            if success:
+                return web.json_response({"success": True, "mac": mac})
+            return web.json_response({"success": False, "error": f"Device {mac} not found"}, status=404)
+        except Exception as e:
+            logger.error(f"Error deleting device {mac}: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def handle_device_config(self, request):
         mac = request.match_info["mac"]
@@ -226,6 +270,7 @@ class WebServer:
             except Exception as e:
                 logger.warning(f"Error fetching media players for global settings: {e}")
         return web.json_response({
+            "version": get_addon_version(),
             "options": self._safe_options(opts),
             "models": models,
             "media_players": media_players
@@ -571,6 +616,10 @@ class WebServer:
 
         allowed = {"response_player", "ww_threshold", "area_name", "speaker_volume", "audio_output_mode", "wake_word_mode"}
         cfg = {k: v for k, v in data.items() if k in allowed}
+
+        if "response_player" in cfg and "audio_output_mode" not in cfg:
+            # Если выбран плеер, переключаем вывод на внешний плеер HA, если сброшен («») — возвращаем stream (со звуком в динамики ПК)
+            cfg["audio_output_mode"] = "external_player" if bool(cfg["response_player"]) else "stream"
 
         if "ww_threshold" in cfg:
             cfg["ww_threshold"] = float(cfg["ww_threshold"])

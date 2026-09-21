@@ -3,6 +3,7 @@ import aiohttp
 import websockets
 import json
 import logging
+import time
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,8 @@ class HomeAssistantAPI:
             logger.info("HA API initialized in standalone mode (using fallback token)")
             
         self._ma_config_entry_id = None
+        self._services_cache = None
+        self._services_cache_time = 0.0
 
     async def get_states(self) -> List[Dict[str, Any]]:
         """Получить все текущие состояния (сущности) из HA."""
@@ -129,6 +132,116 @@ class HomeAssistantAPI:
                 error = result.get("error", {})
                 return {"error": error.get("message", "Unknown WS error")}
         return {"status": "success"}
+
+    async def get_services(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """Получить реестр всех сервисов Home Assistant (с кэшированием на 5 минут)."""
+        now = time.time()
+        if not force_refresh and self._services_cache and (now - self._services_cache_time < 300):
+            return self._services_cache
+            
+        payload = {"type": "get_services"}
+        resp = await self._ws_send_and_receive(payload)
+        if resp and resp.get("success"):
+            self._services_cache = resp.get("result", {})
+            self._services_cache_time = now
+            return self._services_cache
+        return self._services_cache or {}
+
+    async def get_data_actions_prompt(self) -> str:
+        """
+        Обнаруживает действия Home Assistant, возвращающие данные (response),
+        и формирует компактное описание для системного промпта Gemini.
+        """
+        try:
+            services = await self.get_services()
+            if not services:
+                return ""
+                
+            lines = []
+            excluded_domains = {
+                "conversation", "persistent_notification", "recorder", "system_log", 
+                "logger", "homeassistant", "frontend", "ffmpeg", "hassio"
+            }
+            
+            for domain, domain_services in services.items():
+                if domain in excluded_domains or not isinstance(domain_services, dict):
+                    continue
+                for s_name, s_info in domain_services.items():
+                    if not isinstance(s_info, dict):
+                        continue
+                    # Действие поддерживает возврат данных (response) или относится к транспорту
+                    is_transport = any(k in domain.lower() for k in ("transport", "bus", "metro", "transit"))
+                    if "response" in s_info or is_transport:
+                        desc = s_info.get("description") or s_info.get("name") or "Action with data response"
+                        fields = s_info.get("fields", {})
+                        param_strs = []
+                        if isinstance(fields, dict):
+                            for fname, fdesc in fields.items():
+                                if not isinstance(fdesc, dict):
+                                    param_strs.append(fname)
+                                    continue
+                                req = " (required)" if fdesc.get("required") else ""
+                                eg = f", e.g. {fdesc.get('example')}" if fdesc.get("example") is not None else ""
+                                p_desc = fdesc.get("description", "")
+                                if p_desc:
+                                    param_strs.append(f"{fname}{req}: {p_desc}{eg}")
+                                else:
+                                    param_strs.append(f"{fname}{req}{eg}")
+                        params_line = f" Parameters: {'; '.join(param_strs)}" if param_strs else ""
+                        lines.append(f"- Action: `{domain}.{s_name}` | {desc}.{params_line}")
+            
+            if lines:
+                return (
+                    "### AVAILABLE HOME ASSISTANT DATA ACTIONS:\n"
+                    "You can call these actions via `call_ha_service` to fetch live data (e.g. transport arrivals, weather, calendar). "
+                    "When called, provide the parameters specified below:\n" + "\n".join(lines)
+                )
+            return ""
+        except Exception as e:
+            logger.error(f"Error building data actions prompt: {e}")
+            return ""
+
+    async def call_ha_action(self, domain: str, service: str, service_data: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Универсальный вызов действия / сервиса Home Assistant.
+        Автоматически определяет, поддерживает ли сервис возврат данных (return_response),
+        извлекает ответные данные и возвращает результат в едином формате.
+        """
+        service_data = service_data or {}
+        
+        # Проверяем, поддерживает ли действие возврат данных
+        services = await self.get_services()
+        service_def = services.get(domain, {}).get(service, {}) if isinstance(services, dict) else {}
+        is_transport = any(k in domain.lower() for k in ("transport", "bus", "metro", "transit"))
+        has_declared_response = "response" in service_def or is_transport
+        
+        if has_declared_response:
+            ws_res = await self.call_service_ws(domain, service, service_data, return_response=True)
+            if isinstance(ws_res, dict) and "error" in ws_res:
+                err_msg = str(ws_res.get("error", ""))
+                # Если сервис на самом деле не поддерживает response, откатываемся к обычному вызову
+                if "does not support response" in err_msg.lower():
+                    normal_res = await self.call_service(domain, service, service_data)
+                    return {"status": "success", "has_response_data": False, "result": normal_res}
+                return {"status": "error", "error": err_msg}
+            
+            # Извлекаем данные ответа
+            actual_data = ws_res.get("response", ws_res) if isinstance(ws_res, dict) else ws_res
+            return {
+                "status": "success",
+                "has_response_data": True,
+                "data": actual_data
+            }
+        else:
+            # Стандартный сервис без возврата данных (например light.turn_on, switch.toggle)
+            res = await self.call_service(domain, service, service_data)
+            if isinstance(res, dict) and "error" in res:
+                return {"status": "error", "error": res.get("error")}
+            return {
+                "status": "success",
+                "has_response_data": False,
+                "result": res
+            }
 
     async def get_music_assistant_entry_id(self) -> str:
         if self._ma_config_entry_id:

@@ -21,6 +21,8 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements.txt --break-system-packages
 
 # Copy root filesystem & application code
 COPY run.sh /
+COPY config.yaml /backend/config.yaml
+COPY config.yaml /config.yaml
 COPY backend /backend/
 COPY porfiriy.onnx /backend/porfiriy.onnx
 COPY porfiriy.onnx /porfiriy.onnx

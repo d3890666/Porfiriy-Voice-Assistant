@@ -116,19 +116,23 @@ class GeminiProxyClient:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
         ha_tool = types.FunctionDeclaration(
             name="call_ha_service",
-            description="Call a Home Assistant service to control a smart home device, vacuum, fan, media player, or execute a script.",
+            description=(
+                "Call a Home Assistant service or action to control smart home devices, run scripts/scenes, "
+                "or query live data actions (e.g. transport arrivals moscow_transport.get_arrivals, calendar events, weather forecasts)."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service, e.g. light, switch, cover, script, scene, climate, media_player, vacuum, fan"),
-                    "service": types.Schema(type=types.Type.STRING, description="The service to call, e.g. turn_on, turn_off, toggle, open_cover, close_cover, stop_cover, set_cover_position, start, pause, stop, return_to_base, set_percentage"),
-                    "entity_id": types.Schema(type=types.Type.STRING, description="The exact entity_id of the device from the provided context, e.g. light.kitchen, cover.living_room_curtains, vacuum.robot, fan.bedroom"),
+                    "domain": types.Schema(type=types.Type.STRING, description="The domain of the service or action, e.g. light, switch, cover, script, scene, climate, media_player, vacuum, fan, moscow_transport"),
+                    "service": types.Schema(type=types.Type.STRING, description="The service or action to call, e.g. turn_on, turn_off, toggle, open_cover, close_cover, stop_cover, set_cover_position, start, pause, stop, return_to_base, set_percentage, get_arrivals"),
+                    "entity_id": types.Schema(type=types.Type.STRING, description="Optional entity_id of the device from the provided context (e.g. light.kitchen, cover.living_room_curtains). Omit for services that do not use entity_id."),
+                    "parameters": types.Schema(type=types.Type.OBJECT, description="Optional key-value arguments for actions (e.g. {'stop_id': '9600123'} for transport arrivals, or extra action-specific parameters)."),
                     "position": types.Schema(type=types.Type.INTEGER, description="Optional target position for cover (curtains/blinds) from 0 (closed) to 100 (open)."),
                     "temperature": types.Schema(type=types.Type.NUMBER, description="Optional target temperature for climate devices."),
                     "hvac_mode": types.Schema(type=types.Type.STRING, description="Optional HVAC mode for climate devices (e.g. heat, cool, off)."),
                     "percentage": types.Schema(type=types.Type.INTEGER, description="Optional fan speed percentage (0-100) for fan devices."),
                 },
-                required=["domain", "service", "entity_id"]
+                required=["domain", "service"]
             )
         )
         get_state_tool = types.FunctionDeclaration(

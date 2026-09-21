@@ -313,6 +313,48 @@ class DeviceManager:
             self._notify("offline", dev)
             logger.info(f"Device went offline: {clean_mac}")
 
+    def delete_device(self, mac: str) -> bool:
+        """Полное удаление устройства из системы и постоянного хранилища."""
+        clean_mac = mac.strip().lower()
+        dev = self.devices.get(clean_mac)
+        if not dev:
+            clean_mac_norm = clean_mac.replace(":", "").replace("-", "")
+            for k, d in list(self.devices.items()):
+                if k.replace(":", "").replace("-", "") == clean_mac_norm:
+                    clean_mac = k
+                    dev = d
+                    break
+
+        if not dev:
+            logger.warning(f"Cannot delete device: {mac} not found")
+            return False
+
+        # 1. Если сокет активен, закрываем его
+        ws = self.active_sockets.pop(clean_mac, None)
+        if ws and not getattr(ws, "closed", False):
+            try:
+                asyncio.create_task(ws.close())
+            except Exception:
+                pass
+
+        # 2. Очищаем все внутренние сессии и кэши
+        self._wake_handlers.pop(clean_mac, None)
+        self.mic_test_sessions.pop(clean_mac, None)
+        self.mic_test_results.pop(clean_mac, None)
+        self.last_utterance_results.pop(clean_mac, None)
+        self._response_wav.pop(clean_mac, None)
+
+        # 3. Удаляем из словаря устройств
+        del self.devices[clean_mac]
+
+        # 4. Сохраняем на диск
+        self._save()
+
+        # 5. Оповещаем подписчиков (SSE, UI)
+        self._notify("device_deleted", {"mac": clean_mac})
+        logger.info(f"Device deleted successfully: {clean_mac} ({dev.get('name')})")
+        return True
+
     def get_device(self, mac: str) -> Optional[Dict[str, Any]]:
         return self.devices.get(mac.strip().lower())
 
