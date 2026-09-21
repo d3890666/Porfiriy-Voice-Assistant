@@ -399,6 +399,41 @@ function renderDevicesGrid() {
                     title="Индивидуальный порог RMS перебивания. Пустое поле = использовать общий (${globalOptions.barge_in_threshold_rms || 600})">
                 </div>
                 <div class="slider-row">
+                  <span>🎛️ Лимитер звука (AGC):</span>
+                  <label class="checkbox-label" style="margin-left: auto; cursor: pointer; gap: 6px;">
+                    <input type="checkbox" ${cfg.mic_limiter_enabled !== false ? 'checked' : ''} 
+                      onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_limiter_enabled', this.checked); this.nextElementSibling.innerText = this.checked ? 'Вкл' : 'Выкл'; this.nextElementSibling.style.color = this.checked ? 'var(--accent-green)' : '#888';"
+                      title="WebRTC Peak Limiter: авто-выравнивание микрофона, устраняет клиппинг и хрип при громких звуках">
+                    <span style="font-size: 11px; font-weight: 700; color: ${cfg.mic_limiter_enabled !== false ? 'var(--accent-green)' : '#888'};">
+                      ${cfg.mic_limiter_enabled !== false ? 'Вкл' : 'Выкл'}
+                    </span>
+                  </label>
+                </div>
+                <div class="slider-row">
+                  <span>⏱️ Пауза конца фразы:</span>
+                  <input type="range" min="300" max="2000" step="50" value="${cfg.silence_timeout_ms !== undefined ? cfg.silence_timeout_ms : 700}" 
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'silence_timeout_ms', parseInt(this.value, 10))"
+                    oninput="this.nextElementSibling.innerText = this.value + ' мс'"
+                    title="Таймаут тишины после речи перед отправкой вопроса (по умолч. 700 мс)">
+                  <span style="min-width: 50px; font-family: monospace; font-size: 12px;">${cfg.silence_timeout_ms !== undefined ? cfg.silence_timeout_ms : 700} мс</span>
+                </div>
+                <div class="slider-row">
+                  <span>🎙️ Порог голоса (RMS):</span>
+                  <input type="range" min="50" max="800" step="10" value="${cfg.silence_threshold_energy !== undefined ? cfg.silence_threshold_energy : 180}" 
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'silence_threshold_energy', parseInt(this.value, 10))"
+                    oninput="this.nextElementSibling.innerText = this.value"
+                    title="Минимальная энергия звука для фиксации речи (по умолч. 180)">
+                  <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.silence_threshold_energy !== undefined ? cfg.silence_threshold_energy : 180}</span>
+                </div>
+                <div class="slider-row">
+                  <span>⏳ Ожидание команды:</span>
+                  <input type="range" min="3" max="15" step="1" value="${cfg.listen_timeout_s !== undefined ? cfg.listen_timeout_s : 6}" 
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'listen_timeout_s', parseInt(this.value, 10))"
+                    oninput="this.nextElementSibling.innerText = this.value + ' с'"
+                    title="Максимальное время ожидания вопроса после вейкворда (по умолч. 6 с)">
+                  <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${cfg.listen_timeout_s !== undefined ? cfg.listen_timeout_s : 6} с</span>
+                </div>
+                <div class="slider-row">
                   <span>🔇 Приглушать медиа:</span>
                   <label class="checkbox-label" style="margin-left: auto; cursor: pointer; gap: 6px;">
                     <input type="checkbox" ${cfg.enable_ducking !== false ? 'checked' : ''} 
@@ -434,6 +469,18 @@ function renderDevicesGrid() {
                       </select>
                     </div>
                   ` : ''}
+                </div>
+                <div style="font-size: 11px; color: #a78bfa; margin-top: 6px; padding: 6px 10px; background: rgba(167, 139, 250, 0.08); border-radius: 6px; display: flex; flex-direction: column; gap: 3px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>🎵 <strong>Медиаплеер HA (DLNA):</strong></span>
+                    <button type="button" class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;" 
+                      onclick="navigator.clipboard.writeText(location.origin + '/dmr/${dev.mac}/description.xml'); showToast('URL плеера скопирован в буфер!');">
+                      📋 Копировать
+                    </button>
+                  </div>
+                  <span style="font-family: monospace; font-size: 10px; color: #8b949e; word-break: break-all;">
+                    /dmr/${dev.mac}/description.xml
+                  </span>
                 </div>
                 ${!dev.has_update && isEsp && dev.is_online ? `
                   <div style="margin-top: 6px; display: flex; justify-content: flex-end;">

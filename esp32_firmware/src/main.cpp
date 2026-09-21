@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.104"
+#define FIRMWARE_VERSION "0.0.107"
 
 #include "model.h"
 // TFLite
@@ -39,6 +39,7 @@ String password = "";
 String ws_host = "192.168.1.50";
 uint16_t ws_port = 8765;
 float mic_gain = 1.3f;
+bool mic_limiter_enabled = true; // Автоматическое выравнивание громкости микрофона (WebRTC Limiter)
 float speaker_volume = 1.0;
 float wake_word_threshold = 0.93;
 String wake_word_mode = "local";     // "local" (TFLite на ESP32) или "server" (openWakeWord на сервере)
@@ -376,6 +377,10 @@ const char index_html[] PROGMEM = R"rawliteral(
   <h2 style="margin-top:30px;">Тонкая настройка (На лету)</h2>
   <label>Усиление микрофона (0.5 - 15.0, по умолч. 2.0)</label>
   <input type="number" step="0.1" name="mic_gain" value="%MIC_GAIN%" min="0.5" max="15.0">
+  <label style="display:flex; align-items:center; gap:8px; margin-top:8px; margin-bottom:12px; cursor:pointer;">
+    <input type="checkbox" name="mic_limiter_enabled" value="1" %LIMITER_CHECKED% style="width:auto; margin:0;">
+    <span>Авто-выравнивание микрофона (WebRTC Limiter)</span>
+  </label>
   <label>Таймаут тишины после фразы (мс, 300-3000)</label>
   <input type="number" name="silence_timeout_ms" value="%SILENCE_MS%" min="300" max="3000" step="50">
   <label>Макс. ожидание команды (сек, 3-15)</label>
@@ -500,6 +505,7 @@ void handleRoot() {
     html.replace("%PORT%", String(ws_port));
     html.replace("%RECONNECT%", String(reconnect_interval));
     html.replace("%MIC_GAIN%", String(mic_gain, 1));
+    html.replace("%LIMITER_CHECKED%", mic_limiter_enabled ? "checked" : "");
     html.replace("%SILENCE_MS%", String(silence_timeout_ms));
     html.replace("%LISTEN_TO%", String(listen_timeout_s));
     html.replace("%SIL_THRES%", String(silence_threshold_energy));
@@ -547,7 +553,8 @@ void handleStatus() {
     json += "\"ww_score\":" + String(recent_peak_score, 2) + ",";
     json += "\"ww_threshold\":" + String(wake_word_threshold, 2) + ",";
     json += "\"ww_window\":" + String(wake_word_window_size) + ",";
-    json += "\"ww_mode\":" + String(wake_word_window_mode);
+    json += "\"ww_mode\":" + String(wake_word_window_mode) + ",";
+    json += "\"mic_limiter_enabled\":" + String(mic_limiter_enabled ? "true" : "false");
     json += "}";
     server.send(200, "application/json", json);
 }
@@ -573,6 +580,13 @@ void handleSave() {
     
     // Тонкие настройки (На лету)
     if (server.hasArg("mic_gain")) { mic_gain = server.arg("mic_gain").toFloat(); preferences.putFloat("mic_gain_f", mic_gain); limiter.set_gain(mic_gain * 1.8f); }
+    if (server.hasArg("mic_limiter_enabled")) {
+        mic_limiter_enabled = (server.arg("mic_limiter_enabled") == "1" || server.arg("mic_limiter_enabled") == "true");
+        preferences.putBool("limiter_en", mic_limiter_enabled);
+    } else if (server.method() == HTTP_POST && server.hasArg("mic_gain")) {
+        mic_limiter_enabled = false;
+        preferences.putBool("limiter_en", false);
+    }
     if (server.hasArg("silence_timeout_ms")) { silence_timeout_ms = server.arg("silence_timeout_ms").toInt(); preferences.putInt("sil_ms", silence_timeout_ms); }
     if (server.hasArg("listen_timeout_s")) { listen_timeout_s = server.arg("listen_timeout_s").toInt(); preferences.putInt("listen_to", listen_timeout_s); }
     if (server.hasArg("silence_threshold_energy")) { silence_threshold_energy = server.arg("silence_threshold_energy").toInt(); preferences.putInt("sil_thres", silence_threshold_energy); }
@@ -612,6 +626,7 @@ void load_preferences() {
     ws_host = preferences.getString("host", "192.168.1.50");
     ws_port = preferences.getUInt("port", 8765);
     mic_gain = preferences.getFloat("mic_gain_f", 1.3f);
+    mic_limiter_enabled = preferences.getBool("limiter_en", true);
     silence_timeout_ms = preferences.getInt("sil_ms", 700);
     listen_timeout_s = preferences.getInt("listen_to", 6);
     silence_threshold_energy = preferences.getInt("sil_thres", 180);
@@ -1001,6 +1016,7 @@ void handle_remote_config(String json) {
 
     parse_float("mic_gain", mic_gain, "mic_gain_f");
     limiter.set_gain(mic_gain * 1.8f);
+    parse_bool("mic_limiter_enabled", mic_limiter_enabled, "limiter_en");
     parse_float("speaker_volume", speaker_volume, "spk_vol");
     parse_float("wake_word_threshold", wake_word_threshold, "ww_thres");
     parse_string("wake_word_mode", wake_word_mode, "ww_mode_str");
@@ -1041,6 +1057,7 @@ void send_registration() {
     json += "\"firmware\":\"" FIRMWARE_VERSION "\",";
     json += "\"config\":{";
     json += "\"mic_gain\":" + String(mic_gain, 1) + ",";
+    json += "\"mic_limiter_enabled\":" + String(mic_limiter_enabled ? "true" : "false") + ",";
     json += "\"speaker_volume\":" + String(speaker_volume, 2) + ",";
     json += "\"wake_word_threshold\":" + String(wake_word_threshold, 2) + ",";
     json += "\"wake_word_window_size\":" + String(wake_word_window_size) + ",";
@@ -1299,7 +1316,14 @@ void loop() {
         dc_x1 = x;
         dc_y1 = y;
 
-        mic_buffer_16[i] = limiter.process(y);
+        if (mic_limiter_enabled) {
+            mic_buffer_16[i] = limiter.process(y);
+        } else {
+            float boosted = y * (mic_gain * 1.8f);
+            if (boosted > 32767.0f) boosted = 32767.0f;
+            if (boosted < -32768.0f) boosted = -32768.0f;
+            mic_buffer_16[i] = (int16_t)roundf(boosted);
+        }
         sum_amp += abs(mic_buffer_16[i]);
         
         pre_roll_buffer[pre_roll_head] = mic_buffer_16[i];

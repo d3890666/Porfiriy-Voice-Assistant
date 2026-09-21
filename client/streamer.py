@@ -200,6 +200,7 @@ class StreamerClient:
         self.play_queue = queue.Queue()
         self.is_running = True
         self.is_playing = False
+        self.is_thinking = False
         self.speaker_volume = 1.0
         self.start_time = time.time()
 
@@ -279,9 +280,9 @@ class StreamerClient:
                 if data:
                     if capture_rate != SAMPLE_RATE_INPUT:
                         data = resample_pcm(data, capture_rate, SAMPLE_RATE_INPUT)
-                    # Во время воспроизведения речи ассистента через динамики ПК
+                    # Во время воспроизведения речи ассистента или обработки (thinking)
                     # не транслируем звук микрофона, исключая акустическое эхо и самоперебивание
-                    if not self.is_playing:
+                    if not self.is_playing and not self.is_thinking:
                         await ws.send(data)
                 await asyncio.sleep(0.001)
 
@@ -404,11 +405,17 @@ class StreamerClient:
                     except queue.Empty:
                         break
                 self.is_playing = False
+                self.is_thinking = False
+            elif m_type == "thinking":
+                logger.info("🤔 Порфирий обрабатывает запрос...")
+                self.is_thinking = True
             elif m_type == "sleep":
                 logger.info("💤 Ответ сервера завершен.")
                 self.is_playing = False
+                self.is_thinking = False
             elif m_type == "listen":
                 logger.info("🎙️ Активирован режим прослушивания (вызов ассистента).")
+                self.is_thinking = False
             elif m_type == "beep":
                 logger.info("🔔 Получен звуковой сигнал готовности.")
             elif m_type == "set_config":

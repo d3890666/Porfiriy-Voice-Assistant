@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Callable
 
 logger = logging.getLogger("device_manager")
 
-TARGET_FIRMWARE_VERSION = "0.0.104"
+TARGET_FIRMWARE_VERSION = "0.0.107"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -115,6 +115,7 @@ def analyze_pcm16(pcm_data: bytes, sample_rate: int = 16000) -> Dict[str, Any]:
 
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 2.0,
+    "mic_limiter_enabled": True,    # WebRTC Peak Limiter / авто-выравнивание микрофона на ESP32
     "speaker_volume": 0.5,
     "wake_word_threshold": 0.93,
     "wake_word_window_size": 3,

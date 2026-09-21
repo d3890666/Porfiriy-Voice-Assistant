@@ -10,6 +10,11 @@ from typing import Optional, Dict, Any, Callable, List
 
 logger = logging.getLogger("web_server")
 
+try:
+    from .dlna_player import DLNAMediaManager
+except ImportError:
+    from dlna_player import DLNAMediaManager
+
 def get_addon_version() -> str:
     """Считывает актуальную версию аддона напрямую из config.yaml (Single Source of Truth)."""
     candidates = [
@@ -48,6 +53,11 @@ class WebServer:
         # Подписываемся на события device_manager для SSE
         self.device_manager.add_subscriber(self._on_device_event)
         
+        # Интеграция DLNA DMR (Digital Media Renderer) для воспроизведения музыки
+        self.dlna_manager = DLNAMediaManager(self.device_manager, port=self.port)
+        self.dlna_manager.register_routes(self.app)
+        self.device_manager.media_manager = self.dlna_manager
+
         self._setup_routes()
 
     def _setup_routes(self):
@@ -545,6 +555,8 @@ class WebServer:
         site = web.TCPSite(runner, "0.0.0.0", self.port)
         await site.start()
         logger.info(f"Porfiriy Ingress Web Server running on http://0.0.0.0:{self.port}")
+        # Запуск SSDP сервера обнаружения DLNA медиаплееров
+        asyncio.create_task(self.dlna_manager.start_ssdp())
 
     # ------------------------------------------------------------------ #
     # Виртуальные стримеры (pc_streamer)

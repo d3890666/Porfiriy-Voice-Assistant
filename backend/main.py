@@ -526,6 +526,8 @@ async def handle_client(websocket):
                             if dev_cfg.get("wake_word_mode") == "server":
                                 dev_obj = device_manager.get_device(client_mac) or {}
                                 if dev_obj.get("state") == "idle" and not session_state.get("is_gemini_speaking") and not session_state.get("is_thinking"):
+                                    if time.time() < session_state.get("cooldown_until", 0.0):
+                                        continue
                                     if ww_engine and ww_engine.is_ready:
                                         dev_thresh = dev_cfg.get("ww_threshold")
                                         active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
@@ -533,10 +535,14 @@ async def handle_client(websocket):
                                         device_manager.update_ww_score(client_mac, score, peak_score=peak, rms_dbfs=rms)
                                         if ww_engine.is_triggered(client_mac):
                                             preroll = ww_engine.consume_preroll(client_mac)
+                                            ww_engine.reset(client_mac)
+                                            device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=rms)
                                             logger.info(f"[WW-SERVER] Server-side wake word triggered for {client_mac} (score={score:.3f}, peak={peak:.3f})")
                                             session_state["utterance_buffer"] = collections.deque(maxlen=150)
                                             device_manager.set_device_state(client_mac, "listening")
                                             cancel_thinking_watchdog()
+                                            if getattr(device_manager, "media_manager", None):
+                                                asyncio.create_task(device_manager.media_manager.get_player(client_mac).pause())
                                             session_state["is_gemini_speaking"] = False
                                             session_state["is_tool_pending"] = False
                                             session_state["first_audio_sent"] = False
@@ -584,6 +590,8 @@ async def handle_client(websocket):
                                 if rms >= barge_thresh and (now - session_state.get("last_barge_in_time", 0.0) > 1.2):
                                     session_state["last_barge_in_time"] = now
                                     logger.info(f"[BARGE-IN] User speech detected during playback (RMS: {rms:.0f} >= {barge_thresh:.0f})! Interrupting Gemini & Client speaker.")
+                                    if getattr(device_manager, "media_manager", None):
+                                        asyncio.create_task(device_manager.media_manager.get_player(client_mac).pause())
                                     
                                     # 1. Мгновенно глушим динамик на клиенте (ESP32/PC)
                                     await websocket.send(json.dumps({"type": "interrupted"}))
@@ -663,6 +671,8 @@ async def handle_client(websocket):
                                     session_state["utterance_buffer"] = collections.deque(maxlen=150)
                                     device_manager.set_device_state(client_mac, "listening")
                                     cancel_thinking_watchdog()
+                                    if getattr(device_manager, "media_manager", None):
+                                        asyncio.create_task(device_manager.media_manager.get_player(client_mac).pause())
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
@@ -689,6 +699,8 @@ async def handle_client(websocket):
                                             
                                 elif msg_type == "interrupted":
                                     logger.info("Interrupted signal received from ESP32. Stopping playback.")
+                                    if getattr(device_manager, "media_manager", None):
+                                        asyncio.create_task(device_manager.media_manager.get_player(client_mac).stop())
                                     session_state["is_gemini_speaking"] = False
                                     session_state["is_tool_pending"] = False
                                     session_state["first_audio_sent"] = False
@@ -774,6 +786,9 @@ async def handle_client(websocket):
                                     session_state["is_gemini_speaking"] = False
                                     # Сбрасываем флаг отправки аудио для следующего ответа
                                     session_state["first_audio_sent"] = False
+                                    session_state["cooldown_until"] = time.time() + 2.0
+                                    if ww_engine:
+                                        ww_engine.reset(client_mac)
                                     device_manager.set_device_state(client_mac, "idle")
 
                                     # Если настроен внешний плеер — воспроизводим WAV на медиаплеере Home Assistant
@@ -1111,13 +1126,23 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
 
     # Буфер и очередь для стриминга аудио во время активной сессии Gemini
     session_active = False
+    streamer_state = "idle"  # "idle", "listening", "thinking", "speaking"
+    user_has_spoken = False
+    last_speech_time = 0.0
+    session_start_time = 0.0
+    last_session_end_time = 0.0
+    cooldown_seconds = 2.0
     audio_queue: Optional[asyncio.Queue] = None
     gemini_audio_buf: list = []
 
     async def _run_gemini_session(preroll: bytes):
         """Открывает Gemini Live сессию, в реальном времени стримит микрофон и воспроизводит ответ."""
-        nonlocal session_active, audio_queue
+        nonlocal session_active, audio_queue, streamer_state, user_has_spoken, last_speech_time, session_start_time
         session_active = True
+        streamer_state = "listening"
+        user_has_spoken = False
+        session_start_time = time.time()
+        last_speech_time = session_start_time
         device_manager.set_device_state(client_mac, "listening")
 
         api_key_str = (options.get("gemini_api_key") or "").strip()
@@ -1196,6 +1221,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             async for response in session.receive():
                 if response.server_content and response.server_content.model_turn:
                     gemini_is_speaking = True
+                    streamer_state = "speaking"
                     device_manager.set_device_state(client_mac, "speaking")
                     current_cfg = device_manager.get_device_config(client_mac)
                     active_vol = float(current_cfg.get("speaker_volume", 0.5))
@@ -1353,6 +1379,10 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                         await session.send_tool_response(function_responses=function_responses)
                 if response.server_content and getattr(response.server_content, "turn_complete", False):
                     gemini_is_speaking = False
+                    streamer_state = "idle"
+                    last_session_end_time = time.time()
+                    if ww_engine:
+                        ww_engine.reset(client_mac)
                     logger.info(f"[STREAMER] Gemini turn complete for {client_mac}.")
                     current_cfg = device_manager.get_device_config(client_mac)
                     active_out_mode = current_cfg.get("audio_output_mode", "stream")
@@ -1375,12 +1405,16 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             logger.error(f"[STREAMER] Gemini session error for {client_mac}: {e}")
         finally:
             session_active = False
+            streamer_state = "idle"
+            last_session_end_time = time.time()
+            if ww_engine:
+                ww_engine.reset(client_mac)
             if audio_queue:
                 audio_queue.put_nowait(None)
             if sender_task and not sender_task.done():
                 sender_task.cancel()
             audio_queue = None
-            device_manager.set_device_state(client_mac, "listening")
+            device_manager.set_device_state(client_mac, "idle")
 
         if not pcm_response_chunks:
             logger.warning(f"[STREAMER] No audio received from Gemini for {client_mac}.")
@@ -1424,7 +1458,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 logger.error(f"[STREAMER] Failed to play media on {player}: {e}")
 
     async def _force_wake_streamer():
-        nonlocal session_active, audio_queue
+        nonlocal session_active, audio_queue, streamer_state, user_has_spoken, last_speech_time, session_start_time
         if session_active:
             logger.info(f"[STREAMER] Session already active for {client_mac}, ignoring duplicate force wake.")
             return True
@@ -1455,13 +1489,68 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                         device_manager.finish_mic_test(client_mac)
                     continue
 
-                # Если сессия диалога с Gemini активна — непрерывно транслируем звук в очередь Gemini
-                if session_active and audio_queue is not None:
-                    audio_queue.put_nowait(message)
-                    gemini_audio_buf.append(message)
+                # Если сессия диалога с Gemini активна — энергетический VAD конца речи
+                if session_active:
+                    dev_cfg = device_manager.get_device_config(client_mac)
+                    sil_thresh = float(dev_cfg.get("silence_threshold_energy", 180))
+                    sil_timeout = float(dev_cfg.get("silence_timeout_ms", 700)) / 1000.0
+                    listen_to = float(dev_cfg.get("listen_timeout_s", 6))
+                    raw_rms = calculate_pcm_rms(message)
 
-                # Прогоняем PCM через вейкворд (когда нет активного ответа)
-                if not session_active and ww_engine and ww_engine.is_ready:
+                    if streamer_state == "listening":
+                        now = time.time()
+                        if raw_rms >= sil_thresh:
+                            user_has_spoken = True
+                            last_speech_time = now
+                            if audio_queue is not None:
+                                audio_queue.put_nowait(message)
+                                gemini_audio_buf.append(message)
+                        else:
+                            if user_has_spoken:
+                                if now - last_speech_time > sil_timeout:
+                                    logger.info(f"[STREAMER] End of speech detected for {client_mac} (silence > {sil_timeout*1000:.0f}ms). Switching to THINKING.")
+                                    streamer_state = "thinking"
+                                    device_manager.set_device_state(client_mac, "thinking")
+                                    try:
+                                        await websocket.send(json.dumps({"type": "thinking"}))
+                                    except Exception:
+                                        pass
+                                    if audio_queue is not None:
+                                        silence_chunk = b"\x00" * 1024
+                                        for _ in range(28):
+                                            audio_queue.put_nowait(silence_chunk)
+                                else:
+                                    if audio_queue is not None:
+                                        audio_queue.put_nowait(message)
+                                        gemini_audio_buf.append(message)
+                            else:
+                                if now - session_start_time > listen_to:
+                                    logger.info(f"[STREAMER] Listen timeout ({listen_to}s) with no speech for {client_mac}. Going to sleep.")
+                                    session_active = False
+                                    streamer_state = "idle"
+                                    last_session_end_time = now
+                                    if ww_engine:
+                                        ww_engine.reset(client_mac)
+                                    device_manager.set_device_state(client_mac, "idle")
+                                    if audio_queue:
+                                        audio_queue.put_nowait(None)
+                                    audio_queue = None
+                                    try:
+                                        await websocket.send(json.dumps({"type": "sleep"}))
+                                    except Exception:
+                                        pass
+                                else:
+                                    if audio_queue is not None:
+                                        audio_queue.put_nowait(message)
+                                        gemini_audio_buf.append(message)
+
+                    calc_dbfs = float(round(20.0 * math.log10(max(1.0, raw_rms) / 32768.0), 1))
+                    device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=calc_dbfs)
+
+                # Прогоняем PCM через вейкворд (когда нет активной сессии и прошел кулдаун)
+                now = time.time()
+                is_cooldown = (now - last_session_end_time < cooldown_seconds)
+                if not session_active and not is_cooldown and ww_engine and ww_engine.is_ready:
                     dev_cfg = device_manager.get_device_config(client_mac)
                     dev_thresh = dev_cfg.get("ww_threshold")
                     active_thresh = float(dev_thresh) if dev_thresh is not None else ww_engine.threshold
