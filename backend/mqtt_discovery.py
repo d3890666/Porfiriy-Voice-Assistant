@@ -81,6 +81,7 @@ class MQTTDiscoveryManager:
             logger.info("Connected to MQTT Broker successfully!")
             # Подписываемся на команды управления колонками
             self.client.subscribe("porfiriy/+/set/#")
+            self.client.subscribe("porfiriy/+/media/#")
         else:
             logger.warning(f"MQTT connect failed with result code: {rc}")
 
@@ -152,6 +153,25 @@ class MQTTDiscoveryManager:
                             self.device_manager.send_command(target_mac, {"type": "reboot"}),
                             self.loop
                         )
+            elif len(parts) >= 4 and parts[0] == "porfiriy" and parts[2] == "media":
+                dev_id = parts[1]
+                param = parts[3]
+                target_mac = None
+                for d in self.device_manager.get_all_devices():
+                    clean_mac = d["mac"].replace(":", "").replace("-", "").lower()
+                    if clean_mac == dev_id or d["mac"].lower() == dev_id:
+                        target_mac = d["mac"]
+                        break
+                if not target_mac:
+                    return
+                if param == "command":
+                    cmd = payload.upper()
+                    if cmd in ("STOP", "PAUSE"):
+                        if self.loop:
+                            asyncio.run_coroutine_threadsafe(
+                                self.device_manager.send_command(target_mac, {"type": "stop"}),
+                                self.loop
+                            )
         except Exception as e:
             logger.error(f"Error handling MQTT message: {e}")
 
@@ -277,6 +297,18 @@ class MQTTDiscoveryManager:
                 "device_class": "restart",
                 "entity_category": "diagnostic",
                 "device": device_dict
+            }),
+            # 9. Media Player
+            ("media_player", "player", {
+                "name": f"{dev_name} Player",
+                "unique_id": f"porfiriy_{clean_mac}_player",
+                "command_topic": f"porfiriy/{clean_mac}/media/command",
+                "state_topic": f"porfiriy/{clean_mac}/media/state",
+                "volume_command_topic": f"porfiriy/{clean_mac}/set/volume",
+                "volume_state_topic": f"porfiriy/{clean_mac}/state",
+                "volume_value_template": "{{ value_json.volume }}",
+                "icon": "mdi:speaker",
+                "device": device_dict
             })
         ]
         
@@ -306,3 +338,8 @@ class MQTTDiscoveryManager:
         
         topic = f"porfiriy/{clean_mac}/state"
         self.client.publish(topic, json.dumps(payload), retain=False)
+        
+        # Обновляем состояние медиаплеера
+        media_state_topic = f"porfiriy/{clean_mac}/media/state"
+        media_state = "playing" if device.get("state") in ("speaking", "playing") else "idle"
+        self.client.publish(media_state_topic, media_state, retain=False)

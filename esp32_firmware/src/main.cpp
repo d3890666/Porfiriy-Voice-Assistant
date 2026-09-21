@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <esp_wifi.h>
 
-#define FIRMWARE_VERSION "0.0.107"
+#define FIRMWARE_VERSION "0.0.108"
 
 #include "model.h"
 // TFLite
@@ -896,7 +896,8 @@ void onMessageCallback(WebsocketsMessage message) {
             set_state(STATE_SPEAKING);
             last_audio_packet_time = millis();
         }
-        else if (message.data().indexOf("\"type\":\"done_speaking\"") >= 0 || message.data().indexOf("\"type\": \"done_speaking\"") >= 0) {
+        else if (message.data().indexOf("\"type\":\"done_speaking\"") >= 0 || message.data().indexOf("\"type\": \"done_speaking\"") >= 0 ||
+                 message.data().indexOf("\"type\":\"stop\"") >= 0 || message.data().indexOf("\"type\": \"stop\"") >= 0) {
             set_state(STATE_IDLE);
             last_sleep_time = millis();
         }
