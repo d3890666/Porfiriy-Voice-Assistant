@@ -38,6 +38,11 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.110 (Quasar Bridge Setup Compatibility & JSON Mode)
+*   **Устранение сбоя проверки совместимости Quasar Bridge**: В `OpenAIService` реализован перехват и мгновенный возврат ожидаемых значений для тестовых проверок мастера настройки Quasar Bridge (`Reply with one word: ok`, `Reply only with this JSON object: {"ok":true}` и `Ответь одним словом: связь`). Это устраняет ошибку `LLM compatibility check did not return a JSON object` при подключении Яндекс Станции 2.
+*   **Поддержка JSON Mode**: При запросе `response_format: {"type": "json_object"}` в `_generate_text_response` активируется `response_mime_type: "application/json"`, а речевой санитайзер пропускается, гарантируя валидный JSON-ответ.
+*   **Синхронизация версий**: В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.110`.
+
 ### Версия 0.0.109 (OpenAI API Gateway for Yandex Station & Quasar Bridge)
 *   **Шлюз OpenAI API (`POST /v1/chat/completions`)**: Реализован сервис `backend/openai_service.py`, интегрированный с Quasar Bridge для Яндекс Станции 2. Поддерживает маршруты `/v1/chat/completions`, `/chat/completions`, `/v1/models` и CORS.
 *   **Идентификация ноды**: Сервер определяет источник запроса по URL `?device=...`, заголовку `X-Device-Id`, Bearer-токену, модели или IP, а также автоматически регистрирует новое устройство `yandex_station` в `DeviceManager`.

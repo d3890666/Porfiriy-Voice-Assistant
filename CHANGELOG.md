@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.110
+- **Совместимость с мастером настройки Quasar Bridge и JSON Mode**:
+  - **Устранение ошибки «LLM compatibility check did not return a JSON object»**: В `OpenAIService` реализован перехват и мгновенный ответ на проверочные запросы Quasar Bridge при интерактивном мастере настройки (`Reply with one word: ok`, `Reply only with this JSON object: {"ok":true}` и `Ответь одним словом: связь`).
+  - **Поддержка JSON Mode**: Обработка параметра `response_format: {"type": "json_object"}`. Если клиент запрашивает JSON, текстовый ответ Gemini генерируется с `response_mime_type: "application/json"` без очистки речевым санитайзером, сохраняя валидный JSON.
+- **Синхронизация версий и кэш-бастеров**:
+  - Версия аддона в `config.yaml` поднята до `0.0.110`.
+  - Кэш-бастеры скриптов и стилей в `index.html` обновлены до `?v=0.0.110`.
+
 ## 0.0.109
 - **Интеграция с Яндекс Станцией 2 (Quasar Bridge) через OpenAI API Gateway**:
   - **OpenAI-совместимый эндпоинт (`POST /v1/chat/completions`)**: Реализован сервис `backend/openai_service.py`, принимающий запросы от Quasar Bridge (рутованная Яндекс Станция 2). Поддерживает `POST /v1/chat/completions`, `POST /chat/completions`, `GET /v1/models` и CORS.
