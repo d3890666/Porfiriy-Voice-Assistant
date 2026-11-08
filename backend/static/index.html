@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.114">
+  <link rel="stylesheet" href="static/style.css?v=0.0.115">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -554,7 +554,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.114</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.115</span></p>
         </div>
       </div>
       
@@ -1354,17 +1354,17 @@ PING:
         <div class="form-group" style="margin: 0;">
           <label for="yandex-add-mode" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Режим вывода ответа</label>
           <select id="yandex-add-mode" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
-            <option value="alice_tts" selected>🗣️ Возврат текста в колонку (Голос Алисы)</option>
-            <option value="airplay">🎵 Воспроизведение через AirPlay (Голос Порфирия)</option>
+            <option value="ssh_stream" selected>⚡ Прямой голос Порфирия (SSH ALSA в динамик)</option>
+            <option value="alice_tts">🗣️ Возврат текста в колонку (Голос Алисы)</option>
           </select>
-          <small style="color: #8b949e; font-size: 11px;">В режиме AirPlay Алиса молчит, а звук ответа транслируется Порфирием</small>
+          <small style="color: #8b949e; font-size: 11px;">В прямом режиме Порфирий говорит сразу в реальном времени, минуя задержки</small>
         </div>
         <div class="form-group" style="margin: 0;">
-          <label for="yandex-add-player" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Целевой AirPlay медиаплеер (Home Assistant)</label>
+          <label for="yandex-add-player" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Целевой плеер Music Assistant (Home Assistant)</label>
           <select id="yandex-add-player" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
             <option value="">— Не задан —</option>
           </select>
-          <small style="color: #8b949e; font-size: 11px;">Плеер Станции в HA (например, <code>media_player.station_2_airplay</code>) для музыки и AirPlay</small>
+          <small style="color: #8b949e; font-size: 11px;">Плеер Станции в HA (например, Squeezelite плеер в Music Assistant) для музыки</small>
         </div>
         <div class="form-group" style="margin: 0;">
           <label for="yandex-add-key" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">API-ключ ноды (опционально)</label>
@@ -1382,6 +1382,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.114"></script>
+  <script src="static/app.js?v=0.0.115"></script>
 </body>
 </html>

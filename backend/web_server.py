@@ -579,7 +579,8 @@ class WebServer:
             name = body.get("name", "Яндекс Станция").strip()
             ip = body.get("ip", "").strip()
             airplay_player = body.get("airplay_player", "").strip()
-            output_mode = body.get("output_mode", "alice_tts").strip()
+            mass_player = (body.get("mass_player") or airplay_player).strip()
+            output_mode = body.get("output_mode", "ssh_stream").strip()
             api_key = body.get("api_key", "").strip()
             area_name = body.get("area_name", "").strip() or None
 
@@ -591,8 +592,10 @@ class WebServer:
                 "area_name": area_name,
                 "config": {
                     "output_mode": output_mode,
-                    "airplay_player": airplay_player,
-                    "api_key": api_key
+                    "mass_player": mass_player,
+                    "airplay_player": mass_player,
+                    "api_key": api_key,
+                    "ssh_port": 2222
                 }
             })
             if area_name:

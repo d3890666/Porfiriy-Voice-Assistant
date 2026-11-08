@@ -30,6 +30,13 @@ except Exception:
     except Exception:
         GeminiProxyClient = None
 
+try:
+    import asyncssh
+    HAS_ASYNCSSH = True
+except ImportError:
+    asyncssh = None
+    HAS_ASYNCSSH = False
+
 def sanitize_text_for_speech(text: str) -> str:
     """Очищает текст ответа от Markdown, эмодзи и спецсимволов для чистого проговаривания Алисой."""
     if not text:
@@ -175,9 +182,11 @@ class OpenAIService:
             "device_type": "yandex_station",
             "firmware": "Quasar Bridge",
             "config": {
-                "output_mode": "alice_tts",
+                "output_mode": "ssh_stream",
+                "mass_player": "",
                 "airplay_player": "",
-                "api_key": ""
+                "api_key": "",
+                "ssh_port": 2222
             }
         })
         return dev
@@ -214,6 +223,29 @@ class OpenAIService:
             await self.ha_api.call_service("media_player", "media_previous_track", {"entity_id": airplay_player})
             return "Возвращаю предыдущий трек."
 
+        return None
+
+    def _is_music_request(self, text: str) -> Optional[str]:
+        """Определяет, является ли реплика запросом на воспроизведение музыки через Music Assistant."""
+        t = text.lower().strip().rstrip(".!?")
+        # Исключаем команды умного дома и таймеров
+        sh_keywords = [
+            "свет", "ламп", "люстр", "розетк", "подсветк", "штор", "кондиционер", 
+            "пылесос", "чайник", "отоплен", "таймер", "будильник", "секундомер", "напомни"
+        ]
+        if any(k in t for k in sh_keywords):
+            return None
+        prefixes = [
+            "включи песню", "поставь песню", "включи трек", "поставь трек", 
+            "включи музыку", "поставь музыку", "сыграй песню", "сыграй трек", 
+            "включи альбом", "поставь альбом", "включи группу", "поставь группу", 
+            "включи", "поставь", "сыграй", "запусти"
+        ]
+        for prefix in prefixes:
+            if t.startswith(prefix + " "):
+                query = t[len(prefix):].strip()
+                if query and len(query) > 1:
+                    return query
         return None
 
     async def _execute_tool(self, name: str, args: Dict[str, Any], dev: Dict[str, Any], options: Dict[str, Any]) -> Any:
@@ -382,19 +414,26 @@ class OpenAIService:
             logger.error(f"[OPENAI LIVE] Error generating text response via Live API with model '{model}': {e}", exc_info=True)
             raise e
 
-    async def _generate_airplay_audio_response(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> bool:
-        """Генерация аудиоответа голосом Порфирия и воспроизведение через AirPlay."""
+    async def _stream_live_audio_direct(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> bool:
+        """
+        Генерирует нативное аудио Gemini Live и в реальном времени стримит PCM чанки
+        напрямую в колонку через SSH pipe в aplay (минуя AirPlay и задержки).
+        """
         dev_cfg = dev.get("config", {})
-        airplay_player = (
+        speaker_ip = dev.get("ip") or dev_cfg.get("ip") or ""
+        if not speaker_ip or speaker_ip == "---" or speaker_ip.startswith("127."):
+            speaker_ip = self._extract_ip(request)
+        ssh_port = int(dev_cfg.get("ssh_port", 2222))
+        
+        music_player = (
+            dev_cfg.get("mass_player") or 
             dev_cfg.get("airplay_player") or 
             dev_cfg.get("response_player") or 
+            options.get("default_mass_player") or 
             options.get("default_airplay_player") or 
             options.get("default_media_player") or 
             ""
         )
-        if not airplay_player:
-            logger.warning(f"[OPENAI AIRPLAY] No AirPlay player configured for {dev['mac']}, skipping audio stream")
-            return False
 
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
@@ -402,7 +441,7 @@ class OpenAIService:
 
         system_prompt = await self._build_system_prompt(dev, options)
         voice_name = options.get("voice_name", "Charon")
-        model = options.get("gemini_model", "models/gemini-2.0-flash-exp")
+        model = options.get("gemini_model", "models/gemini-3.8-live")
 
         proxy_client = GeminiProxyClient(
             api_key=api_key,
@@ -410,8 +449,44 @@ class OpenAIService:
             ha_api=self.ha_api,
             voice_name=voice_name,
             model=model,
-            enable_google_search=options.get("enable_google_search", True)
+            enable_google_search=options.get("enable_google_search", True),
+            response_modalities=["AUDIO"]
         )
+
+        # 1. Авто-пауза музыки на время ответа ассистента
+        music_was_paused = False
+        if music_player and self.ha_api:
+            try:
+                state = await self.ha_api.get_entity_state(music_player)
+                if state and state.get("state") == "playing":
+                    logger.info(f"[OPENAI LIVE] Pausing music on {music_player} during assistant response")
+                    await self.ha_api.call_service("media_player", "media_pause", {"entity_id": music_player})
+                    music_was_paused = True
+            except Exception as e:
+                logger.debug(f"[OPENAI LIVE] Could not pause music: {e}")
+
+        # 2. Открытие SSH процесса aplay на колонке
+        ssh_conn = None
+        ssh_proc = None
+        if HAS_ASYNCSSH and speaker_ip and speaker_ip != "---":
+            try:
+                logger.info(f"[OPENAI LIVE] Connecting via SSH to {speaker_ip}:{ssh_port} for direct audio streaming...")
+                ssh_conn = await asyncio.wait_for(
+                    asyncssh.connect(
+                        speaker_ip,
+                        port=ssh_port,
+                        username="root",
+                        known_hosts=None,
+                        client_keys=None
+                    ),
+                    timeout=2.0
+                )
+                ssh_proc = await ssh_conn.create_process("aplay -D default -r 24000 -f S16_LE -c 1", encoding=None)
+                logger.info(f"[OPENAI LIVE] Direct SSH aplay stream opened on {speaker_ip}:{ssh_port}")
+            except Exception as e:
+                logger.warning(f"[OPENAI LIVE] SSH connection to {speaker_ip}:{ssh_port} failed ({e}), falling back")
+                ssh_conn = None
+                ssh_proc = None
 
         pcm_chunks = []
         try:
@@ -420,17 +495,25 @@ class OpenAIService:
                     turns=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
                     turn_complete=True
                 )
-                
+
+                first_chunk = True
                 async for response in session.receive():
                     sc = response.server_content
                     if sc is not None:
                         if sc.model_turn is not None:
                             for part in sc.model_turn.parts:
-                                if part.inline_data:
-                                    pcm_chunks.append(part.inline_data.data)
+                                if part.inline_data and part.inline_data.data:
+                                    chunk = part.inline_data.data
+                                    pcm_chunks.append(chunk)
+                                    if ssh_proc is not None:
+                                        if first_chunk:
+                                            logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
+                                            first_chunk = False
+                                        ssh_proc.stdin.write(chunk)
+                                        await ssh_proc.stdin.drain()
                         if sc.turn_complete:
                             break
-                    
+
                     if response.tool_call is not None:
                         function_responses = []
                         for fc in response.tool_call.function_calls:
@@ -442,24 +525,38 @@ class OpenAIService:
                             ))
                         await session.send_tool_response(function_responses=function_responses)
 
+            # Сохраняем итоговый WAV для веб-интерфейса (кнопка "Ответ Gemini")
             if pcm_chunks:
                 raw_pcm = b"".join(pcm_chunks)
                 wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
                 self.device_manager.save_response_wav(dev["mac"], wav_bytes)
-                
-                host = request.host
-                wav_url = f"http://{host}/api/virtual/{dev['mac']}/response.wav?t={int(time.time())}"
-                logger.info(f"[OPENAI AIRPLAY] Playing response audio on {airplay_player}: {wav_url}")
-                await self.ha_api.call_service("media_player", "play_media", {
-                    "entity_id": airplay_player,
-                    "media_content_id": wav_url,
-                    "media_content_type": "music"
-                })
-                return True
-        except Exception as e:
-            logger.error(f"[OPENAI AIRPLAY] Error generating/streaming audio: {e}")
 
-        return False
+            # Завершаем стрим в aplay и ждем доигрывания
+            if ssh_proc is not None:
+                ssh_proc.stdin.write_eof()
+                await ssh_proc.wait()
+                logger.info(f"[OPENAI LIVE] Direct audio playback finished on {speaker_ip}")
+
+        except Exception as e:
+            logger.error(f"[OPENAI LIVE] Error generating/streaming direct audio: {e}", exc_info=True)
+            return False
+        finally:
+            if ssh_conn is not None:
+                try:
+                    ssh_conn.close()
+                    await ssh_conn.wait_closed()
+                except Exception:
+                    pass
+
+            # 3. Возобновляем музыку, если она была на паузе
+            if music_was_paused and music_player and self.ha_api:
+                try:
+                    logger.info(f"[OPENAI LIVE] Resuming music playback on {music_player}")
+                    await self.ha_api.call_service("media_player", "media_play", {"entity_id": music_player})
+                except Exception as e:
+                    logger.debug(f"[OPENAI LIVE] Could not resume music: {e}")
+
+        return bool(pcm_chunks and (ssh_proc is not None))
 
     async def handle_chat_completions(self, request: web.Request) -> web.Response:
         """Основной обработчик POST /v1/chat/completions."""
@@ -575,23 +672,48 @@ class OpenAIService:
                 return web.json_response(self._make_openai_response("связь", body.get("model", "porfiriy")), headers=self._cors_headers())
 
             # 6. Проверка быстрых команд управления медиа
-            fast_playback_reply = await self._handle_direct_playback_command(user_text, airplay_player)
+            music_player = (
+                dev_cfg.get("mass_player") or 
+                dev_cfg.get("airplay_player") or 
+                dev_cfg.get("response_player") or 
+                opts.get("default_mass_player") or 
+                opts.get("default_airplay_player") or 
+                opts.get("default_media_player") or 
+                ""
+            )
+            fast_playback_reply = await self._handle_direct_playback_command(user_text, music_player)
             if fast_playback_reply:
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response(fast_playback_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
 
-            # 7. Ветвление по выбранному режиму ответа на ноде
-            if output_mode == "airplay" and airplay_player:
-                # Режим AirPlay: стримим нативный голос Порфирия в AirPlay, а Алиса молчит
+            # 7. Проверка команд включения музыки (в обход облака Яндекса, строго в Music Assistant)
+            music_query = self._is_music_request(user_text)
+            if music_query:
+                target_mass_player = music_player or "media_player.iandeks_stantsiia"
+                logger.info(f"[OPENAI MUSIC] Intercepted music request: '{music_query}' -> routing to Music Assistant ({target_mass_player})")
+                await self._execute_tool("play_music_assistant", {"query": music_query, "player": target_mass_player}, dev, opts)
+                self.device_manager.set_device_state(mac, "idle")
+                music_reply = f"Включаю {music_query.capitalize()}."
+                return web.json_response(self._make_openai_response(music_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
+
+            # 8. Ветвление по выбранному режиму ответа на ноде
+            # По умолчанию для Яндекс Станции используется нативный прямой голос через SSH (ssh_stream)
+            use_direct_audio = (
+                output_mode in ["ssh_stream", "airplay", "native_audio"] or 
+                (dev.get("device_type") == "yandex_station" and output_mode != "alice_tts")
+            )
+
+            if use_direct_audio:
+                # Прямой нативный голос Порфирия без задержек через SSH прямо в dynamic Станции
                 self.device_manager.set_device_state(mac, "speaking")
-                audio_ok = await self._generate_airplay_audio_response(user_text, dev, opts, request)
+                audio_ok = await self._stream_live_audio_direct(user_text, dev, opts, request)
                 self.device_manager.set_device_state(mac, "idle")
                 
-                # Если звук успешно отправлен в AirPlay — возвращаем пустой текст, чтобы Алиса не перебивала
                 if audio_ok:
-                    return web.json_response(self._make_openai_response("", body.get("model", "porfiriy")), headers=self._cors_headers())
+                    # Алиса воспроизводит тишину и молчит
+                    return web.json_response(self._make_openai_response("sil <[50]>", body.get("model", "porfiriy")), headers=self._cors_headers())
                 else:
-                    # Фолбэк на Alice TTS при ошибке вывода в AirPlay
+                    # Фолбэк на Alice TTS при ошибке вывода напрямую в динамик
                     text_reply = await self._generate_text_response(user_text, dev, opts, is_json_mode=is_json_mode)
                     return web.json_response(self._make_openai_response(text_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
             else:

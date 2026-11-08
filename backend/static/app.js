@@ -256,27 +256,23 @@ function renderDevicesGrid() {
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🗣️ Вывод:</span>
               <select id="yandex-mode-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'output_mode', this.value)">
-                <option value="alice_tts" ${((cfg.output_mode || 'alice_tts') === 'alice_tts') ? 'selected' : ''}>🗣️ Голос Алисы (текст)</option>
-                <option value="airplay" ${(cfg.output_mode === 'airplay') ? 'selected' : ''}>🎵 Голос Порфирия (AirPlay)</option>
+                <option value="ssh_stream" ${((cfg.output_mode || 'ssh_stream') === 'ssh_stream' || cfg.output_mode === 'airplay') ? 'selected' : ''}>⚡ Прямой голос Порфирия (SSH ALSA)</option>
+                <option value="alice_tts" ${(cfg.output_mode === 'alice_tts') ? 'selected' : ''}>🗣️ Голос Алисы (текст)</option>
               </select>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🔊 AirPlay:</span>
-              <select id="yandex-player-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'airplay_player', this.value)">
-                <option value="">— Не задан —</option>
-                ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.airplay_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
-                ${cfg.airplay_player && !availableMediaPlayers.some(p => p.entity_id === cfg.airplay_player) ? `<option value="${escapeHtml(cfg.airplay_player)}" selected>${escapeHtml(cfg.airplay_player)}</option>` : ''}
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🎵 Плеер MASS:</span>
+              <select id="yandex-player-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'mass_player', this.value); saveYandexConfig('${dev.mac}', 'airplay_player', this.value)">
+                <option value="">— Не задан (Music Assistant) —</option>
+                ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.mass_player === p.entity_id || cfg.airplay_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                ${(cfg.mass_player || cfg.airplay_player) && !availableMediaPlayers.some(p => p.entity_id === (cfg.mass_player || cfg.airplay_player)) ? `<option value="${escapeHtml(cfg.mass_player || cfg.airplay_player)}" selected>${escapeHtml(cfg.mass_player || cfg.airplay_player)}</option>` : ''}
               </select>
             </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🔑 Токен API:</span>
-              <input type="password" value="${escapeHtml(cfg.api_key || '')}" placeholder="Персональный токен ноды" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'api_key', this.value)">
+            <div style="font-size: 11px; color: #34d399; display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: rgba(52, 211, 153, 0.08); border: 1px solid rgba(52, 211, 153, 0.2); border-radius: 6px;">
+              <span>⚡ Прямой звук SSH :2222 активен (ALSA)</span>
             </div>
           </div>
           <div style="margin-top: 8px; display: flex; gap: 8px;">
-            <button class="btn btn-sm" onclick="triggerDeviceWake('${dev.mac}')" title="Проверить отклик станции" style="flex: 1; background: linear-gradient(135deg, #8b5cf6, #6366f1); color: #ffffff; font-size: 12px; font-weight: 600; padding: 7px 10px; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);">
-              <span>⚡ Тестовый вызов</span>
-            </button>
             <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" title="Прослушать последний ответ Gemini" style="flex: 1; font-size: 12px; padding: 7px 10px;">
               ▶ Ответ Gemini
             </button>
@@ -2191,6 +2187,7 @@ async function submitAddYandexStation() {
         id: id,
         ip: ip,
         output_mode: mode,
+        mass_player: player,
         airplay_player: player,
         api_key: key
       })
