@@ -338,23 +338,27 @@ class OpenAIService:
             ha_api=self.ha_api,
             model=model,
             enable_google_search=options.get("enable_google_search", True),
-            response_modalities=["TEXT"]
+            response_modalities=["AUDIO"]
         )
 
         text_parts = []
         try:
             async with proxy_client.connect() as session:
-                await session.send(input=user_text, end_of_turn=True)
+                await session.send_client_content(
+                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
+                    turn_complete=True
+                )
 
                 async for response in session.receive():
-                    server_content = response.server_content
-                    if server_content is not None:
-                        model_turn = server_content.model_turn
-                        if model_turn is not None:
-                            for part in model_turn.parts:
+                    sc = response.server_content
+                    if sc is not None:
+                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
+                            text_parts.append(sc.output_transcription.text)
+                        if sc.model_turn is not None:
+                            for part in sc.model_turn.parts:
                                 if part.text:
                                     text_parts.append(part.text)
-                        if server_content.turn_complete:
+                        if sc.turn_complete:
                             break
 
                     if response.tool_call is not None:
@@ -367,7 +371,7 @@ class OpenAIService:
                                 id=fc.id,
                                 response={"result": tool_res}
                             ))
-                        await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
+                        await session.send_tool_response(function_responses=function_responses)
 
             raw_text = "".join(text_parts).strip()
             if not raw_text:
@@ -412,17 +416,19 @@ class OpenAIService:
         pcm_chunks = []
         try:
             async with proxy_client.connect() as session:
-                await session.send(input=user_text, end_of_turn=True)
+                await session.send_client_content(
+                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
+                    turn_complete=True
+                )
                 
                 async for response in session.receive():
-                    server_content = response.server_content
-                    if server_content is not None:
-                        model_turn = server_content.model_turn
-                        if model_turn is not None:
-                            for part in model_turn.parts:
+                    sc = response.server_content
+                    if sc is not None:
+                        if sc.model_turn is not None:
+                            for part in sc.model_turn.parts:
                                 if part.inline_data:
                                     pcm_chunks.append(part.inline_data.data)
-                        if server_content.turn_complete:
+                        if sc.turn_complete:
                             break
                     
                     if response.tool_call is not None:
@@ -434,7 +440,7 @@ class OpenAIService:
                                 id=fc.id,
                                 response={"result": res}
                             ))
-                        await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
+                        await session.send_tool_response(function_responses=function_responses)
 
             if pcm_chunks:
                 raw_pcm = b"".join(pcm_chunks)

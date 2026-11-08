@@ -201,7 +201,8 @@ class GeminiProxyClient:
             system_instruction=types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
             tools=tools,
             speech_config=speech_config,
-            realtime_input_config=realtime_input_config
+            realtime_input_config=realtime_input_config,
+            output_audio_transcription=types.AudioTranscriptionConfig()
         )
 
     def connect(self):

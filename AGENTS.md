@@ -31,8 +31,8 @@
 1. **ЗАПРЕЩЕНО** использовать REST-вызовы `generate_content` или сторонние текстовые эндпоинты Google API.
 2. **ВСЕ ЗАПРОСЫ** (микрофон ESP32, PC streamer, OpenAI API Gateway для Яндекс Станции) обязаны идти **СТРОГО через WebSocket Gemini Live API (`bidiGenerateContent`)**!
 3. **СТРОГО ТА МОДЕЛЬ, ЧТО ВЫБРАНА В НАСТРОЙКАХ**: Использовать только ту модель, которую пользователь выбрал в `options["gemini_model"]` (например, `models/gemini-3.8-live`). НИКАКИХ скрытых замен, подмен или фолбэков на flash/текстовые модели!
-4. Для получения текстового ответа (режим `alice_tts`) в сессии Live API запрашивается модальность `response_modalities=["TEXT"]`.
-5. Для получения нативного аудио (ESP32, стример, AirPlay) — `response_modalities=["AUDIO"]`.
+4. Live-модели Gemini (включая `gemini-3.8-live`) поддерживают исключительно модальность `response_modalities=["AUDIO"]` (модальность TEXT отклоняется сервером Google с ошибкой 1007). Для получения текстового ответа (режим `alice_tts`) в конфигурацию Live API включается `output_audio_transcription=types.AudioTranscriptionConfig()`, а текст ответа собирается в реальном времени из потока `server_content.output_transcription.text`.
+5. Отправка сообщений клиентом выполняется через `session.send_client_content(turns=[types.Content(...)], turn_complete=True)`, а ответы на вызовы инструментов (`tool_call`) — через `session.send_tool_response(function_responses=...)`.
 
 ---
 
@@ -45,6 +45,11 @@
 ## Особые правила общения с пользователем и процессом разработки
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
+
+### Версия 0.0.114 (Live API Text via Output Audio Transcription & Modern Methods)
+*   **Извлечение текста ответа в Live API через `output_audio_transcription`**: Live-модели (`models/gemini-3.8-live`) поддерживают только `response_modalities=["AUDIO"]`, возвращая ошибку 1007 при запросе `TEXT`. В `GeminiProxyClient` подключен `output_audio_transcription=types.AudioTranscriptionConfig()`, а в `_generate_text_response` текст ответа для Alice TTS извлекается из `server_content.output_transcription.text`.
+*   **Методы `send_client_content` и `send_tool_response`**: Для отправки пользовательского ввода используется `session.send_client_content(turns=[types.Content(...)], turn_complete=True)`, а для tool_call — `session.send_tool_response(function_responses=...)`.
+*   **Синхронизация версий**: В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.114`.
 
 ### Версия 0.0.113 (Live API Text Turn Input Fix)
 *   **Исправление формата входного сообщения Live API**: В `OpenAIService._generate_text_response` и `_generate_airplay_audio_response` пользовательский текст передаётся как чистая строка в `session.send(input=user_text, end_of_turn=True)`. Это устраняет `ValueError: Unsupported input type "<class 'google.genai.types.Content'>"`.

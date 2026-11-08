@@ -1,5 +1,17 @@
 # Журнал изменений (Changelog)
 
+## 0.0.114
+- **Извлечение текста для Alice TTS через `output_audio_transcription` в Live API WebSocket**:
+  - Устранена ошибка `1007 (invalid frame payload data) The requested combination of response modalities (TEXT) is not supported by the model` при работе с `models/gemini-3.8-live`. Live-модели Gemini поддерживают исключительно режим `response_modalities=["AUDIO"]`.
+  - В конфигурацию Live API (`LiveConnectConfig`) добавлен параметр `output_audio_transcription=types.AudioTranscriptionConfig()`, благодаря которому Gemini Live одновременно с аудио генерирует точную пословную транскрипцию ответа (`server_content.output_transcription.text`).
+  - Текст ответа для Алисы собирается в реальном времени из потока транскрипции WebSocket сессии без изменения модели и без нарушения архитектуры Live API.
+- **Корректные методы обмена сообщениями и вызова инструментов в Live API**:
+  - Использован метод `session.send_client_content(turns=[types.Content(...)], turn_complete=True)` для отправки пользовательского контекста в сессию.
+  - Использован метод `session.send_tool_response(function_responses=...)` для передачи результатов вызова функций умного дома (`call_ha_service`, `get_ha_state`, `google_search` и др.).
+- **Синхронизация версий и кэш-бастеров**:
+  - Версия аддона в `config.yaml` поднята до `0.0.114`.
+  - Кэш-бастеры скриптов и стилей в `index.html` обновлены до `?v=0.0.114`.
+
 ## 0.0.113
 - **Исправление формата отправки текста в Live API (`session.send(input=user_text)`)**:
   - Устранена ошибка `ValueError: Unsupported input type "<class 'google.genai.types.Content'>"`. В методах `_generate_text_response` и `_generate_airplay_audio_response` пользовательский текст передаётся напрямую в виде строки `session.send(input=user_text, end_of_turn=True)`, что корректно формирует turn в WebSocket Gemini Live API.
