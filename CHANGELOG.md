@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.111
+- **Устранение сбоя генерации текста (Live Models REST Compatibility & HA Entities Prompt)**:
+  - **Автоматическая адаптация моделей для REST эндпоинта OpenAI (`_resolve_text_models`)**: Устранена ошибка `400 INVALID_ARGUMENT (models/gemini-3.8-live only supports real-time bidirectional streaming via WebSocket bidiGenerateContent)`. При генерации текстовых ответов для режима Alice TTS сервер проверяет модель и при использовании чисто Live-моделей прозрачно подставляет совместимые текстовые модели Gemini Flash (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-flash`), сохраняя работу WebSocket Live API для колонок и AirPlay без изменения настроек пользователя.
+  - **Добавление метода `ha_api.get_entities_prompt()`**: Устранено предупреждение `'HomeAssistantAPI' object has no attribute 'get_entities_prompt'`. Системный промпт теперь бесшовно получает список exposed-устройств умного дома и доступных действий Home Assistant.
+- **Синхронизация версий и кэш-бастеров**:
+  - Версия аддона в `config.yaml` поднята до `0.0.111`.
+  - Кэш-бастеры скриптов и стилей в `index.html` обновлены до `?v=0.0.111`.
+
 ## 0.0.110
 - **Совместимость с мастером настройки Quasar Bridge и JSON Mode**:
   - **Устранение ошибки «LLM compatibility check did not return a JSON object»**: В `OpenAIService` реализован перехват и мгновенный ответ на проверочные запросы Quasar Bridge при интерактивном мастере настройки (`Reply with one word: ok`, `Reply only with this JSON object: {"ok":true}` и `Ответь одним словом: связь`).

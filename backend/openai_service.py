@@ -377,13 +377,39 @@ class OpenAIService:
 
         return [types.Tool(**tool_args)]
 
+    def _resolve_text_models(self, configured_model: str) -> List[str]:
+        """
+        Подбирает список моделей для текстовой генерации (generate_content).
+        Если выбранная в аддоне модель является чисто Live WebSocket (bidiGenerateContent),
+        автоматически подставляются совместимые текстовые модели Gemini Flash.
+        """
+        candidates = []
+        is_live_only = any(tag in configured_model.lower() for tag in ["-live", "native-audio", "live-preview"])
+        if configured_model and not is_live_only:
+            candidates.append(configured_model)
+        else:
+            clean = configured_model.replace("-live-preview", "").replace("-live", "").replace("-native-audio-preview", "")
+            if clean and clean != configured_model and clean not in candidates:
+                candidates.append(clean)
+
+        fallbacks = [
+            "models/gemini-2.5-flash",
+            "models/gemini-2.0-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "models/gemini-1.5-flash"
+        ]
+        for fb in fallbacks:
+            if fb not in candidates:
+                candidates.append(fb)
+        return candidates
+
     async def _generate_text_response(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], is_json_mode: bool = False) -> str:
         """Генерация текстового ответа через Gemini с выполнением инструментов."""
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
             return "Не настроен API ключ Gemini в аддоне Порфирий."
 
-        model = options.get("gemini_model", "models/gemini-3.1-flash-live-preview")
         system_prompt = await self._build_system_prompt(dev, options)
         tools = self._get_tools_schema(options)
 
@@ -402,36 +428,60 @@ class OpenAIService:
             config_kwargs["response_mime_type"] = "application/json"
         config = types.GenerateContentConfig(**config_kwargs)
 
-        for turn in range(5):
-            resp = await client.aio.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config
-            )
+        candidate_models = self._resolve_text_models(options.get("gemini_model", ""))
+        last_error = None
 
-            if not resp.candidates:
-                return "Не удалось сформировать ответ."
+        for candidate_model in candidate_models:
+            turn_contents = list(contents)
+            try:
+                for turn in range(5):
+                    resp = await client.aio.models.generate_content(
+                        model=candidate_model,
+                        contents=turn_contents,
+                        config=config
+                    )
 
-            first_cand = resp.candidates[0]
-            if first_cand.content:
-                contents.append(first_cand.content)
+                    if not resp.candidates:
+                        return "Не удалось сформировать ответ."
 
-            # Если модель запросила вызов функций
-            if resp.function_calls:
-                function_parts = []
-                for fc in resp.function_calls:
-                    logger.info(f"[OPENAI FC] Model called: {fc.name} with {fc.args}")
-                    tool_res = await self._execute_tool(fc.name, fc.args, dev, options)
-                    function_parts.append(types.Part.from_function_response(
-                        name=fc.name,
-                        response={"result": tool_res}
-                    ))
-                contents.append(types.Content(role="user", parts=function_parts))
-            else:
-                raw_text = resp.text or ""
-                return raw_text.strip() if is_json_mode else sanitize_text_for_speech(raw_text)
+                    first_cand = resp.candidates[0]
+                    if first_cand.content:
+                        turn_contents.append(first_cand.content)
 
-        return "Команда выполнена."
+                    # Если модель запросила вызов функций
+                    if resp.function_calls:
+                        function_parts = []
+                        for fc in resp.function_calls:
+                            logger.info(f"[OPENAI FC] Model called: {fc.name} with {fc.args}")
+                            tool_res = await self._execute_tool(fc.name, fc.args, dev, options)
+                            function_parts.append(types.Part.from_function_response(
+                                name=fc.name,
+                                response={"result": tool_res}
+                            ))
+                        turn_contents.append(types.Content(role="user", parts=function_parts))
+                    else:
+                        raw_text = resp.text or ""
+                        return raw_text.strip() if is_json_mode else sanitize_text_for_speech(raw_text)
+
+                return "Команда выполнена."
+            except Exception as e:
+                err_str = str(e)
+                if (
+                    "bidiGenerateContent" in err_str or 
+                    "only supports real-time bidirectional streaming" in err_str or 
+                    "404" in err_str or 
+                    "not found" in err_str.lower()
+                ):
+                    logger.warning(f"[OPENAI] Model '{candidate_model}' not supported for REST generate_content ({err_str[:90]}...), trying next candidate...")
+                    last_error = e
+                    continue
+                else:
+                    logger.error(f"[OPENAI] Generation error with '{candidate_model}': {e}", exc_info=True)
+                    raise e
+
+        if last_error:
+            raise last_error
+        return "Не удалось получить ответ от нейросети."
 
     async def _generate_airplay_audio_response(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> bool:
         """Генерация аудиоответа голосом Порфирия и воспроизведение через AirPlay."""

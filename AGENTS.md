@@ -38,6 +38,11 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.111 (Live Models REST Compatibility & HA Entities Prompt)
+*   **Совместимость REST OpenAI эндпоинта с Live-моделями**: В `_generate_text_response` реализована адаптация `_resolve_text_models`. Если в настройках аддона выбрана Live-модель (например, `gemini-3.8-live` или `gemini-2.5-flash-native-audio-preview`), которая поддерживает только WebSocket `bidiGenerateContent`, генерация текстового ответа для Alice TTS автоматически использует совместимые текстовые модели Gemini Flash (`gemini-2.5-flash`, `gemini-2.0-flash`). Пользователю не требуется менять глобальную модель в аддоне.
+*   **Метод `ha_api.get_entities_prompt()`**: Добавлен метод в `HomeAssistantAPI`, объединяющий exposed entities и data actions для системного промпта.
+*   **Синхронизация версий**: В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.111`.
+
 ### Версия 0.0.110 (Quasar Bridge Setup Compatibility & JSON Mode)
 *   **Устранение сбоя проверки совместимости Quasar Bridge**: В `OpenAIService` реализован перехват и мгновенный возврат ожидаемых значений для тестовых проверок мастера настройки Quasar Bridge (`Reply with one word: ok`, `Reply only with this JSON object: {"ok":true}` и `Ответь одним словом: связь`). Это устраняет ошибку `LLM compatibility check did not return a JSON object` при подключении Яндекс Станции 2.
 *   **Поддержка JSON Mode**: При запросе `response_format: {"type": "json_object"}` в `_generate_text_response` активируется `response_mime_type: "application/json"`, а речевой санитайзер пропускается, гарантируя валидный JSON-ответ.

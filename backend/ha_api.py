@@ -395,6 +395,15 @@ class HomeAssistantAPI:
                 
         return "\n".join(entities_text)
 
+    async def get_entities_prompt(self) -> str:
+        """Возвращает контекст доступных устройств и действий для системного промпта."""
+        devices_text = await self.get_filtered_entities()
+        data_actions_text = await self.get_data_actions_prompt()
+        prompt = f"Available Home Assistant devices:\n{devices_text}"
+        if data_actions_text:
+            prompt += f"\n\n{data_actions_text}"
+        return prompt
+
     async def get_areas(self) -> List[Dict[str, Any]]:
         """Получить список всех зарегистрированных комнат (Areas) из Home Assistant."""
         payload = {"type": "config/area_registry/list"}
