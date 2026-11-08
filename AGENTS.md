@@ -46,6 +46,10 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.113 (Live API Text Turn Input Fix)
+*   **Исправление формата входного сообщения Live API**: В `OpenAIService._generate_text_response` и `_generate_airplay_audio_response` пользовательский текст передаётся как чистая строка в `session.send(input=user_text, end_of_turn=True)`. Это устраняет `ValueError: Unsupported input type "<class 'google.genai.types.Content'>"`.
+*   **Синхронизация версий**: В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.113`.
+
 ### Версия 0.0.112 (Strict Gemini Live WebSocket Architecture & HA WS Buffer Fix)
 *   **Исключительное использование Gemini Live API WebSocket**: В `OpenAIService` удалены все REST-вызовы `generate_content` и переборы моделей. Все текстовые ответы для Alice TTS и аудиоответы для AirPlay генерируются строго через WebSocket сессию Gemini Live API (`bidiGenerateContent`) на выбранной пользователем модели (`gemini-3.8-live`) с сохранением всех инструментов (`call_ha_service`, `get_ha_state`, `play_music_assistant`, `google_search`). Для текста запрашивается `response_modalities=["TEXT"]`, для аудио — `["AUDIO"]`.
 *   **Увеличение буфера WebSocket Home Assistant**: В `ha_api.py` для `_ws_send_and_receive` и `get_exposed_entities_metadata` установлен `max_size=16*1024*1024` (16 МБ), устранена ошибка `1009 (message too big) frame exceeds limit of 1048576 bytes`.

@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.113
+- **Исправление формата отправки текста в Live API (`session.send(input=user_text)`)**:
+  - Устранена ошибка `ValueError: Unsupported input type "<class 'google.genai.types.Content'>"`. В методах `_generate_text_response` и `_generate_airplay_audio_response` пользовательский текст передаётся напрямую в виде строки `session.send(input=user_text, end_of_turn=True)`, что корректно формирует turn в WebSocket Gemini Live API.
+- **Синхронизация версий и кэш-бастеров**:
+  - Версия аддона в `config.yaml` поднята до `0.0.113`.
+  - Кэш-бастеры скриптов и стилей в `index.html` обновлены до `?v=0.0.113`.
+
 ## 0.0.112
 - **Строгий перевод всех запросов на Gemini Live WebSocket API (`bidiGenerateContent`)**:
   - Полностью исключены REST-вызовы `generate_content` и любые подмены моделей. И текстовые ответы для Алисы (`response_modalities=["TEXT"]`), и аудиоответы для AirPlay (`response_modalities=["AUDIO"]`) генерируются через единый сессионный Live WebSocket с выбранной в настройках моделью (`gemini-3.8-live`).

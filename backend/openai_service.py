@@ -344,7 +344,7 @@ class OpenAIService:
         text_parts = []
         try:
             async with proxy_client.connect() as session:
-                await session.send(input=types.Content(parts=[types.Part.from_text(text=user_text)]), end_of_turn=True)
+                await session.send(input=user_text, end_of_turn=True)
 
                 async for response in session.receive():
                     server_content = response.server_content
@@ -412,7 +412,7 @@ class OpenAIService:
         pcm_chunks = []
         try:
             async with proxy_client.connect() as session:
-                await session.send(input=types.Content(parts=[types.Part.from_text(text=user_text)]), end_of_turn=True)
+                await session.send(input=user_text, end_of_turn=True)
                 
                 async for response in session.receive():
                     server_content = response.server_content
