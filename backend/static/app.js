@@ -273,6 +273,9 @@ function renderDevicesGrid() {
             </div>
           </div>
           <div style="margin-top: 8px; display: flex; gap: 8px;">
+            <button class="btn btn-sm" onclick="openQuasarRoutingModal('${dev.mac}')" title="Настроить правила маршрутизации и синонимы умного дома" style="flex: 1.2; background: linear-gradient(135deg, #8b5cf6, #6366f1); color: #ffffff; font-size: 12px; font-weight: 600; padding: 7px 10px; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);">
+              <span>🎛️ Маршрутизация Quasar</span>
+            </button>
             <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" title="Прослушать последний ответ Gemini" style="flex: 1; font-size: 12px; padding: 7px 10px;">
               ▶ Ответ Gemini
             </button>
@@ -2213,3 +2216,194 @@ function toggleOpenAiKeyVisibility() {
   }
 }
 window.toggleOpenAiKeyVisibility = toggleOpenAiKeyVisibility;
+
+// ==========================================
+// Quasar Bridge Routing Management
+// ==========================================
+let currentQuasarMac = '';
+let currentQuasarIp = '';
+
+async function openQuasarRoutingModal(mac) {
+  currentQuasarMac = mac;
+  const dev = devices.find(d => d.mac === mac);
+  currentQuasarIp = dev?.ip || dev?.config?.ip || '';
+  
+  const badge = document.getElementById('quasar-modal-ip-badge');
+  if (badge) badge.textContent = currentQuasarIp || mac;
+  
+  const modal = document.getElementById('modal-quasar-routing');
+  if (modal) modal.style.display = 'flex';
+
+  const statusEl = document.getElementById('quasar-save-status');
+  if (statusEl) statusEl.textContent = 'Загрузка текущих правил с колонки...';
+  
+  const testRes = document.getElementById('quasar-test-result');
+  if (testRes) testRes.style.display = 'none';
+
+  try {
+    const res = await fetch(`${API_BASE}/api/quasar/config?mac=${encodeURIComponent(mac)}`);
+    const data = await res.json();
+    if (data.success) {
+      if (statusEl) statusEl.textContent = '';
+      const shEl = document.getElementById('quasar-sh-keywords');
+      if (shEl) {
+        shEl.value = (data.smart_home_keywords || []).join(', ');
+        updateQuasarShCount();
+      }
+      const timerEl = document.getElementById('quasar-timer-keywords');
+      if (timerEl) {
+        timerEl.value = (data.timer_keywords || []).join(', ');
+      }
+      const llmEl = document.getElementById('quasar-llm-keywords');
+      if (llmEl) {
+        llmEl.value = (data.llm_keywords || []).join(', ');
+      }
+      const musicEl = document.getElementById('quasar-music-exceptions');
+      if (musicEl) {
+        musicEl.value = (data.music_exceptions || []).join(', ');
+      }
+    } else {
+      if (statusEl) statusEl.textContent = `Ошибка: ${data.error || 'не удалось загрузить'}`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Сетевая ошибка при чтении конфига';
+  }
+}
+window.openQuasarRoutingModal = openQuasarRoutingModal;
+
+function closeQuasarRoutingModal() {
+  const modal = document.getElementById('modal-quasar-routing');
+  if (modal) modal.style.display = 'none';
+  currentQuasarMac = '';
+  currentQuasarIp = '';
+}
+window.closeQuasarRoutingModal = closeQuasarRoutingModal;
+
+function updateQuasarShCount() {
+  const shEl = document.getElementById('quasar-sh-keywords');
+  const countEl = document.getElementById('quasar-sh-count');
+  if (!shEl || !countEl) return;
+  const list = shEl.value.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+  countEl.textContent = `(${list.length} слов)`;
+}
+window.updateQuasarShCount = updateQuasarShCount;
+
+async function extractHaKeywordsForQuasar() {
+  const shEl = document.getElementById('quasar-sh-keywords');
+  if (!shEl) return;
+  
+  showToast('Считываю устройства и синонимы из Home Assistant...');
+  try {
+    const res = await fetch(`${API_BASE}/api/quasar/extract-ha-keywords`);
+    const data = await res.json();
+    if (data.success && data.keywords) {
+      const existing = shEl.value.split(/[,;\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+      const merged = Array.from(new Set([...existing, ...data.keywords])).sort();
+      shEl.value = merged.join(', ');
+      updateQuasarShCount();
+      showToast(`Успешно собрано ${data.count} ключевых слов из HA!`);
+    } else {
+      showToast(`Ошибка сбора: ${data.error || 'нет данных'}`, true);
+    }
+  } catch (e) {
+    showToast('Сетевая ошибка при сборе данных из HA', true);
+  }
+}
+window.extractHaKeywordsForQuasar = extractHaKeywordsForQuasar;
+
+async function testQuasarRoutePhrase() {
+  const input = document.getElementById('quasar-test-input');
+  const resultEl = document.getElementById('quasar-test-result');
+  if (!input || !resultEl) return;
+  
+  const phrase = input.value.trim();
+  if (!phrase) {
+    showToast('Введите фразу для проверки', true);
+    return;
+  }
+
+  resultEl.style.display = 'block';
+  resultEl.style.background = 'rgba(255,255,255,0.05)';
+  resultEl.style.color = '#8b949e';
+  resultEl.textContent = 'Опрос маршрутизатора колонки...';
+
+  try {
+    const res = await fetch(`${API_BASE}/api/quasar/test-route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mac: currentQuasarMac,
+        ip: currentQuasarIp,
+        phrase: phrase
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (data.route === 'yandex') {
+        resultEl.style.background = 'rgba(52, 211, 153, 0.15)';
+        resultEl.style.border = '1px solid rgba(52, 211, 153, 0.3)';
+        resultEl.style.color = '#34d399';
+        resultEl.innerHTML = `🗣️ <strong>Маршрут: Алиса (Yandex Cloud)</strong> • Правило: <code>${escapeHtml(data.rule)}</code>`;
+      } else {
+        resultEl.style.background = 'rgba(167, 139, 250, 0.15)';
+        resultEl.style.border = '1px solid rgba(167, 139, 250, 0.3)';
+        resultEl.style.color = '#c4b5fd';
+        resultEl.innerHTML = `🧠 <strong>Маршрут: Порфирий (Gemini Live)</strong> • Правило: <code>${escapeHtml(data.rule || 'по умолчанию')}</code>`;
+      }
+    } else {
+      resultEl.style.background = 'rgba(239, 68, 68, 0.15)';
+      resultEl.style.color = '#f87171';
+      resultEl.textContent = `Ошибка проверки: ${data.error || 'сбой'}`;
+    }
+  } catch (e) {
+    resultEl.style.background = 'rgba(239, 68, 68, 0.15)';
+    resultEl.style.color = '#f87171';
+    resultEl.textContent = 'Сетевая ошибка при проверке маршрута';
+  }
+}
+window.testQuasarRoutePhrase = testQuasarRoutePhrase;
+
+async function submitSaveQuasarConfig() {
+  const btn = document.getElementById('quasar-btn-save');
+  const statusEl = document.getElementById('quasar-save-status');
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Валидация и перезапуск на колонке...';
+
+  const shKeywords = (document.getElementById('quasar-sh-keywords')?.value || '').split(/[,;\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  const timerKeywords = (document.getElementById('quasar-timer-keywords')?.value || '').split(/[,;\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  const llmKeywords = (document.getElementById('quasar-llm-keywords')?.value || '').split(/[,;\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+  const musicExceptions = (document.getElementById('quasar-music-exceptions')?.value || '').split(/[,;\n]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  try {
+    const res = await fetch(`${API_BASE}/api/quasar/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mac: currentQuasarMac,
+        ip: currentQuasarIp,
+        smart_home_keywords: shKeywords,
+        timer_keywords: timerKeywords,
+        llm_keywords: llmKeywords,
+        music_exceptions: musicExceptions,
+        default_route: 'llm'
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Правила успешно обновлены и применены в Станцию!');
+      if (statusEl) statusEl.textContent = '✓ Сохранено и перезапущено';
+      setTimeout(() => {
+        closeQuasarRoutingModal();
+      }, 1000);
+    } else {
+      if (statusEl) statusEl.textContent = `Ошибка: ${data.error || 'сбой'}`;
+      showToast(`Ошибка сохранения: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Сетевая ошибка при сохранении';
+    showToast('Сетевая ошибка при сохранении конфига', true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+window.submitSaveQuasarConfig = submitSaveQuasarConfig;

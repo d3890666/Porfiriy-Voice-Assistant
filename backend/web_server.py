@@ -20,6 +20,11 @@ try:
 except ImportError:
     from openai_service import OpenAIService
 
+try:
+    from .quasar_manager import QuasarManager
+except ImportError:
+    from quasar_manager import QuasarManager
+
 def get_addon_version() -> str:
     """Считывает актуальную версию аддона напрямую из config.yaml (Single Source of Truth)."""
     candidates = [
@@ -67,12 +72,19 @@ class WebServer:
         self.openai_service = OpenAIService(self.device_manager, self.ha_api, self.options_callback)
         self.openai_service.register_routes(self.app)
 
+        # Менеджер управления конфигурацией и маршрутизацией Quasar Bridge
+        self.quasar_manager = QuasarManager()
+
         self._setup_routes()
 
     def _setup_routes(self):
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/api/devices", self.handle_get_devices)
         self.app.router.add_post("/api/devices/yandex/add", self.handle_add_yandex_station)
+        self.app.router.add_get("/api/quasar/config", self.handle_get_quasar_config)
+        self.app.router.add_post("/api/quasar/config", self.handle_save_quasar_config)
+        self.app.router.add_get("/api/quasar/extract-ha-keywords", self.handle_extract_ha_keywords)
+        self.app.router.add_post("/api/quasar/test-route", self.handle_quasar_test_route)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
         self.app.router.add_post("/api/devices/{mac}/config", self.handle_device_config)
         self.app.router.add_post("/api/devices/bulk_config", self.handle_bulk_config)
@@ -603,6 +615,80 @@ class WebServer:
             return web.json_response({"success": True, "device": dev})
         except Exception as e:
             logger.error(f"Error adding Yandex Station: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    def _resolve_quasar_target(self, param_mac: str = None, param_ip: str = None) -> Tuple[str, int]:
+        """Определяет IP и порт SSH для Яндекс Станции по MAC или явному IP."""
+        ip = param_ip or ""
+        port = 2222
+        if param_mac:
+            dev = self.device_manager.get_device(param_mac)
+            if dev:
+                ip = dev.get("ip") or dev.get("config", {}).get("ip") or ip
+                port = int(dev.get("config", {}).get("ssh_port", 2222))
+        return ip, port
+
+    async def handle_get_quasar_config(self, request: web.Request) -> web.Response:
+        """GET /api/quasar/config?mac=...&ip=..."""
+        mac = request.query.get("mac", "")
+        ip_query = request.query.get("ip", "")
+        ip, port = self._resolve_quasar_target(mac, ip_query)
+        if not ip or ip == "---":
+            return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
+
+        res = await self.quasar_manager.get_config(ip, port)
+        status_code = 200 if res.get("success") else 400
+        return web.json_response(res, status=status_code)
+
+    async def handle_save_quasar_config(self, request: web.Request) -> web.Response:
+        """POST /api/quasar/config"""
+        try:
+            body = await request.json()
+            mac = body.get("mac", "")
+            ip_body = body.get("ip", "")
+            ip, port = self._resolve_quasar_target(mac, ip_body)
+            if not ip or ip == "---":
+                return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
+
+            res = await self.quasar_manager.save_config(ip, port, body)
+            status_code = 200 if res.get("success") else 400
+            return web.json_response(res, status=status_code)
+        except Exception as e:
+            logger.error(f"Error saving Quasar config: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_extract_ha_keywords(self, request: web.Request) -> web.Response:
+        """GET /api/quasar/extract-ha-keywords"""
+        try:
+            keywords = await self.ha_api.extract_smart_home_keywords()
+            return web.json_response({
+                "success": True,
+                "keywords": keywords,
+                "count": len(keywords)
+            })
+        except Exception as e:
+            logger.error(f"Error extracting HA keywords: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_quasar_test_route(self, request: web.Request) -> web.Response:
+        """POST /api/quasar/test-route"""
+        try:
+            body = await request.json()
+            mac = body.get("mac", "")
+            ip_body = body.get("ip", "")
+            phrase = body.get("phrase", "").strip()
+            if not phrase:
+                return web.json_response({"success": False, "error": "Фраза не указана"}, status=400)
+
+            ip, port = self._resolve_quasar_target(mac, ip_body)
+            if not ip or ip == "---":
+                return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
+
+            res = await self.quasar_manager.test_route(ip, port, phrase)
+            status_code = 200 if res.get("success") else 400
+            return web.json_response(res, status=status_code)
+        except Exception as e:
+            logger.error(f"Error testing route: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=400)
 
     async def start(self):

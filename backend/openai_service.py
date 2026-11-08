@@ -374,6 +374,7 @@ class OpenAIService:
         )
 
         text_parts = []
+        waiting_for_tool_reply = False
         try:
             async with proxy_client.connect() as session:
                 await session.send_client_content(
@@ -382,17 +383,6 @@ class OpenAIService:
                 )
 
                 async for response in session.receive():
-                    sc = response.server_content
-                    if sc is not None:
-                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
-                            text_parts.append(sc.output_transcription.text)
-                        if sc.model_turn is not None:
-                            for part in sc.model_turn.parts:
-                                if part.text:
-                                    text_parts.append(part.text)
-                        if sc.turn_complete:
-                            break
-
                     if response.tool_call is not None:
                         function_responses = []
                         for fc in response.tool_call.function_calls:
@@ -404,6 +394,21 @@ class OpenAIService:
                                 response={"result": tool_res}
                             ))
                         await session.send_tool_response(function_responses=function_responses)
+                        waiting_for_tool_reply = True
+                        continue
+
+                    sc = response.server_content
+                    if sc is not None:
+                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
+                            text_parts.append(sc.output_transcription.text)
+                        if sc.model_turn is not None:
+                            waiting_for_tool_reply = False
+                            for part in sc.model_turn.parts:
+                                if part.text:
+                                    text_parts.append(part.text)
+                        if sc.turn_complete:
+                            if not waiting_for_tool_reply:
+                                break
 
             raw_text = "".join(text_parts).strip()
             if not raw_text:
@@ -481,7 +486,7 @@ class OpenAIService:
                     ),
                     timeout=2.0
                 )
-                ssh_proc = await ssh_conn.create_process("aplay -D default -r 24000 -f S16_LE -c 1", encoding=None)
+                ssh_proc = await ssh_conn.create_process("aplay -t raw -D default -r 24000 -f S16_LE -c 1", encoding=None)
                 logger.info(f"[OPENAI LIVE] Direct SSH aplay stream opened on {speaker_ip}:{ssh_port}")
             except Exception as e:
                 logger.warning(f"[OPENAI LIVE] SSH connection to {speaker_ip}:{ssh_port} failed ({e}), falling back")
@@ -489,6 +494,7 @@ class OpenAIService:
                 ssh_proc = None
 
         pcm_chunks = []
+        waiting_for_tool_reply = False
         try:
             async with proxy_client.connect() as session:
                 await session.send_client_content(
@@ -498,9 +504,24 @@ class OpenAIService:
 
                 first_chunk = True
                 async for response in session.receive():
+                    if response.tool_call is not None:
+                        function_responses = []
+                        for fc in response.tool_call.function_calls:
+                            logger.info(f"[OPENAI LIVE FC] Model called: {fc.name} with {fc.args}")
+                            res = await self._execute_tool(fc.name, fc.args, dev, options)
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"result": res}
+                            ))
+                        await session.send_tool_response(function_responses=function_responses)
+                        waiting_for_tool_reply = True
+                        continue
+
                     sc = response.server_content
                     if sc is not None:
                         if sc.model_turn is not None:
+                            waiting_for_tool_reply = False
                             for part in sc.model_turn.parts:
                                 if part.inline_data and part.inline_data.data:
                                     chunk = part.inline_data.data
@@ -512,18 +533,8 @@ class OpenAIService:
                                         ssh_proc.stdin.write(chunk)
                                         await ssh_proc.stdin.drain()
                         if sc.turn_complete:
-                            break
-
-                    if response.tool_call is not None:
-                        function_responses = []
-                        for fc in response.tool_call.function_calls:
-                            res = await self._execute_tool(fc.name, fc.args, dev, options)
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response={"result": res}
-                            ))
-                        await session.send_tool_response(function_responses=function_responses)
+                            if not waiting_for_tool_reply:
+                                break
 
             # Сохраняем итоговый WAV для веб-интерфейса (кнопка "Ответ Gemini")
             if pcm_chunks:

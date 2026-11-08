@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.115">
+  <link rel="stylesheet" href="static/style.css?v=0.0.116">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -554,7 +554,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.115</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.116</span></p>
         </div>
       </div>
       
@@ -1380,8 +1380,77 @@ PING:
     </div>
   </div>
 
+  <!-- Modal Quasar Bridge Routing -->
+  <div id="modal-quasar-routing" class="modal-backdrop" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 1000; align-items: center; justify-content: center;">
+    <div class="modal-dialog" style="background: #1c2128; border: 1px solid #30363d; border-radius: 14px; width: 95%; max-width: 620px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); overflow: hidden; display: flex; flex-direction: column; max-height: 90vh;">
+      <div style="padding: 16px 20px; background: rgba(255,255,255,0.03); border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #f0f3f6; display: flex; align-items: center; gap: 8px;">
+          <span>🎛️ Маршрутизация Quasar Bridge</span>
+          <span id="quasar-modal-ip-badge" style="font-size: 11px; background: rgba(139, 92, 246, 0.2); color: #c4b5fd; padding: 2px 8px; border-radius: 12px; font-family: monospace;">---</span>
+        </h3>
+        <button type="button" class="btn-icon" onclick="closeQuasarRoutingModal()" style="background: none; border: none; color: #8b949e; cursor: pointer; font-size: 18px;">✕</button>
+      </div>
+      <div style="padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto;">
+        
+        <!-- Smart Home Section -->
+        <div class="form-group" style="margin: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label for="quasar-sh-keywords" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">
+              🏠 Умный дом → Алиса <span id="quasar-sh-count" style="color: #34d399; font-size: 11px;">(0 слов)</span>
+            </label>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="extractHaKeywordsForQuasar()" style="font-size: 11px; padding: 3px 8px; display: flex; align-items: center; gap: 4px;">
+              <span>🔄 Собрать из Home Assistant</span>
+            </button>
+          </div>
+          <textarea id="quasar-sh-keywords" rows="5" placeholder="свет, лампа, люстра, розетка, кухня, спальня, ночник, бра, телевизор, чайник, выключи всё..." style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: monospace; resize: vertical;"></textarea>
+          <small style="color: #8b949e; font-size: 11px;">Любая реплика с этими словами или устройствами направляется напрямую Алисе.</small>
+        </div>
+
+        <!-- Timers & Alarms Section -->
+        <div class="form-group" style="margin: 0;">
+          <label for="quasar-timer-keywords" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">⏰ Таймеры, будильники и напоминания → Алиса</label>
+          <input type="text" id="quasar-timer-keywords" placeholder="таймер, будильник, секундомер, напомни, напоминание, разбуди, засеки" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: monospace;">
+          <small style="color: #8b949e; font-size: 11px;">Исполняются Алисой с нативным звуковым сигналом колонки и таймером на дисплее.</small>
+        </div>
+
+        <!-- Direct LLM Call Section -->
+        <div class="form-group" style="margin: 0;">
+          <label for="quasar-llm-keywords" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">🧠 Прямой вызов Порфирия</label>
+          <input type="text" id="quasar-llm-keywords" placeholder="порфирий, спроси порфирия, спроси нейросеть, спроси у нейросетей" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: monospace;">
+        </div>
+
+        <!-- Music Exceptions -->
+        <div class="form-group" style="margin: 0;">
+          <label for="quasar-music-exceptions" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">🎵 Маркеры музыки → Music Assistant (Порфирий)</label>
+          <input type="text" id="quasar-music-exceptions" placeholder="музык, песн, радио, трек, альбом, плейлист, групп, исполнител" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: monospace;">
+          <small style="color: #8b949e; font-size: 11px;">Исключения из умного дома: запросы с этими корнями идут в Music Assistant.</small>
+        </div>
+
+        <!-- Testing Section -->
+        <div style="background: rgba(0,0,0,0.25); border: 1px solid #30363d; border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+          <span style="font-size: 12px; font-weight: 600; color: #c4b5fd;">🧪 Экспресс-проверка фразы:</span>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="quasar-test-input" placeholder="Например: Свет на кухне или Включи кирпичей" style="flex: 1; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 6px 10px; border-radius: 6px; font-size: 12px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="testQuasarRoutePhrase()" style="white-space: nowrap;">Проверить</button>
+          </div>
+          <div id="quasar-test-result" style="display: none; font-size: 12px; padding: 6px 10px; border-radius: 6px;"></div>
+        </div>
+
+      </div>
+      <div style="padding: 14px 20px; background: rgba(0,0,0,0.2); border-top: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center;">
+        <span id="quasar-save-status" style="font-size: 12px; color: #8b949e;"></span>
+        <div style="display: flex; gap: 10px;">
+          <button type="button" class="btn btn-secondary" onclick="closeQuasarRoutingModal()">Отмена</button>
+          <button type="button" id="quasar-btn-save" class="btn btn-primary" onclick="submitSaveQuasarConfig()" style="background: linear-gradient(135deg, #8b5cf6, #6366f1); border: none;">
+            💾 Применить в колонку
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.115"></script>
+  <script src="static/app.js?v=0.0.116"></script>
 </body>
 </html>

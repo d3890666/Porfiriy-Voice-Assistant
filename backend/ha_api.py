@@ -486,3 +486,94 @@ class HomeAssistantAPI:
             logger.error(f"Error resolving media player areas: {e}")
             return {}
 
+    async def extract_smart_home_keywords(self) -> List[str]:
+        """
+        Извлекает ключевые слова и синонимы всех устройств и комнат умного дома
+        из Home Assistant для настройки маршрутизации Quasar Bridge на Яндекс Станции.
+        """
+        base_keywords = {
+            "свет", "ламп", "люстр", "розетк", "подсветк", "штор", "жалюзи", 
+            "кондиционер", "пылесос", "чайник", "ночник", "бра", "торшер", 
+            "вытяжк", "теплый пол", "обогревател", "вентилятор", "выключател", 
+            "реле", "телевизор", "тв", "приставк", "увлажнител", "очистител", 
+            "колонки", "датчик", "температур", "влажност",
+            "выключи всё", "погаси всё", "выключи весь свет", "включи всё",
+            "спокойной ночи", "доброе утро"
+        }
+        
+        extracted = set(base_keywords)
+        
+        # 1. Извлекаем названия комнат (Areas)
+        try:
+            areas = await self.get_areas()
+            for a in areas:
+                name = a.get("name", "").strip()
+                if name:
+                    self._add_phrase_keywords(extracted, name)
+        except Exception as e:
+            logger.warning(f"Could not extract areas for keywords: {e}")
+
+        # 2. Извлекаем устройства и синонимы (Entities & Aliases)
+        try:
+            states = await self.get_states()
+            exposed_meta = await self.get_exposed_entities_metadata()
+            
+            allowed_domains = {
+                "light", "switch", "climate", "cover", "vacuum", "fan", 
+                "media_player", "sensor", "scene", "script"
+            }
+            
+            for s in states:
+                eid = s.get("entity_id", "")
+                domain = eid.split(".")[0] if "." in eid else ""
+                if domain not in allowed_domains:
+                    continue
+                
+                # Friendly name
+                fname = s.get("attributes", {}).get("friendly_name", "")
+                if fname:
+                    self._add_phrase_keywords(extracted, fname)
+                    
+                # Aliases from metadata
+                meta = exposed_meta.get(eid, {})
+                for alias in meta.get("aliases", []):
+                    if alias:
+                        self._add_phrase_keywords(extracted, alias)
+        except Exception as e:
+            logger.warning(f"Could not extract entities for keywords: {e}")
+
+        # Фильтруем пустые и отсортируем
+        cleaned = sorted([k for k in extracted if len(k) >= 2])
+        return cleaned
+
+    def _add_phrase_keywords(self, target_set: set, phrase: str):
+        """Парсит фразу на ключевые слова и корни для добавления в словарь."""
+        import re
+        # Убираем спецсимволы
+        cleaned = re.sub(r"[^\w\s-]", " ", phrase, flags=re.UNICODE).lower().strip()
+        words = [w.strip() for w in cleaned.split() if w.strip()]
+        
+        # Слова-исключения, которые нельзя делать триггерами умного дома
+        stop_words = {
+            "для", "под", "над", "при", "про", "без", "через", "около", "возле", 
+            "вкл", "выкл", "статус", "режим", "уровень", "значение", "номер", 
+            "кнопка", "клавиша", "левая", "правая", "верхняя", "нижняя", "дом",
+            "порфирий", "алиса", "яндекс", "музыка", "песня", "трек", "радио"
+        }
+        
+        for w in words:
+            if len(w) < 3 or w in stop_words or w.isdigit():
+                continue
+                
+            # Добавляем исходное слово
+            target_set.add(w)
+            
+            # Добавляем стемминг (корень) для покрытия окончаний в русском языке
+            for ending in ("ами", "ями", "ей", "ов", "ев", "ом", "ем", "ой", "ей", "ам", "ям", "ах", "ях", "ую", "юю", "ые", "ие", "ый", "ий", "ая", "яя", "ое", "ее", "е", "и", "ы", "у", "ю", "а", "я", "о"):
+                if w.endswith(ending) and (len(w) - len(ending)) >= 3:
+                    stem = w[:-len(ending)]
+                    if stem not in stop_words:
+                        target_set.add(stem)
+                    break
+
+
