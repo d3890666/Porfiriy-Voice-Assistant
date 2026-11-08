@@ -246,6 +246,41 @@ function renderDevicesGrid() {
               ▶ Ответ Gemini
             </button>
           </div>
+        ` : dev.device_type === 'yandex_station' ? `
+          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция</span>
+            <span style="font-size: 11px; color: #a78bfa; font-family: monospace; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 12px;">Quasar Bridge</span>
+          </div>
+          <!-- Yandex Station Settings -->
+          <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🗣️ Вывод:</span>
+              <select id="yandex-mode-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'output_mode', this.value)">
+                <option value="alice_tts" ${((cfg.output_mode || 'alice_tts') === 'alice_tts') ? 'selected' : ''}>🗣️ Голос Алисы (текст)</option>
+                <option value="airplay" ${(cfg.output_mode === 'airplay') ? 'selected' : ''}>🎵 Голос Порфирия (AirPlay)</option>
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🔊 AirPlay:</span>
+              <select id="yandex-player-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'airplay_player', this.value)">
+                <option value="">— Не задан —</option>
+                ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.airplay_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                ${cfg.airplay_player && !availableMediaPlayers.some(p => p.entity_id === cfg.airplay_player) ? `<option value="${escapeHtml(cfg.airplay_player)}" selected>${escapeHtml(cfg.airplay_player)}</option>` : ''}
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🔑 Токен API:</span>
+              <input type="password" value="${escapeHtml(cfg.api_key || '')}" placeholder="Персональный токен ноды" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'api_key', this.value)">
+            </div>
+          </div>
+          <div style="margin-top: 8px; display: flex; gap: 8px;">
+            <button class="btn btn-sm" onclick="triggerDeviceWake('${dev.mac}')" title="Проверить отклик станции" style="flex: 1; background: linear-gradient(135deg, #8b5cf6, #6366f1); color: #ffffff; font-size: 12px; font-weight: 600; padding: 7px 10px; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px; box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);">
+              <span>⚡ Тестовый вызов</span>
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" title="Прослушать последний ответ Gemini" style="flex: 1; font-size: 12px; padding: 7px 10px;">
+              ▶ Ответ Gemini
+            </button>
+          </div>
         ` : `
           <div class="virtual-client-banner">
             <span>💻 Клиент (${escapeHtml(dev.device_type || 'ПК')})</span>
@@ -302,30 +337,32 @@ function renderDevicesGrid() {
           ` : ''}
         </div>
 
-        <div class="mic-debug-box" id="mic-box-${dev.mac}">
-          <div class="mic-debug-header">
-            <span class="mic-debug-title">🎙️ Прослушать микрофон</span>
-            <span class="mic-debug-status" id="mic-status-${dev.mac}">${micRecState && micRecState.statusText ? micRecState.statusText : ''}</span>
-          </div>
-          <div class="mic-debug-controls">
-            ${isEsp ? `
-              <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать" ${micRecState && micRecState.isTesting ? 'disabled' : ''}>
-                ${micRecState && micRecState.buttonText ? micRecState.buttonText : '⏺ Тест 5 сек'}
+        ${dev.device_type !== 'yandex_station' ? `
+          <div class="mic-debug-box" id="mic-box-${dev.mac}">
+            <div class="mic-debug-header">
+              <span class="mic-debug-title">🎙️ Прослушать микрофон</span>
+              <span class="mic-debug-status" id="mic-status-${dev.mac}">${micRecState && micRecState.statusText ? micRecState.statusText : ''}</span>
+            </div>
+            <div class="mic-debug-controls">
+              ${isEsp ? `
+                <button class="btn btn-secondary btn-sm mic-btn" id="btn-mictest-${dev.mac}" onclick="startMicTest('${dev.mac}', 5)" title="Записать 5 секунд звука с микрофона и сразу прослушать" ${micRecState && micRecState.isTesting ? 'disabled' : ''}>
+                  ${micRecState && micRecState.buttonText ? micRecState.buttonText : '⏺ Тест 5 сек'}
+                </button>
+              ` : ''}
+              <button class="btn btn-secondary btn-sm mic-btn" id="btn-lastutt-${dev.mac}" onclick="playLastUtterance('${dev.mac}')" title="Прослушать последнюю распознанную живую реплику">
+                💬 Реплика
               </button>
-            ` : ''}
-            <button class="btn btn-secondary btn-sm mic-btn" id="btn-lastutt-${dev.mac}" onclick="playLastUtterance('${dev.mac}')" title="Прослушать последнюю распознанную живую реплику">
-              💬 Реплика
-            </button>
-          </div>
-          <div class="mic-player-wrap" id="mic-player-wrap-${dev.mac}" style="${micRecState && micRecState.audioSrc ? 'display: flex;' : 'display: none;'}">
-            <audio controls class="mic-audio-element" id="mic-audio-${dev.mac}" src="${micRecState ? (micRecState.audioSrc || '') : ''}"></audio>
-            <div class="mic-metrics" id="mic-metrics-${dev.mac}">
-              ${micRecState && micRecState.metricsHtml ? micRecState.metricsHtml : ''}
+            </div>
+            <div class="mic-player-wrap" id="mic-player-wrap-${dev.mac}" style="${micRecState && micRecState.audioSrc ? 'display: flex;' : 'display: none;'}">
+              <audio controls class="mic-audio-element" id="mic-audio-${dev.mac}" src="${micRecState ? (micRecState.audioSrc || '') : ''}"></audio>
+              <div class="mic-metrics" id="mic-metrics-${dev.mac}">
+                ${micRecState && micRecState.metricsHtml ? micRecState.metricsHtml : ''}
+              </div>
             </div>
           </div>
-        </div>
+        ` : ''}
 
-        ${dev.device_type !== 'pc_streamer' ? `
+        ${(dev.device_type !== 'pc_streamer' && dev.device_type !== 'yandex_station') ? `
           <div class="card-actions">
             <button class="btn btn-secondary btn-icon" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия (начать слушать)" style="color: #a78bfa; border-color: rgba(167, 139, 250, 0.4); font-weight: 600;">
               ⚡ Вызов
@@ -1284,6 +1321,28 @@ function populateGlobalSettingsForm() {
   updateDuckingFactorDisplay(duckFactor);
 
   populateMediaPlayersDropdown(globalOptions.default_media_player || 'auto');
+  populateAirplayPlayersDropdown(globalOptions.default_airplay_player || '');
+
+  // Настройки OpenAI API / Яндекс Станция (Quasar Bridge)
+  const opEnabled = globalOptions.openai_api_enabled !== false;
+  const opCheckbox = document.getElementById('cfg-openai-api-enabled');
+  if (opCheckbox) opCheckbox.checked = opEnabled;
+
+  const opPort = globalOptions.openai_api_port || 8000;
+  setVal('cfg-openai-api-port', opPort);
+  const hintPort = document.getElementById('hint-openai-port');
+  if (hintPort) hintPort.innerText = opPort;
+
+  const opKeyInput = document.getElementById('cfg-openai-api-key');
+  if (opKeyInput) {
+    if (globalOptions.has_openai_api_key) {
+      opKeyInput.placeholder = `Ключ задан (${globalOptions.openai_api_key || '••••••'})`;
+      opKeyInput.value = '';
+    } else {
+      opKeyInput.placeholder = 'Оставьте пустым для работы без ключа';
+      opKeyInput.value = '';
+    }
+  }
 
   const maKeyInput = document.getElementById('cfg-ma-key');
   if (maKeyInput) {
@@ -1419,6 +1478,32 @@ function populateMediaPlayersDropdown(selectedPlayer) {
   }
 }
 
+function populateAirplayPlayersDropdown(selectedPlayer) {
+  const select = document.getElementById('cfg-default-airplay-player');
+  if (!select) return;
+
+  const currentVal = selectedPlayer || select.value || '';
+  let html = '<option value="">— Выберите плеер из Home Assistant —</option>';
+
+  if (availableMediaPlayers && availableMediaPlayers.length > 0) {
+    html += '<optgroup label="Медиаплееры Home Assistant">';
+    availableMediaPlayers.forEach(p => {
+      const isSel = (p.entity_id === currentVal) ? 'selected' : '';
+      html += `<option value="${escapeHtml(p.entity_id)}" ${isSel}>${escapeHtml(p.name)} (${escapeHtml(p.entity_id)})</option>`;
+    });
+    html += '</optgroup>';
+  }
+
+  if (currentVal && !availableMediaPlayers.some(p => p.entity_id === currentVal)) {
+    html += `<optgroup label="Текущий сохраненный плеер">`;
+    html += `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (Сохранен)</option>`;
+    html += `</optgroup>`;
+  }
+
+  select.innerHTML = html;
+  select.value = currentVal;
+}
+
 async function refreshMediaPlayersList() {
   const btn = document.getElementById('btn-refresh-players');
   if (btn) {
@@ -1436,6 +1521,7 @@ async function refreshMediaPlayersList() {
       const select = document.getElementById('cfg-default-media-player');
       const currentVal = select ? select.value : (globalOptions.default_media_player || 'auto');
       populateMediaPlayersDropdown(currentVal);
+      populateAirplayPlayersDropdown(globalOptions.default_airplay_player || '');
       showToast(`Плееры обновлены! Найдено ${availableMediaPlayers.length} медиаплееров.`);
     } else {
       showToast(`Ошибка опроса плееров: ${data.error || 'Проверьте соединение с HA'}`, true);
@@ -1490,7 +1576,10 @@ async function saveGlobalSettings(e) {
       prompt_users: document.getElementById('cfg-prompt-users')?.value || '',
       prompt_smart_home: document.getElementById('cfg-prompt-smart-home')?.value || '',
       prompt_general: document.getElementById('cfg-prompt-general')?.value || '',
-      ww_server_threshold: parseFloat(document.getElementById('cfg-ww-threshold')?.value || 0.94)
+      ww_server_threshold: parseFloat(document.getElementById('cfg-ww-threshold')?.value || 0.94),
+      openai_api_enabled: document.getElementById('cfg-openai-api-enabled')?.checked !== false,
+      openai_api_port: parseInt(document.getElementById('cfg-openai-api-port')?.value || 8000),
+      default_airplay_player: document.getElementById('cfg-default-airplay-player')?.value || ''
     };
 
     const newKey = document.getElementById('cfg-api-key')?.value?.trim();
@@ -1501,6 +1590,11 @@ async function saveGlobalSettings(e) {
     const newMaKey = document.getElementById('cfg-ma-key')?.value?.trim();
     if (newMaKey !== undefined && newMaKey !== '') {
       payload.ma_api_key = newMaKey;
+    }
+
+    const newOpKey = document.getElementById('cfg-openai-api-key')?.value?.trim();
+    if (newOpKey !== undefined && newOpKey !== '') {
+      payload.openai_api_key = newOpKey;
     }
 
     console.log('Sending global settings payload to:', `${API_BASE}/api/global`, payload);
@@ -2027,3 +2121,98 @@ async function uploadWwModel(input) {
   input.value = '';
 }
 window.uploadWwModel = uploadWwModel;
+
+// ------------------------------------------------------------------ //
+// Яндекс Станция (Quasar Bridge) & OpenAI API
+// ------------------------------------------------------------------ //
+
+async function saveYandexConfig(mac, field, value) {
+  try {
+    const d = devices.find(x => x.mac === mac);
+    if (d) {
+      if (!d.config) d.config = {};
+      d.config[field] = value;
+    }
+    const res = await fetch(`${API_BASE}/api/devices/${mac}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [field]: value })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Настройка «${field}» Яндекс Станции обновлена`);
+    } else {
+      showToast(`Ошибка: ${data.error || 'Сбой'}`, true);
+    }
+  } catch (err) {
+    showToast('Ошибка сохранения настройки станции', true);
+  }
+}
+window.saveYandexConfig = saveYandexConfig;
+
+function openAddYandexModal() {
+  const modal = document.getElementById('modal-add-yandex');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  const sel = document.getElementById('yandex-add-player');
+  if (sel) {
+    let html = '<option value="">— Не задан —</option>';
+    if (availableMediaPlayers && availableMediaPlayers.length > 0) {
+      availableMediaPlayers.forEach(p => {
+        html += `<option value="${escapeHtml(p.entity_id)}">${escapeHtml(p.name)} (${escapeHtml(p.entity_id)})</option>`;
+      });
+    }
+    sel.innerHTML = html;
+  }
+}
+window.openAddYandexModal = openAddYandexModal;
+
+function closeAddYandexModal() {
+  const modal = document.getElementById('modal-add-yandex');
+  if (modal) modal.style.display = 'none';
+}
+window.closeAddYandexModal = closeAddYandexModal;
+
+async function submitAddYandexStation() {
+  const name = document.getElementById('yandex-add-name')?.value?.trim() || 'Яндекс Станция';
+  const id = document.getElementById('yandex-add-id')?.value?.trim();
+  const ip = document.getElementById('yandex-add-ip')?.value?.trim() || '';
+  const mode = document.getElementById('yandex-add-mode')?.value || 'alice_tts';
+  const player = document.getElementById('yandex-add-player')?.value || '';
+  const key = document.getElementById('yandex-add-key')?.value?.trim() || '';
+
+  showToast('Добавляю Яндекс Станцию...');
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/yandex/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name,
+        id: id,
+        ip: ip,
+        output_mode: mode,
+        airplay_player: player,
+        api_key: key
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Яндекс Станция успешно добавлена!');
+      closeAddYandexModal();
+      fetchDevices();
+    } else {
+      showToast(`Ошибка: ${data.error || 'Сбой'}`, true);
+    }
+  } catch (e) {
+    showToast('Сетевая ошибка при добавлении станции', true);
+  }
+}
+window.submitAddYandexStation = submitAddYandexStation;
+
+function toggleOpenAiKeyVisibility() {
+  const inp = document.getElementById('cfg-openai-api-key');
+  if (inp) {
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+  }
+}
+window.toggleOpenAiKeyVisibility = toggleOpenAiKeyVisibility;

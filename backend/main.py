@@ -241,7 +241,11 @@ def get_options():
         "ducking_volume_factor": 0.25,
         "default_media_player": "auto",
         "ma_api_key": "",
-        "regenerate_phrases": False
+        "regenerate_phrases": False,
+        "openai_api_enabled": True,
+        "openai_api_port": 8000,
+        "openai_api_key": "",
+        "default_airplay_player": ""
     }
 
     for k, v in defaults.items():

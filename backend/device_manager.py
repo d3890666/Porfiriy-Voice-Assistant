@@ -137,7 +137,10 @@ DEFAULT_DEVICE_CONFIG = {
     "led_mode_idle": 0,
     "led_mode_listen": 1,
     "led_mode_think": 2,
-    "led_mode_speak": 1
+    "led_mode_speak": 1,
+    "output_mode": "alice_tts",      # "alice_tts" (возврат текста) или "airplay" (звук в AirPlay)
+    "airplay_player": "",            # entity_id плеера HA для AirPlay вывода
+    "api_key": ""                    # Опциональный токен авторизации ноды
 }
 
 class DeviceManager:
@@ -218,6 +221,8 @@ class DeviceManager:
             dev["uptime"] = info.get("uptime", 0)
             dev["device_type"] = info.get("device_type", dev.get("device_type", "esp32"))
             dev["firmware"] = info.get("firmware", dev.get("firmware", "0.0.52"))
+            if "area_name" in info and info["area_name"] is not None:
+                dev["area_name"] = info["area_name"]
             
             # Мерджим конфиг (сохраненный конфиг сервера имеет приоритет)
             dev_config = dict(DEFAULT_DEVICE_CONFIG)
@@ -236,7 +241,7 @@ class DeviceManager:
                 "device_type": info.get("device_type", "esp32"),
                 "firmware": info.get("firmware", "0.0.52"),
                 "config": dev_config,
-                "area_name": None
+                "area_name": info.get("area_name")
             }
             self.devices[clean_mac] = dev
 
@@ -475,6 +480,12 @@ class DeviceManager:
             except Exception as e:
                 logger.error(f"[WAKE] Error executing wake handler for {clean_mac}: {e}")
                 return False
+
+        # Fallback: для Яндекс Станций
+        if dev and dev.get("device_type") == "yandex_station":
+            logger.info(f"[WAKE] Triggering state change for Yandex Station {clean_mac}")
+            self.set_device_state(clean_mac, "listening")
+            return True
 
         # Fallback: для подключенных плат отправляем команду listen
         if clean_mac in self.active_sockets:

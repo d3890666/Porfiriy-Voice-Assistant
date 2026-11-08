@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.108">
+  <link rel="stylesheet" href="static/style.css?v=0.0.109">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -554,7 +554,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.108</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.109</span></p>
         </div>
       </div>
       
@@ -590,10 +590,15 @@ PING:
     <main id="tab-fleet" class="tab-content active">
       <div class="toolbar">
         <h2>Активные голосовые точки дома и улицы</h2>
-        <button class="btn btn-secondary" onclick="fetchDevices()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
-          Обновить
-        </button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary" onclick="openAddYandexModal()" style="border-color: rgba(139, 92, 246, 0.4); color: #c4b5fd; display: inline-flex; align-items: center; gap: 6px;">
+            <span>🟣</span> + Яндекс Станция
+          </button>
+          <button class="btn btn-secondary" onclick="fetchDevices()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            Обновить
+          </button>
+        </div>
       </div>
       
       <div id="devices-grid" class="devices-grid">
@@ -1263,6 +1268,52 @@ PING:
 
           </div>
 
+          <!-- Секция: Шлюз OpenAI API / Яндекс Станция (Quasar Bridge) -->
+          <div class="settings-group" style="border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 12px; padding: 18px 20px; background: linear-gradient(180deg, rgba(139, 92, 246, 0.08) 0%, rgba(13, 17, 23, 0.4) 100%); margin-top: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 20px;">🟣</span>
+                <div>
+                  <h3 style="margin: 0; font-size: 15px; color: #c4b5fd;">Шлюз OpenAI API / Яндекс Станция (Quasar Bridge)</h3>
+                  <small style="color: #8b949e; font-size: 12px;">Интеграция с рутованными Яндекс Станциями через эндпоинт <code>/v1/chat/completions</code></small>
+                </div>
+              </div>
+              <label class="switch" style="margin: 0;" title="Включить / отключить OpenAI API эндпоинт">
+                <input type="checkbox" id="cfg-openai-api-enabled" name="openai_api_enabled" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.5; color: #d8b4fe; margin-bottom: 16px;">
+              💡 <strong>Быстрая настройка Quasar Bridge:</strong> в конфигурации Станции (<code>runtime.env</code> / <code>config.json</code>) укажите:<br>
+              <code>llm_base_url = "http://&lt;IP_Home_Assistant&gt;:<span id="hint-openai-port">8000</span>/v1"</code> и <code>llm_api = "chat_completions"</code>.
+            </div>
+
+            <div class="form-row" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+              <div class="form-group">
+                <label for="cfg-openai-api-port">Порт OpenAI API (LAN)</label>
+                <input type="number" id="cfg-openai-api-port" name="openai_api_port" value="8000" min="1024" max="65535" placeholder="8000" oninput="document.getElementById('hint-openai-port').innerText = this.value || '8000'">
+                <small class="field-hint">Порт для входящих HTTP-запросов от Quasar Bridge (по умолчанию 8000)</small>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-openai-api-key">Общий API-ключ (опционально)</label>
+                <div class="api-key-wrap" style="position: relative; display: flex; align-items: center;">
+                  <input type="password" id="cfg-openai-api-key" name="openai_api_key" placeholder="Оставьте пустым для работы без ключа" style="padding-right: 36px; width: 100%;">
+                  <button type="button" class="btn-toggle-key" onclick="toggleOpenAiKeyVisibility()" title="Показать/скрыть ключ" style="position: absolute; right: 8px; background: none; border: none; cursor: pointer; color: #8b949e;">👁️</button>
+                </div>
+                <small class="field-hint">Если задан, станция должна отправлять заголовок <code>Authorization: Bearer &lt;ключ&gt;</code></small>
+              </div>
+
+              <div class="form-group">
+                <label for="cfg-default-airplay-player">AirPlay плеер по умолчанию</label>
+                <select id="cfg-default-airplay-player" name="default_airplay_player">
+                  <option value="">— Выберите плеер из Home Assistant —</option>
+                </select>
+                <small class="field-hint">Медиаплеер для вывода музыки (Music Assistant) и голоса Порфирия в режиме AirPlay</small>
+              </div>
+            </div>
+          </div>
 
           <!-- Панель сохранения и действий -->
           <div class="global-actions-bar">
@@ -1276,8 +1327,61 @@ PING:
     </main>
   </div>
 
+  <!-- Модальное окно: Добавление Яндекс Станции -->
+  <div id="modal-add-yandex" style="display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(5px); z-index: 9999; align-items: center; justify-content: center; padding: 16px;">
+    <div style="max-width: 500px; width: 100%; border: 1px solid rgba(139, 92, 246, 0.4); background: #0d1117; border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,0.6); overflow: hidden;">
+      <div style="padding: 16px 20px; border-bottom: 1px solid rgba(139, 92, 246, 0.2); display: flex; justify-content: space-between; align-items: center; background: rgba(139, 92, 246, 0.05);">
+        <h3 style="margin: 0; color: #c4b5fd; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+          <span>🟣</span> Добавить Яндекс Станцию
+        </h3>
+        <button type="button" onclick="closeAddYandexModal()" style="background: none; border: none; color: #8b949e; font-size: 22px; cursor: pointer; line-height: 1;">×</button>
+      </div>
+      <div style="padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+        <div class="form-group" style="margin: 0;">
+          <label for="yandex-add-name" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Имя колонки</label>
+          <input type="text" id="yandex-add-name" placeholder="Яндекс Станция 2" value="Яндекс Станция" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="yandex-add-id" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Идентификатор / Alias ноды</label>
+          <input type="text" id="yandex-add-id" placeholder="station_living_room" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+          <small style="color: #8b949e; font-size: 11px;">Используется для связывания в URL <code>?device=...</code> или заголовках</small>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="yandex-add-ip" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">IP-адрес станции (опционально)</label>
+          <input type="text" id="yandex-add-ip" placeholder="192.168.1.120" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+          <small style="color: #8b949e; font-size: 11px;">Позволяет серверу автоматически определять станцию по источнику запроса</small>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="yandex-add-mode" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Режим вывода ответа</label>
+          <select id="yandex-add-mode" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+            <option value="alice_tts" selected>🗣️ Возврат текста в колонку (Голос Алисы)</option>
+            <option value="airplay">🎵 Воспроизведение через AirPlay (Голос Порфирия)</option>
+          </select>
+          <small style="color: #8b949e; font-size: 11px;">В режиме AirPlay Алиса молчит, а звук ответа транслируется Порфирием</small>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="yandex-add-player" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">Целевой AirPlay медиаплеер (Home Assistant)</label>
+          <select id="yandex-add-player" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+            <option value="">— Не задан —</option>
+          </select>
+          <small style="color: #8b949e; font-size: 11px;">Плеер Станции в HA (например, <code>media_player.station_2_airplay</code>) для музыки и AirPlay</small>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="yandex-add-key" style="font-size: 12px; font-weight: 600; color: #f0f3f6;">API-ключ ноды (опционально)</label>
+          <input type="password" id="yandex-add-key" placeholder="Оставьте пустым или укажите ключ" style="width: 100%; background: #161b22; border: 1px solid #30363d; color: #f0f3f6; padding: 8px 12px; border-radius: 6px; font-size: 13px;">
+        </div>
+      </div>
+      <div style="padding: 14px 20px; background: rgba(0,0,0,0.2); border-top: 1px solid #30363d; display: flex; justify-content: flex-end; gap: 10px;">
+        <button type="button" class="btn btn-secondary" onclick="closeAddYandexModal()">Отмена</button>
+        <button type="button" class="btn btn-primary" onclick="submitAddYandexStation()" style="background: linear-gradient(135deg, #8b5cf6, #6366f1); border: none;">
+          Добавить станцию
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.108"></script>
+  <script src="static/app.js?v=0.0.109"></script>
 </body>
 </html>

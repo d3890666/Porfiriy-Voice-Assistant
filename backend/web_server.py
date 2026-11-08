@@ -15,6 +15,11 @@ try:
 except ImportError:
     from dlna_player import DLNAMediaManager
 
+try:
+    from .openai_service import OpenAIService
+except ImportError:
+    from openai_service import OpenAIService
+
 def get_addon_version() -> str:
     """Считывает актуальную версию аддона напрямую из config.yaml (Single Source of Truth)."""
     candidates = [
@@ -58,11 +63,16 @@ class WebServer:
         self.dlna_manager.register_routes(self.app)
         self.device_manager.media_manager = self.dlna_manager
 
+        # Интеграция OpenAI-совместимого эндпоинта (Quasar Bridge / Яндекс Станция)
+        self.openai_service = OpenAIService(self.device_manager, self.ha_api, self.options_callback)
+        self.openai_service.register_routes(self.app)
+
         self._setup_routes()
 
     def _setup_routes(self):
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/api/devices", self.handle_get_devices)
+        self.app.router.add_post("/api/devices/yandex/add", self.handle_add_yandex_station)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
         self.app.router.add_post("/api/devices/{mac}/config", self.handle_device_config)
         self.app.router.add_post("/api/devices/bulk_config", self.handle_bulk_config)
@@ -268,6 +278,11 @@ class WebServer:
         safe["has_ma_api_key"] = bool(ma_key)
         if ma_key:
             safe["ma_api_key"] = ma_key[:4] + "..." + ma_key[-4:] if len(ma_key) >= 8 else "********"
+
+        op_key = safe.get("openai_api_key", "")
+        safe["has_openai_api_key"] = bool(op_key)
+        if op_key:
+            safe["openai_api_key"] = op_key[:3] + "..." + op_key[-3:] if len(op_key) >= 6 else "******"
         return safe
 
     async def handle_get_global(self, request):
@@ -309,7 +324,8 @@ class WebServer:
                 "prompt_smart_home", "prompt_general",
                 "ducking_mode", "enable_media_ducking", "ducking_volume_factor", "default_media_player",
                 "ma_api_key", "regenerate_phrases",
-                "ww_server_threshold"
+                "ww_server_threshold",
+                "openai_api_enabled", "openai_api_port", "openai_api_key", "default_airplay_player"
             ]
             
             for field in allowed_fields:
@@ -335,7 +351,7 @@ class WebServer:
                             updated_opts["ducking_mode"] = "disabled"
                         elif updated_opts.get("ducking_mode") == "disabled":
                             updated_opts["ducking_mode"] = "same_area"
-                    elif field in ["thinking_timeout_s", "vad_silence_duration_ms", "barge_in_threshold_rms"]:
+                    elif field in ["thinking_timeout_s", "vad_silence_duration_ms", "barge_in_threshold_rms", "openai_api_port"]:
                         try:
                             updated_opts[field] = int(val)
                         except (ValueError, TypeError):
@@ -356,8 +372,14 @@ class WebServer:
                                     engine.set_threshold(new_thr)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled"]:
                         updated_opts[field] = bool(val)
+                    elif field in ["openai_api_key", "default_airplay_player"]:
+                        sval = str(val).strip()
+                        if field == "openai_api_key" and ("..." in sval or "*" in sval):
+                            pass
+                        else:
+                            updated_opts[field] = sval
                     else:
                         updated_opts[field] = str(val)
 
@@ -548,6 +570,38 @@ class WebServer:
         data["__engine__"] = engine_info
         return web.json_response(data)
 
+    async def handle_add_yandex_station(self, request):
+        """Ручное добавление или регистрация Яндекс Станции (Quasar Bridge)."""
+        import uuid
+        try:
+            body = await request.json()
+            mac = (body.get("mac") or body.get("id") or f"yandex_{uuid.uuid4().hex[:6]}").strip().lower()
+            name = body.get("name", "Яндекс Станция").strip()
+            ip = body.get("ip", "").strip()
+            airplay_player = body.get("airplay_player", "").strip()
+            output_mode = body.get("output_mode", "alice_tts").strip()
+            api_key = body.get("api_key", "").strip()
+            area_name = body.get("area_name", "").strip() or None
+
+            dev = self.device_manager.register_device(mac, {
+                "name": name,
+                "ip": ip,
+                "device_type": "yandex_station",
+                "firmware": "Quasar Bridge",
+                "area_name": area_name,
+                "config": {
+                    "output_mode": output_mode,
+                    "airplay_player": airplay_player,
+                    "api_key": api_key
+                }
+            })
+            if area_name:
+                self.device_manager.set_device_area(mac, area_name)
+            return web.json_response({"success": True, "device": dev})
+        except Exception as e:
+            logger.error(f"Error adding Yandex Station: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
     async def start(self):
         # Отключаем спам в системный журнал HA от периодического поллинга /api/ww_monitor
         runner = web.AppRunner(self.app, access_log=None)
@@ -555,6 +609,18 @@ class WebServer:
         site = web.TCPSite(runner, "0.0.0.0", self.port)
         await site.start()
         logger.info(f"Porfiriy Ingress Web Server running on http://0.0.0.0:{self.port}")
+
+        # Запуск отдельного слушателя на внешнем порту для OpenAI API (по умолчанию 8000)
+        opts = self.options_callback() if self.options_callback else {}
+        openai_port = int(opts.get("openai_api_port", 8000))
+        if openai_port and openai_port != self.port:
+            try:
+                site_openai = web.TCPSite(runner, "0.0.0.0", openai_port)
+                await site_openai.start()
+                logger.info(f"Porfiriy OpenAI API Gateway running on http://0.0.0.0:{openai_port}")
+            except Exception as e:
+                logger.error(f"Failed to start OpenAI API site on port {openai_port}: {e}")
+
         # Запуск SSDP сервера обнаружения DLNA медиаплееров
         asyncio.create_task(self.dlna_manager.start_ssdp())
 

@@ -1,6 +1,6 @@
 name: "Porfiriy Voice Assistant"
 description: "Voice Assistant proxy bridge for Gemini Live API and Home Assistant Assist Pipeline"
-version: "0.0.108"
+version: "0.0.109"
 
 slug: "porfiriy_voice_assistant"
 init: false
@@ -36,5 +36,7 @@ schema:
   debug_audio: bool
 ports:
   8765/tcp: 8765
+  8000/tcp: 8000
 ports_description:
   8765/tcp: "WebSocket Audio Server"
+  8000/tcp: "OpenAI API Gateway (Quasar Bridge)"
