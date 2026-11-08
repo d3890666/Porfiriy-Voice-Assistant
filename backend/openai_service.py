@@ -323,165 +323,60 @@ class OpenAIService:
         parts = [p for p in [persona, users, smart_home, general, entities_prompt, station_context, music_directive] if p.strip()]
         return "\n\n".join(parts)
 
-    def _get_tools_schema(self, options: Dict[str, Any]):
-        """Определение инструментов вызова функций для Gemini."""
-        if not types:
-            return []
-
-        ha_tool = types.FunctionDeclaration(
-            name="call_ha_service",
-            description="Call a Home Assistant service/action to control smart home entities (light, switch, cover, climate, vacuum, mass, etc.).",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "domain": types.Schema(type=types.Type.STRING, description="Domain, e.g. light, switch, cover, climate, mass, media_player"),
-                    "service": types.Schema(type=types.Type.STRING, description="Action, e.g. turn_on, turn_off, toggle, open_cover, close_cover, play_media"),
-                    "entity_id": types.Schema(type=types.Type.STRING, description="Optional entity_id from context"),
-                    "parameters": types.Schema(type=types.Type.OBJECT, description="Optional key-value parameters"),
-                    "position": types.Schema(type=types.Type.INTEGER, description="Optional cover position (0-100)"),
-                    "temperature": types.Schema(type=types.Type.NUMBER, description="Optional climate temperature"),
-                    "hvac_mode": types.Schema(type=types.Type.STRING, description="Optional climate HVAC mode (heat, cool, off)"),
-                    "percentage": types.Schema(type=types.Type.INTEGER, description="Optional fan speed (0-100)"),
-                },
-                required=["domain", "service"]
-            )
-        )
-        get_state_tool = types.FunctionDeclaration(
-            name="get_ha_state",
-            description="Get current state or sensor value of any Home Assistant entity.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "entity_id": types.Schema(type=types.Type.STRING, description="The entity_id to inspect"),
-                },
-                required=["entity_id"]
-            )
-        )
-        play_music_tool = types.FunctionDeclaration(
-            name="play_music_assistant",
-            description="Play music, track, artist, album, playlist, or radio via Music Assistant on the station's AirPlay player.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "query": types.Schema(type=types.Type.STRING, description="Search query or track/artist name to play"),
-                    "media_type": types.Schema(type=types.Type.STRING, description="Optional: 'track', 'artist', 'album', 'playlist', 'radio'"),
-                    "player": types.Schema(type=types.Type.STRING, description="Optional media player entity_id"),
-                },
-                required=["query"]
-            )
-        )
-
-        tool_args = {"function_declarations": [ha_tool, get_state_tool, play_music_tool]}
-        if options.get("enable_google_search", True):
-            tool_args["google_search"] = types.GoogleSearch()
-
-        return [types.Tool(**tool_args)]
-
-    def _resolve_text_models(self, configured_model: str) -> List[str]:
-        """
-        Подбирает список моделей для текстовой генерации (generate_content).
-        Если выбранная в аддоне модель является чисто Live WebSocket (bidiGenerateContent),
-        автоматически подставляются совместимые текстовые модели Gemini Flash.
-        """
-        candidates = []
-        is_live_only = any(tag in configured_model.lower() for tag in ["-live", "native-audio", "live-preview"])
-        if configured_model and not is_live_only:
-            candidates.append(configured_model)
-        else:
-            clean = configured_model.replace("-live-preview", "").replace("-live", "").replace("-native-audio-preview", "")
-            if clean and clean != configured_model and clean not in candidates:
-                candidates.append(clean)
-
-        fallbacks = [
-            "models/gemini-2.5-flash",
-            "models/gemini-2.0-flash",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "models/gemini-1.5-flash"
-        ]
-        for fb in fallbacks:
-            if fb not in candidates:
-                candidates.append(fb)
-        return candidates
-
     async def _generate_text_response(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], is_json_mode: bool = False) -> str:
-        """Генерация текстового ответа через Gemini с выполнением инструментов."""
+        """Генерация текстового ответа строго через Gemini Live API WebSocket (bidiGenerateContent)."""
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
             return "Не настроен API ключ Gemini в аддоне Порфирий."
 
         system_prompt = await self._build_system_prompt(dev, options)
-        tools = self._get_tools_schema(options)
+        model = options.get("gemini_model", "gemini-2.0-flash-exp")
 
-        client = genai.Client(
-            http_options={"api_version": "v1alpha"},
-            api_key=api_key
+        proxy_client = GeminiProxyClient(
+            api_key=api_key,
+            system_prompt=system_prompt,
+            ha_api=self.ha_api,
+            model=model,
+            enable_google_search=options.get("enable_google_search", True),
+            response_modalities=["TEXT"]
         )
 
-        contents = [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
-        config_kwargs = {
-            "system_instruction": system_prompt,
-            "tools": tools,
-            "temperature": float(options.get("temperature", 0.7)),
-        }
-        if is_json_mode:
-            config_kwargs["response_mime_type"] = "application/json"
-        config = types.GenerateContentConfig(**config_kwargs)
+        text_parts = []
+        try:
+            async with proxy_client.connect() as session:
+                await session.send(input=types.Content(parts=[types.Part.from_text(text=user_text)]), end_of_turn=True)
 
-        candidate_models = self._resolve_text_models(options.get("gemini_model", ""))
-        last_error = None
+                async for response in session.receive():
+                    server_content = response.server_content
+                    if server_content is not None:
+                        model_turn = server_content.model_turn
+                        if model_turn is not None:
+                            for part in model_turn.parts:
+                                if part.text:
+                                    text_parts.append(part.text)
+                        if server_content.turn_complete:
+                            break
 
-        for candidate_model in candidate_models:
-            turn_contents = list(contents)
-            try:
-                for turn in range(5):
-                    resp = await client.aio.models.generate_content(
-                        model=candidate_model,
-                        contents=turn_contents,
-                        config=config
-                    )
-
-                    if not resp.candidates:
-                        return "Не удалось сформировать ответ."
-
-                    first_cand = resp.candidates[0]
-                    if first_cand.content:
-                        turn_contents.append(first_cand.content)
-
-                    # Если модель запросила вызов функций
-                    if resp.function_calls:
-                        function_parts = []
-                        for fc in resp.function_calls:
-                            logger.info(f"[OPENAI FC] Model called: {fc.name} with {fc.args}")
+                    if response.tool_call is not None:
+                        function_responses = []
+                        for fc in response.tool_call.function_calls:
+                            logger.info(f"[OPENAI LIVE FC] Model called: {fc.name} with {fc.args}")
                             tool_res = await self._execute_tool(fc.name, fc.args, dev, options)
-                            function_parts.append(types.Part.from_function_response(
+                            function_responses.append(types.FunctionResponse(
                                 name=fc.name,
+                                id=fc.id,
                                 response={"result": tool_res}
                             ))
-                        turn_contents.append(types.Content(role="user", parts=function_parts))
-                    else:
-                        raw_text = resp.text or ""
-                        return raw_text.strip() if is_json_mode else sanitize_text_for_speech(raw_text)
+                        await session.send(input=types.LiveClientToolResponse(function_responses=function_responses))
 
+            raw_text = "".join(text_parts).strip()
+            if not raw_text:
                 return "Команда выполнена."
-            except Exception as e:
-                err_str = str(e)
-                if (
-                    "bidiGenerateContent" in err_str or 
-                    "only supports real-time bidirectional streaming" in err_str or 
-                    "404" in err_str or 
-                    "not found" in err_str.lower()
-                ):
-                    logger.warning(f"[OPENAI] Model '{candidate_model}' not supported for REST generate_content ({err_str[:90]}...), trying next candidate...")
-                    last_error = e
-                    continue
-                else:
-                    logger.error(f"[OPENAI] Generation error with '{candidate_model}': {e}", exc_info=True)
-                    raise e
+            return raw_text if is_json_mode else sanitize_text_for_speech(raw_text)
 
-        if last_error:
-            raise last_error
-        return "Не удалось получить ответ от нейросети."
+        except Exception as e:
+            logger.error(f"[OPENAI LIVE] Error generating text response via Live API with model '{model}': {e}", exc_info=True)
+            raise e
 
     async def _generate_airplay_audio_response(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> bool:
         """Генерация аудиоответа голосом Порфирия и воспроизведение через AirPlay."""

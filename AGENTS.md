@@ -26,6 +26,14 @@
 **ДЛЯ ОТПРАВКИ ИЗМЕНЕНИЙ В GITHUB:**
 Выполнять: `/Users/a111/.local/bin/git push origin main`
 
+## 🚨 ПРАВИЛО №4: ВСЕГДА И СТРОГО ИСПОЛЬЗОВАТЬ ТОЛЬКО GEMINI LIVE API (WEBSOCKET)!
+**НИКОГДА НЕ ИСПОЛЬЗОВАТЬ ДЛЯ ОБЩЕНИЯ С СЕРВЕРОМ GOOGLE ЧТО-ТО КРОМЕ LIVE API:**
+1. **ЗАПРЕЩЕНО** использовать REST-вызовы `generate_content` или сторонние текстовые эндпоинты Google API.
+2. **ВСЕ ЗАПРОСЫ** (микрофон ESP32, PC streamer, OpenAI API Gateway для Яндекс Станции) обязаны идти **СТРОГО через WebSocket Gemini Live API (`bidiGenerateContent`)**!
+3. **СТРОГО ТА МОДЕЛЬ, ЧТО ВЫБРАНА В НАСТРОЙКАХ**: Использовать только ту модель, которую пользователь выбрал в `options["gemini_model"]` (например, `models/gemini-3.8-live`). НИКАКИХ скрытых замен, подмен или фолбэков на flash/текстовые модели!
+4. Для получения текстового ответа (режим `alice_tts`) в сессии Live API запрашивается модальность `response_modalities=["TEXT"]`.
+5. Для получения нативного аудио (ESP32, стример, AirPlay) — `response_modalities=["AUDIO"]`.
+
 ---
 
 ## Архитектура проекта
@@ -37,6 +45,11 @@
 ## Особые правила общения с пользователем и процессом разработки
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
+
+### Версия 0.0.112 (Strict Gemini Live WebSocket Architecture & HA WS Buffer Fix)
+*   **Исключительное использование Gemini Live API WebSocket**: В `OpenAIService` удалены все REST-вызовы `generate_content` и переборы моделей. Все текстовые ответы для Alice TTS и аудиоответы для AirPlay генерируются строго через WebSocket сессию Gemini Live API (`bidiGenerateContent`) на выбранной пользователем модели (`gemini-3.8-live`) с сохранением всех инструментов (`call_ha_service`, `get_ha_state`, `play_music_assistant`, `google_search`). Для текста запрашивается `response_modalities=["TEXT"]`, для аудио — `["AUDIO"]`.
+*   **Увеличение буфера WebSocket Home Assistant**: В `ha_api.py` для `_ws_send_and_receive` и `get_exposed_entities_metadata` установлен `max_size=16*1024*1024` (16 МБ), устранена ошибка `1009 (message too big) frame exceeds limit of 1048576 bytes`.
+*   **Синхронизация версий**: В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.112`.
 
 ### Версия 0.0.111 (Live Models REST Compatibility & HA Entities Prompt)
 *   **Совместимость REST OpenAI эндпоинта с Live-моделями**: В `_generate_text_response` реализована адаптация `_resolve_text_models`. Если в настройках аддона выбрана Live-модель (например, `gemini-3.8-live` или `gemini-2.5-flash-native-audio-preview`), которая поддерживает только WebSocket `bidiGenerateContent`, генерация текстового ответа для Alice TTS автоматически использует совместимые текстовые модели Gemini Flash (`gemini-2.5-flash`, `gemini-2.0-flash`). Пользователю не требуется менять глобальную модель в аддоне.

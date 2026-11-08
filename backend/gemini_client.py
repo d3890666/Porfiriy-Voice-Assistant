@@ -91,7 +91,7 @@ async def fetch_available_gemini_models(api_key: str) -> List[Dict[str, Any]]:
     return live_models + other_models
 
 class GeminiProxyClient:
-    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr", model: str = "gemini-2.0-flash-exp", enable_google_search: bool = True, vad_silence_duration_ms: int = 600):
+    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr", model: str = "gemini-2.0-flash-exp", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None):
         """
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
@@ -111,6 +111,7 @@ class GeminiProxyClient:
         self.voice_name = voice_name
         self.enable_google_search = enable_google_search
         self.vad_silence_duration_ms = vad_silence_duration_ms
+        self.response_modalities = response_modalities or ["AUDIO"]
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
@@ -187,15 +188,19 @@ class GeminiProxyClient:
                 )
             )
 
-        return types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            system_instruction=types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
-            tools=tools,
-            speech_config=types.SpeechConfig(
+        speech_config = None
+        if "AUDIO" in self.response_modalities:
+            speech_config = types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.voice_name)
                 )
-            ),
+            )
+
+        return types.LiveConnectConfig(
+            response_modalities=self.response_modalities,
+            system_instruction=types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
+            tools=tools,
+            speech_config=speech_config,
             realtime_input_config=realtime_input_config
         )
 

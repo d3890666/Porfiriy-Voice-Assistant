@@ -1,5 +1,15 @@
 # Журнал изменений (Changelog)
 
+## 0.0.112
+- **Строгий перевод всех запросов на Gemini Live WebSocket API (`bidiGenerateContent`)**:
+  - Полностью исключены REST-вызовы `generate_content` и любые подмены моделей. И текстовые ответы для Алисы (`response_modalities=["TEXT"]`), и аудиоответы для AirPlay (`response_modalities=["AUDIO"]`) генерируются через единый сессионный Live WebSocket с выбранной в настройках моделью (`gemini-3.8-live`).
+  - Сохранены все оригинальные инструменты Home Assistant и Music Assistant без изменений.
+- **Увеличение лимита WebSocket Home Assistant (`max_size=16MB`)**:
+  - В `ha_api.py` для соединений WebSocket установлен лимит `16*1024*1024` байт, устранив ошибку `1009 message too big` при передаче больших реестров устройств.
+- **Синхронизация версий и кэш-бастеров**:
+  - Версия аддона в `config.yaml` поднята до `0.0.112`.
+  - Кэш-бастеры скриптов и стилей в `index.html` обновлены до `?v=0.0.112`.
+
 ## 0.0.111
 - **Устранение сбоя генерации текста (Live Models REST Compatibility & HA Entities Prompt)**:
   - **Автоматическая адаптация моделей для REST эндпоинта OpenAI (`_resolve_text_models`)**: Устранена ошибка `400 INVALID_ARGUMENT (models/gemini-3.8-live only supports real-time bidirectional streaming via WebSocket bidiGenerateContent)`. При генерации текстовых ответов для режима Alice TTS сервер проверяет модель и при использовании чисто Live-моделей прозрачно подставляет совместимые текстовые модели Gemini Flash (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-flash`), сохраняя работу WebSocket Live API для колонок и AirPlay без изменения настроек пользователя.

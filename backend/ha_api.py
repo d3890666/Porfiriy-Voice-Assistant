@@ -264,7 +264,7 @@ class HomeAssistantAPI:
 
     async def _ws_send_and_receive(self, payload: dict) -> dict:
         try:
-            async with websockets.connect(self.ws_url) as ws:
+            async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
                 await ws.recv() # auth_required
                 
                 token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
@@ -288,7 +288,7 @@ class HomeAssistantAPI:
     async def get_exposed_entities_metadata(self) -> Dict[str, Dict[str, Any]]:
         """Получает метаданные (синонимы, комнаты) для сущностей, доступных Assist."""
         try:
-            async with websockets.connect(self.ws_url) as ws:
+            async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
                 await ws.recv() # auth required
                 
                 token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
