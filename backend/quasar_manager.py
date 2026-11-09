@@ -19,6 +19,9 @@ QUASAR_DIR = "/data/opt/quasar-bridge"
 SQUEEZELITE_DIR = "/data/opt/squeezelite"
 SQUEEZELITE_SERVICE_PATH = "/data/opt/squeezelite/service"
 SQUEEZELITE_INIT_PATH = "/etc/init.d/S97squeezelite"
+STATION_AIRPLAY_DIR = "/data/opt/station-airplay"
+STATION_AIRPLAY_SERVICE_PATH = "/data/opt/station-airplay/service"
+STATION_AIRPLAY_INIT_PATH = "/etc/init.d/S98station-airplay"
 STATION_DIST_DIR = os.path.join(os.path.dirname(__file__), "station_dist")
 
 class QuasarManager:
@@ -272,6 +275,13 @@ class QuasarManager:
                 sq_autostart_check = await conn.run(f"test -x {SQUEEZELITE_INIT_PATH} && echo 'ok'", check=False)
                 sq_autostart = (sq_autostart_check.exit_status == 0 and sq_autostart_check.stdout.strip() == "ok")
 
+                # 4. Проверка статуса station-airplay и автозапуска
+                ap_check = await conn.run("ps | grep -v grep | grep station-airplay", check=False)
+                ap_running = (ap_check.exit_status == 0 and bool(ap_check.stdout.strip()))
+
+                ap_autostart_check = await conn.run(f"test -x {STATION_AIRPLAY_INIT_PATH} && echo 'ok'", check=False)
+                ap_autostart = (ap_autostart_check.exit_status == 0 and ap_autostart_check.stdout.strip() == "ok")
+
                 has_update = (installed_ver != bundled_ver)
 
                 return {
@@ -284,6 +294,8 @@ class QuasarManager:
                     "has_update": has_update,
                     "squeezelite_running": sq_running,
                     "squeezelite_autostart": sq_autostart,
+                    "airplay_running": ap_running,
+                    "airplay_autostart": ap_autostart,
                     "bundled_info": bundled
                 }
         except Exception as e:
@@ -406,20 +418,128 @@ class QuasarManager:
             logger.error(f"[QUASAR] Error executing Squeezelite {action} on {ip}:{port}: {e}")
             return {"success": False, "error": str(e), "squeezelite_running": False}
 
+    async def ensure_station_airplay_installed(self, conn) -> bool:
+        """
+        Гарантирует установку и актуальность службы Station AirPlay и скрипта автозапуска в /etc/init.d/S98station-airplay.
+        """
+        try:
+            # 1. Проверяем наличие каталога
+            dir_check = await conn.run(f"test -d {STATION_AIRPLAY_DIR} && echo 'ok'", check=False)
+            if dir_check.exit_status != 0 or dir_check.stdout.strip() != "ok":
+                return False
+
+            # 2. Считываем и заливаем надежный скрипт службы service
+            service_src = os.path.join(STATION_DIST_DIR, "station_airplay_service.sh")
+            service_content = ""
+            if os.path.exists(service_src):
+                with open(service_src, "r", encoding="utf-8") as f:
+                    service_content = f.read()
+
+            if service_content:
+                await conn.run(f"cat << 'EOF' > {STATION_AIRPLAY_SERVICE_PATH}\n{service_content}\nEOF\nchmod 755 {STATION_AIRPLAY_SERVICE_PATH}", check=False)
+            else:
+                await conn.run(f"chmod 755 {STATION_AIRPLAY_SERVICE_PATH} 2>/dev/null || true", check=False)
+
+            # 3. Проверяем наличие неблокирующего автозапуска в /etc/init.d/S98station-airplay
+            hook_check = await conn.run(f"grep -q 'Station AirPlay autostart hook' {STATION_AIRPLAY_INIT_PATH} 2>/dev/null && echo 'ok'", check=False)
+            if hook_check.exit_status != 0 or hook_check.stdout.strip() != "ok":
+                init_src = os.path.join(STATION_DIST_DIR, "station_airplay_init.sh")
+                init_content = ""
+                if os.path.exists(init_src):
+                    with open(init_src, "r", encoding="utf-8") as f:
+                        init_content = f.read()
+
+                if not init_content:
+                    init_content = (
+                        "#!/bin/sh\n"
+                        "# Station AirPlay autostart hook for Porfiriy & Music Assistant\n"
+                        "case \"${1:-start}\" in\n"
+                        "    start)\n"
+                        "        sh /data/opt/station-airplay/service start >/dev/null 2>&1 &\n"
+                        "        ;;\n"
+                        "    stop)\n"
+                        "        sh /data/opt/station-airplay/service stop\n"
+                        "        ;;\n"
+                        "    restart)\n"
+                        "        sh /data/opt/station-airplay/service restart\n"
+                        "        ;;\n"
+                        "    status)\n"
+                        "        exec sh /data/opt/station-airplay/service status\n"
+                        "        ;;\n"
+                        "    *)\n"
+                        "        exec sh /data/opt/station-airplay/service \"$@\"\n"
+                        "        ;;\n"
+                        "esac\n"
+                    )
+
+                logger.info("[QUASAR] Installing non-blocking AirPlay autostart hook to /etc/init.d/S98station-airplay...")
+                install_cmd = (
+                    "mount -o remount,rw / && "
+                    f"cat << 'EOF' > {STATION_AIRPLAY_INIT_PATH}\n{init_content}\nEOF\n"
+                    f"chmod 755 {STATION_AIRPLAY_INIT_PATH} && "
+                    "sync && "
+                    "mount -o remount,ro /"
+                )
+                await conn.run(install_cmd, check=False)
+
+            return True
+        except Exception as e:
+            logger.warning(f"[QUASAR] Could not ensure station airplay installed: {e}")
+            return False
+
+    async def control_station_airplay(self, ip: str, port: int = DEFAULT_SSH_PORT, action: str = "restart") -> Dict[str, Any]:
+        """
+        Управляет службой Station AirPlay (start, stop, restart, status) на Станции по SSH.
+        """
+        if not ip or ip == "---":
+            return {"error": "IP-адрес колонки не указан"}
+
+        action = action.strip().lower()
+        if action not in ["start", "stop", "restart", "status"]:
+            return {"error": f"Неизвестное действие: {action}"}
+
+        try:
+            async with await self._open_ssh_connection(ip, port) as conn:
+                await self.ensure_station_airplay_installed(conn)
+
+                cmd = f"sh {STATION_AIRPLAY_SERVICE_PATH} {action}"
+                res = await conn.run(cmd, check=False)
+                out = res.stdout.strip()
+                err = res.stderr.strip()
+
+                await asyncio.sleep(0.5)
+                ap_check = await conn.run("ps | grep -v grep | grep station-airplay", check=False)
+                ap_running = (ap_check.exit_status == 0 and bool(ap_check.stdout.strip()))
+
+                msg = out or err or f"Команда {action} выполнена"
+                logger.info(f"[QUASAR] AirPlay {action} on {ip}:{port} -> running={ap_running} ({msg})")
+
+                return {
+                    "success": True,
+                    "action": action,
+                    "airplay_running": ap_running,
+                    "message": msg,
+                    "output": out
+                }
+        except Exception as e:
+            logger.error(f"[QUASAR] Error executing AirPlay {action} on {ip}:{port}: {e}")
+            return {"success": False, "error": str(e), "airplay_running": False}
+
     async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
         """
-        Обновляет компоненты Quasar Bridge и Squeezelite на Яндекс Станции:
+        Обновляет компоненты Quasar Bridge, Squeezelite и AirPlay на Яндекс Станции:
         - Записывает манифест версии version.json
         - Загружает обновленный бинарник из station_dist/bin/ (если присутствует)
         - Обновляет службу и автозапуск Squeezelite
+        - Обновляет службу и автозапуск Station AirPlay
         - Выполняет валидацию конфигурации -check-config
-        - Перезапускает Quasar Bridge и Squeezelite
+        - Перезапускает Quasar Bridge, Squeezelite и Station AirPlay
         """
         if not ip or ip == "---":
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.2")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.3")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:
@@ -444,7 +564,10 @@ class QuasarManager:
                 # 4. Обновляем и страхуем службу Squeezelite
                 await self.ensure_squeezelite_installed(conn)
 
-                # 5. Проверяем конфигурацию Quasar перед перезапуском
+                # 5. Обновляем и страхуем службу Station AirPlay
+                await self.ensure_station_airplay_installed(conn)
+
+                # 6. Проверяем конфигурацию Quasar перед перезапуском
                 check_cmd = f"cd {QUASAR_DIR} && set -a && . ./runtime.env && set +a && ./app/bin/quasar-bridge -config {QUASAR_CONFIG_PATH} -check-config"
                 check_res = await conn.run(check_cmd, check=False)
                 if check_res.exit_status != 0:
@@ -452,7 +575,7 @@ class QuasarManager:
                         "error": f"Конфигурация не прошла валидацию: {check_res.stderr.strip() or check_res.stdout.strip()}"
                     }
 
-                # 6. Перезапускаем Quasar Bridge
+                # 7. Перезапускаем Quasar Bridge
                 restart_cmd = f"sh {QUASAR_DIR}/app/control.sh restart"
                 restart_res = await conn.run(restart_cmd, check=False)
                 if restart_res.exit_status != 0:
@@ -460,18 +583,25 @@ class QuasarManager:
                         "error": f"Ошибка перезапуска Quasar Bridge: {restart_res.stderr.strip()}"
                     }
 
-                # 7. Перезапускаем Squeezelite
-                sq_restart = await conn.run(f"sh {SQUEEZELITE_SERVICE_PATH} restart", check=False)
+                # 8. Перезапускаем Squeezelite
+                await conn.run(f"sh {SQUEEZELITE_SERVICE_PATH} restart", check=False)
                 await asyncio.sleep(0.5)
                 sq_check = await conn.run("ps | grep -v grep | grep squeezelite", check=False)
                 sq_running = (sq_check.exit_status == 0 and bool(sq_check.stdout.strip()))
 
-                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver} (Squeezelite running={sq_running})")
+                # 9. Перезапускаем Station AirPlay
+                await conn.run(f"sh {STATION_AIRPLAY_SERVICE_PATH} restart", check=False)
+                await asyncio.sleep(0.5)
+                ap_check = await conn.run("ps | grep -v grep | grep station-airplay", check=False)
+                ap_running = (ap_check.exit_status == 0 and bool(ap_check.stdout.strip()))
+
+                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver} (Squeezelite running={sq_running}, AirPlay running={ap_running})")
                 return {
                     "success": True,
-                    "message": f"Компоненты Quasar Bridge и Squeezelite успешно обновлены до {bundled_ver}",
+                    "message": f"Компоненты Quasar Bridge, Squeezelite и AirPlay успешно обновлены до {bundled_ver}",
                     "version": bundled_ver,
                     "squeezelite_running": sq_running,
+                    "airplay_running": ap_running,
                     "output": restart_res.stdout.strip()
                 }
         except Exception as e:

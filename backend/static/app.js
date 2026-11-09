@@ -251,24 +251,37 @@ function renderDevicesGrid() {
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
               <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge">
-                v1.2.4-porfiriy.2
+                v1.2.4-porfiriy.3
               </span>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge и Squeezelite по SSH">
+            <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH">
               ⚡ Обновить Quasar
             </button>
           </div>
-          <!-- Squeezelite Music Assistant Bar -->
-          <div style="margin: 8px 0 4px 0; display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="font-size: 12px; color: #38bdf8; font-weight: 600;">🎵 Squeezelite (MA):</span>
-              <span id="sq-badge-${dev.mac}" class="badge ${dev.squeezelite_running !== false ? 'badge-success' : 'badge-error'}" style="font-size: 10px; padding: 2px 6px;">
-                ${dev.squeezelite_running !== false ? 'В сети' : 'Остановлен'}
-              </span>
+          <!-- Players bar: Squeezelite & AirPlay -->
+          <div style="margin: 8px 0 4px 0; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="font-size: 12px; color: #38bdf8; font-weight: 600;">🎵 Squeezelite (MA):</span>
+                <span id="sq-badge-${dev.mac}" class="badge ${dev.squeezelite_running !== false ? 'badge-success' : 'badge-error'}" style="font-size: 10px; padding: 2px 6px;">
+                  ${dev.squeezelite_running !== false ? 'В сети' : 'Остановлен'}
+                </span>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="controlSqueezelite('${dev.mac}', 'restart')" style="font-size: 11px; padding: 2px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Перезапустить службу Squeezelite на Станции">
+                🔄 Рестарт
+              </button>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="controlSqueezelite('${dev.mac}', 'restart')" style="font-size: 11px; padding: 2px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);" title="Перезапустить службу Squeezelite на Станции">
-              🔄 Рестарт
-            </button>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 8px;">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="font-size: 12px; color: #c084fc; font-weight: 600;">📻 Station AirPlay:</span>
+                <span id="ap-badge-${dev.mac}" class="badge ${dev.airplay_running !== false ? 'badge-success' : 'badge-error'}" style="font-size: 10px; padding: 2px 6px;">
+                  ${dev.airplay_running !== false ? 'В сети' : 'Остановлен'}
+                </span>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="controlAirplay('${dev.mac}', 'restart')" style="font-size: 11px; padding: 2px 8px; color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Перезапустить службу AirPlay на Станции">
+                🔄 Рестарт
+              </button>
+            </div>
           </div>
           <!-- Yandex Station Settings -->
           <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
@@ -2260,10 +2273,10 @@ let currentQuasarIp = '';
 async function updateQuasarComponents(mac) {
   const dev = devices.find(x => x.mac === mac);
   const ip = dev?.ip || dev?.config?.ip || '';
-  if (!confirm(`Обновить компоненты Quasar Bridge и Squeezelite на Станции (${ip || mac}) до версии Porfiriy Edition по SSH?`)) {
+  if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition по SSH?`)) {
     return;
   }
-  showToast('Подключение по SSH и обновление Quasar Bridge & Squeezelite...');
+  showToast('Подключение по SSH и обновление Quasar Bridge, Squeezelite и AirPlay...');
   try {
     const res = await fetch(`${API_BASE}/api/quasar/update`, {
       method: 'POST',
@@ -2272,9 +2285,10 @@ async function updateQuasarComponents(mac) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Quasar Bridge & Squeezelite успешно обновлены до ${data.version}!`);
-      if (dev && data.squeezelite_running !== undefined) {
-        dev.squeezelite_running = data.squeezelite_running;
+      showToast(`Компоненты Quasar успешно обновлены до ${data.version}!`);
+      if (dev) {
+        if (data.squeezelite_running !== undefined) dev.squeezelite_running = data.squeezelite_running;
+        if (data.airplay_running !== undefined) dev.airplay_running = data.airplay_running;
       }
       fetchDevices();
     } else {
@@ -2321,6 +2335,41 @@ async function controlSqueezelite(mac, action = 'restart') {
 }
 window.controlSqueezelite = controlSqueezelite;
 
+async function controlAirplay(mac, action = 'restart') {
+  const dev = devices.find(x => x.mac === mac);
+  const ip = dev?.ip || dev?.config?.ip || '';
+  showToast(`AirPlay: отправка команды ${action}...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/quasar/airplay`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mac: mac, ip: ip, action: action })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`AirPlay: ${data.message || 'команда выполнена'}`);
+      if (dev) {
+        dev.airplay_running = data.airplay_running;
+      }
+      const badge = document.getElementById(`ap-badge-${mac}`);
+      if (badge) {
+        badge.className = `badge ${data.airplay_running ? 'badge-success' : 'badge-error'}`;
+        badge.textContent = data.airplay_running ? 'В сети' : 'Остановлен';
+      }
+      const modalBadge = document.getElementById('quasar-modal-ap-badge');
+      if (modalBadge) {
+        modalBadge.className = `fw-badge ${data.airplay_running ? 'fw-up-to-date' : 'fw-update-available'}`;
+        modalBadge.textContent = data.airplay_running ? 'В сети' : 'Остановлен';
+      }
+    } else {
+      showToast(`Ошибка AirPlay: ${data.error || 'сбой'}`, true);
+    }
+  } catch (err) {
+    showToast('Сетевая ошибка при управлении AirPlay', true);
+  }
+}
+window.controlAirplay = controlAirplay;
+
 async function openQuasarRoutingModal(mac) {
   currentQuasarMac = mac;
   const dev = devices.find(d => d.mac === mac);
@@ -2338,7 +2387,7 @@ async function openQuasarRoutingModal(mac) {
   const testRes = document.getElementById('quasar-test-result');
   if (testRes) testRes.style.display = 'none';
 
-  // Опрашиваем статус компонентов и Squeezelite
+  // Опрашиваем статус компонентов, Squeezelite и AirPlay
   try {
     fetch(`${API_BASE}/api/quasar/version?mac=${encodeURIComponent(mac)}`)
       .then(r => r.json())
@@ -2348,6 +2397,11 @@ async function openQuasarRoutingModal(mac) {
           if (sqBadge) {
             sqBadge.className = `fw-badge ${vData.squeezelite_running ? 'fw-up-to-date' : 'fw-update-available'}`;
             sqBadge.textContent = vData.squeezelite_running ? 'В сети' : 'Остановлен';
+          }
+          const apBadge = document.getElementById('quasar-modal-ap-badge');
+          if (apBadge) {
+            apBadge.className = `fw-badge ${vData.airplay_running ? 'fw-up-to-date' : 'fw-update-available'}`;
+            apBadge.textContent = vData.airplay_running ? 'В сети' : 'Остановлен';
           }
         }
       }).catch(() => {});

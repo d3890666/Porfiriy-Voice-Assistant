@@ -18,3 +18,4 @@ case "${1:-start}" in
         exec sh /data/opt/squeezelite/service "$@"
         ;;
 esac
+

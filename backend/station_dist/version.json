@@ -1,13 +1,16 @@
 {
-  "version": "1.2.4-porfiriy.2",
+  "version": "1.2.4-porfiriy.3",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Native WebSocket audio streaming, Squeezelite autostart and continuous dialogue for Yandex Station 2",
+  "description": "Native WebSocket audio streaming, Squeezelite, Station AirPlay and continuous dialogue for Yandex Station 2",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",
     "squeezelite_service",
     "squeezelite_init",
+    "station-airplay",
+    "station_airplay_service",
+    "station_airplay_init",
     "control.sh",
     "runtime.env"
   ],
@@ -16,6 +19,7 @@
     "multi_turn_dialogue",
     "home_assistant_synonyms",
     "squeezelite_music_assistant",
-    "squeezelite_autostart_watchdog"
+    "squeezelite_autostart_watchdog",
+    "station_airplay_music_assistant"
   ]
 }
