@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.120">
+  <link rel="stylesheet" href="static/style.css?v=0.0.121">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1429,6 +1429,19 @@ PING:
           </div>
         </div>
 
+        <!-- Auto-Ducking Banner -->
+        <div style="background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.25); border-radius: 8px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 13px; font-weight: 600; color: #fbbf24;">🦆 Auto-Ducking:</span>
+            <span id="quasar-modal-duck-badge" class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;">Активен</span>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="controlDucking(currentQuasarMac, 'restart')" style="font-size: 11px; padding: 4px 10px; border-color: rgba(251, 191, 36, 0.5); color: #fbbf24;" title="Перезапустить службу авто-дакинга на Станции">
+              🔄 Перезапустить
+            </button>
+          </div>
+        </div>
+
         <!-- Smart Home Section -->
         <div class="form-group" style="margin: 0;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -1488,6 +1501,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.120"></script>
+  <script src="static/app.js?v=0.0.121"></script>
 </body>
 </html>

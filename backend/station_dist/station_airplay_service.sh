@@ -63,3 +63,4 @@ case "${1:-status}" in
  status) if running;then echo "Station AirPlay running ($pid)";else echo "Station AirPlay stopped";exit 1;fi;;
  *) echo "Usage: service {start|stop|restart|status}" >&2;exit 2;;
 esac
+
