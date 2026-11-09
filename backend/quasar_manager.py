@@ -1,3 +1,4 @@
+import os
 import logging
 import json
 import asyncio
@@ -15,6 +16,7 @@ except ImportError:
 DEFAULT_SSH_PORT = 2222
 QUASAR_CONFIG_PATH = "/data/opt/quasar-bridge/config.json"
 QUASAR_DIR = "/data/opt/quasar-bridge"
+STATION_DIST_DIR = os.path.join(os.path.dirname(__file__), "station_dist")
 
 class QuasarManager:
     """Управление конфигурацией и маршрутизацией Quasar Bridge на Яндекс Станции через SSH."""
@@ -213,3 +215,136 @@ class QuasarManager:
                     "route": "unknown",
                     "raw": out or res.stderr.strip()
                 }
+
+    def get_bundled_version_info(self) -> Dict[str, Any]:
+        """Возвращает информацию о встроенной в аддон версии Quasar Bridge Porfiriy Edition."""
+        manifest_path = os.path.join(STATION_DIST_DIR, "version.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"[QUASAR] Failed to read bundled version manifest: {e}")
+        return {
+            "version": "1.2.4-porfiriy.1",
+            "name": "Quasar Bridge Porfiriy Edition",
+            "target": "yandex_station_2"
+        }
+
+    async def get_version_info(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """Опрашивает версию Quasar Bridge, установленную на колонке, и сравнивает с бандлом аддона."""
+        if not ip or ip == "---":
+            return {"error": "IP-адрес колонки не указан"}
+
+        bundled = self.get_bundled_version_info()
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.1")
+
+        try:
+            async with await self._open_ssh_connection(ip, port) as conn:
+                # 1. Проверяем файл version.json на колонке
+                ver_check = await conn.run("cat /data/opt/quasar-bridge/version.json 2>/dev/null", check=False)
+                installed_ver = ""
+                is_native = False
+
+                if ver_check.exit_status == 0 and ver_check.stdout.strip():
+                    try:
+                        v_data = json.loads(ver_check.stdout.strip())
+                        installed_ver = v_data.get("version", "")
+                        is_native = True
+                    except Exception:
+                        installed_ver = ver_check.stdout.strip()
+
+                # 2. Если нет version.json, запускаем бинарник с ключом -version или проверяем файл
+                if not installed_ver:
+                    bin_check = await conn.run(f"{QUASAR_DIR}/app/bin/quasar-bridge -version 2>/dev/null", check=False)
+                    if bin_check.exit_status == 0 and bin_check.stdout.strip():
+                        installed_ver = bin_check.stdout.strip()
+                    else:
+                        installed_ver = "1.2.3 (сторонний)"
+
+                # 3. Проверка статуса squeezelite
+                sq_check = await conn.run("ps | grep -v grep | grep squeezelite", check=False)
+                sq_running = (sq_check.exit_status == 0 and bool(sq_check.stdout.strip()))
+
+                has_update = (installed_ver != bundled_ver)
+
+                return {
+                    "success": True,
+                    "ip": ip,
+                    "port": port,
+                    "installed_version": installed_ver,
+                    "bundled_version": bundled_ver,
+                    "is_native": is_native or "-porfiriy" in installed_ver,
+                    "has_update": has_update,
+                    "squeezelite_running": sq_running,
+                    "bundled_info": bundled
+                }
+        except Exception as e:
+            logger.error(f"[QUASAR] Error getting station version from {ip}:{port}: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "bundled_version": bundled_ver
+            }
+
+    async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """
+        Обновляет Quasar Bridge на Яндекс Станции:
+        - Записывает манифест версии version.json
+        - Загружает обновленный бинарник из station_dist/bin/ (если присутствует)
+        - Выполняет валидацию конфигурации -check-config
+        - Перезапускает службу control.sh restart
+        """
+        if not ip or ip == "---":
+            return {"error": "IP-адрес колонки не указан"}
+
+        bundled = self.get_bundled_version_info()
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.1")
+
+        try:
+            async with await self._open_ssh_connection(ip, port) as conn:
+                # 1. Проверяем наличие каталога Quasar Bridge
+                dir_check = await conn.run(f"test -d {QUASAR_DIR} && echo 'ok'", check=False)
+                if dir_check.exit_status != 0 or dir_check.stdout.strip() != "ok":
+                    return {"error": f"Каталог {QUASAR_DIR} не найден на Станции {ip}"}
+
+                # 2. Если в аддоне есть свежий бинарник, передаем его по SFTP/SSH
+                bin_src = os.path.join(STATION_DIST_DIR, "bin", "quasar-bridge")
+                if os.path.exists(bin_src) and os.path.getsize(bin_src) > 1000:
+                    logger.info(f"[QUASAR] Uploading updated binary to {ip}...")
+                    async with conn.start_sftp_client() as sftp:
+                        await sftp.put(bin_src, f"{QUASAR_DIR}/app/bin/quasar-bridge")
+                    await conn.run(f"chmod +x {QUASAR_DIR}/app/bin/quasar-bridge", check=False)
+
+                # 3. Записываем version.json на колонку
+                ver_json_str = json.dumps(bundled, indent=2, ensure_ascii=False)
+                escaped_ver = ver_json_str.replace("'", "'\\''")
+                await conn.run(f"echo '{escaped_ver}' > {QUASAR_DIR}/version.json", check=False)
+
+                # 4. Проверяем конфигурацию перед перезапуском
+                check_cmd = f"cd {QUASAR_DIR} && set -a && . ./runtime.env && set +a && ./app/bin/quasar-bridge -config {QUASAR_CONFIG_PATH} -check-config"
+                check_res = await conn.run(check_cmd, check=False)
+                if check_res.exit_status != 0:
+                    return {
+                        "error": f"Конфигурация не прошла валидацию: {check_res.stderr.strip() or check_res.stdout.strip()}"
+                    }
+
+                # 5. Перезапускаем Quasar Bridge
+                restart_cmd = f"sh {QUASAR_DIR}/app/control.sh restart"
+                restart_res = await conn.run(restart_cmd, check=False)
+                if restart_res.exit_status != 0:
+                    return {
+                        "error": f"Ошибка перезапуска Quasar Bridge: {restart_res.stderr.strip()}"
+                    }
+
+                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver}")
+                return {
+                    "success": True,
+                    "message": f"Компоненты Quasar Bridge успешно обновлены до {bundled_ver}",
+                    "version": bundled_ver,
+                    "output": restart_res.stdout.strip()
+                }
+        except Exception as e:
+            logger.error(f"[QUASAR] Error updating station {ip}:{port}: {e}")
+            return {"error": str(e)}
+

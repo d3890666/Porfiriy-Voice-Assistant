@@ -248,16 +248,38 @@ function renderDevicesGrid() {
           </div>
         ` : dev.device_type === 'yandex_station' ? `
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция</span>
-            <span style="font-size: 11px; color: #a78bfa; font-family: monospace; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 12px;">Quasar Bridge</span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
+              <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge">
+                v1.2.4-porfiriy.1
+              </span>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge по SSH">
+              ⚡ Обновить Quasar
+            </button>
           </div>
           <!-- Yandex Station Settings -->
           <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">📡 Канал связи:</span>
+              <select id="yandex-input-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'input_mode', this.value)">
+                <option value="websocket" ${(cfg.input_mode !== 'http') ? 'selected' : ''}>📡 WebSocket (Живое аудио 16kHz)</option>
+                <option value="http" ${(cfg.input_mode === 'http') ? 'selected' : ''}>📄 HTTP REST (Текст ASR)</option>
+              </select>
+            </div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🗣️ Вывод:</span>
               <select id="yandex-mode-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'output_mode', this.value)">
                 <option value="ssh_stream" ${((cfg.output_mode || 'ssh_stream') === 'ssh_stream' || cfg.output_mode === 'airplay') ? 'selected' : ''}>⚡ Прямой голос Порфирия (SSH ALSA)</option>
                 <option value="alice_tts" ${(cfg.output_mode === 'alice_tts') ? 'selected' : ''}>🗣️ Голос Алисы (текст)</option>
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">⏱️ Диалог:</span>
+              <select id="yandex-dialog-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'dialogue_timeout_s', parseInt(this.value, 10))">
+                <option value="60" ${(cfg.dialogue_timeout_s === undefined || cfg.dialogue_timeout_s === 60) ? 'selected' : ''}>60 сек (Активный диалог)</option>
+                <option value="30" ${(cfg.dialogue_timeout_s === 30) ? 'selected' : ''}>30 сек</option>
+                <option value="0" ${(cfg.dialogue_timeout_s === 0) ? 'selected' : ''}>Выкл (Одноразовый)</option>
               </select>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
@@ -269,7 +291,7 @@ function renderDevicesGrid() {
               </select>
             </div>
             <div style="font-size: 11px; color: #34d399; display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: rgba(52, 211, 153, 0.08); border: 1px solid rgba(52, 211, 153, 0.2); border-radius: 6px;">
-              <span>⚡ Прямой звук SSH :2222 активен (ALSA)</span>
+              <span>⚡ Прямой канал SSH :2222 активен (ALSA raw PCM)</span>
             </div>
           </div>
           <div style="margin-top: 8px; display: flex; gap: 8px;">
@@ -2218,10 +2240,36 @@ function toggleOpenAiKeyVisibility() {
 window.toggleOpenAiKeyVisibility = toggleOpenAiKeyVisibility;
 
 // ==========================================
-// Quasar Bridge Routing Management
+// Quasar Bridge Routing Management & Update
 // ==========================================
 let currentQuasarMac = '';
 let currentQuasarIp = '';
+
+async function updateQuasarComponents(mac) {
+  const dev = devices.find(x => x.mac === mac);
+  const ip = dev?.ip || dev?.config?.ip || '';
+  if (!confirm(`Обновить компоненты Quasar Bridge на Станции (${ip || mac}) до версии Porfiriy Edition по SSH?`)) {
+    return;
+  }
+  showToast('Подключение по SSH и обновление Quasar Bridge...');
+  try {
+    const res = await fetch(`${API_BASE}/api/quasar/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mac: mac, ip: ip })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Quasar Bridge успешно обновлен до ${data.version}!`);
+      fetchDevices();
+    } else {
+      showToast(`Ошибка обновления: ${data.error || 'сбой'}`, true);
+    }
+  } catch (err) {
+    showToast('Сетевая ошибка при обновлении Quasar', true);
+  }
+}
+window.updateQuasarComponents = updateQuasarComponents;
 
 async function openQuasarRoutingModal(mac) {
   currentQuasarMac = mac;

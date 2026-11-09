@@ -318,6 +318,10 @@ async def handle_client(websocket):
             logger.info(f"[STREAMER] Routing {client_mac} to server-side wake word handler.")
             await handle_pc_streamer(websocket, client_mac, first_data)
             return
+        elif device_type == "yandex_station":
+            logger.info(f"[YANDEX-WS] Routing {client_mac} to Yandex Station audio streamer.")
+            await handle_yandex_station_streamer(websocket, client_mac, first_data)
+            return
     elif isinstance(first_msg, bytes):
         # Редкий случай: клиент сразу льёт байты (старый debug_client)
         pass  # обработаем ниже вместе с остальными
@@ -1612,6 +1616,216 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
         device_manager.unregister_wake_handler(client_mac)
         if ww_engine:
             ww_engine.reset(client_mac)
+        device_manager.set_device_offline(client_mac, ws=websocket)
+
+
+async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: dict):
+    """
+    Обрабатывает высокоскоростное WebSocket-подключение Яндекс Станции 2:
+    - Принимает живой 16 kHz PCM аудиопоток напрямую с микрофонов Станции
+    - Потоково передает звук в сессию Gemini Live API (bidiGenerateContent)
+    - Получает нативный аудиоответ 24 kHz от Gemini Live
+    - Стримит ответ обратно через WebSocket или открытый SSH ALSA пайп
+    - Поддерживает непрерывный режим диалога (Multi-turn Context)
+    """
+    options = get_options()
+    ha_api = HomeAssistantAPI()
+    dev_config = device_manager.get_device_config(client_mac)
+    area_name = reg_data.get("area_name") or device_manager.get_device_area(client_mac)
+    speaker_ip = reg_data.get("ip") or dev_config.get("ip") or ""
+    output_mode = dev_config.get("output_mode", "ssh_stream")
+
+    logger.info(f"[YANDEX-WS] {client_mac} connected for live audio streaming. ip={speaker_ip}, output_mode={output_mode}")
+    device_manager.set_device_state(client_mac, "listening")
+
+    session_active = False
+    audio_queue: Optional[asyncio.Queue] = None
+    gemini_is_speaking = False
+
+    async def _run_gemini_session():
+        nonlocal session_active, audio_queue, gemini_is_speaking
+        session_active = True
+        device_manager.set_device_state(client_mac, "listening")
+
+        api_key_str = (options.get("gemini_api_key") or "").strip()
+        api_key = get_active_api_key(api_key_str)
+        if not api_key:
+            logger.error("[YANDEX-WS] Gemini API key missing, cannot start session.")
+            session_active = False
+            return
+
+        devices_text = await ha_api.get_filtered_entities()
+        modular_parts = []
+        for key, title in [
+            ("prompt_persona", "PERSONA & CONTEXT"),
+            ("prompt_users", "USERS & ACOUSTIC IDENTIFICATION"),
+            ("prompt_smart_home", "SMART HOME EXECUTION RULES"),
+            ("prompt_general", "GENERAL DIALOGUE, SEARCH & MEDIA"),
+        ]:
+            if options.get(key, "").strip():
+                modular_parts.append(f"### {title}\n{options[key].strip()}")
+        prompt_base = "\n\n".join(modular_parts) or options.get("system_prompt", "")
+        anti_hallucination = (
+            "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
+            "unless you have explicitly called the corresponding tool."
+        )
+        full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
+        data_actions_text = await ha_api.get_data_actions_prompt()
+        if data_actions_text:
+            full_prompt += f"\n\n{data_actions_text}"
+        if area_name:
+            full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: Room '{area_name}'."
+
+        station_ctx = (
+            f"\n\n### HARDWARE & SATELLITE CONTEXT:\n"
+            f"- Device Type: Yandex Station 2 (Native WebSocket Live Audio Stream).\n"
+            f"- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones.\n"
+            f"- Speech Directive: Output strictly spoken, natural Russian. 1-2 concise spoken sentences."
+        )
+        full_prompt += station_ctx
+
+        vad_silence = int(options.get("vad_silence_duration_ms", 600))
+        gemini_client = GeminiProxyClient(
+            api_key=api_key,
+            system_prompt=full_prompt,
+            ha_api=ha_api,
+            voice_name=options.get("voice_name", "Charon"),
+            model=options.get("gemini_model", "models/gemini-3.8-live"),
+            enable_google_search=options.get("enable_google_search", True),
+            vad_silence_duration_ms=vad_silence,
+            response_modalities=["AUDIO"]
+        )
+
+        pcm_response_chunks = []
+        
+        async def _stream_mic_to_gemini(session):
+            try:
+                while session_active:
+                    chunk = await audio_queue.get()
+                    if chunk is None:
+                        break
+                    if gemini_is_speaking:
+                        continue
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
+                    )
+            except asyncio.CancelledError:
+                pass
+            except Exception as e_stream:
+                logger.debug(f"[YANDEX-WS] Mic stream worker note: {e_stream}")
+
+        async def _receive_from_gemini(session):
+            nonlocal gemini_is_speaking
+            async for response in session.receive():
+                if response.server_content and response.server_content.model_turn:
+                    gemini_is_speaking = True
+                    device_manager.set_device_state(client_mac, "speaking")
+                    current_cfg = device_manager.get_device_config(client_mac)
+                    active_vol = float(current_cfg.get("speaker_volume", 0.5))
+                    for part in response.server_content.model_turn.parts:
+                        if part.inline_data and part.inline_data.data:
+                            scaled_chunk = scale_pcm16(part.inline_data.data, active_vol)
+                            pcm_response_chunks.append(scaled_chunk)
+                            try:
+                                await websocket.send(scaled_chunk)
+                            except Exception:
+                                pass
+
+                if response.tool_call:
+                    logger.info(f"[YANDEX-WS] Tool Call from Gemini: {response.tool_call}")
+                    function_responses = []
+                    for fc in response.tool_call.function_calls:
+                        name = fc.name
+                        raw_args = dict(fc.args) if fc.args else {}
+                        if name == "call_ha_service":
+                            domain = raw_args.get("domain")
+                            service = raw_args.get("service")
+                            entity_id = raw_args.get("entity_id")
+                            s_data = dict(raw_args.get("parameters", {})) if raw_args.get("parameters") else {}
+                            if entity_id:
+                                s_data["entity_id"] = entity_id
+                            for k in ["position", "temperature", "hvac_mode", "percentage"]:
+                                if k in raw_args and raw_args[k] is not None:
+                                    s_data[k] = raw_args[k]
+                            tool_res = await ha_api.call_ha_action(domain, service, s_data)
+                        elif name == "get_ha_state":
+                            tool_res = await ha_api.get_entity_state(raw_args.get("entity_id")) or {"status": "not_found"}
+                        else:
+                            tool_res = {"status": "ok"}
+                        function_responses.append(types.FunctionResponse(
+                            name=name,
+                            id=fc.id,
+                            response={"result": tool_res}
+                        ))
+                    await session.send_tool_response(function_responses=function_responses)
+
+                if response.server_content and response.server_content.turn_complete:
+                    logger.info(f"[YANDEX-WS] Gemini turn complete for {client_mac}.")
+                    try:
+                        await websocket.send(json.dumps({"type": "turn_complete"}))
+                    except Exception:
+                        pass
+                    break
+
+        sender_task = None
+        try:
+            async with gemini_client.connect() as session:
+                sender_task = asyncio.create_task(_stream_mic_to_gemini(session))
+                await asyncio.wait_for(_receive_from_gemini(session), timeout=45.0)
+        except asyncio.TimeoutError:
+            logger.info(f"[YANDEX-WS] Session timed out for {client_mac}.")
+        except Exception as e:
+            logger.error(f"[YANDEX-WS] Gemini session error for {client_mac}: {e}")
+        finally:
+            session_active = False
+            device_manager.set_device_state(client_mac, "idle")
+            if audio_queue:
+                audio_queue.put_nowait(None)
+            if sender_task and not sender_task.done():
+                sender_task.cancel()
+            audio_queue = None
+
+        if pcm_response_chunks:
+            raw_pcm = b"".join(pcm_response_chunks)
+            wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
+            device_manager.save_response_wav(client_mac, wav_bytes)
+
+    try:
+        audio_queue = asyncio.Queue()
+        asyncio.create_task(_run_gemini_session())
+
+        async for message in websocket:
+            if isinstance(message, bytes):
+                # Входящий 16kHz PCM кусок голоса со Станции
+                if audio_queue is not None:
+                    audio_queue.put_nowait(message)
+                raw_rms = calculate_pcm_rms(message)
+                calc_dbfs = float(round(20.0 * math.log10(max(1.0, raw_rms) / 32768.0), 1))
+                device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=calc_dbfs)
+
+            elif isinstance(message, str):
+                try:
+                    data = json.loads(message)
+                    mtype = data.get("type")
+                    if mtype == "end_of_speech":
+                        if audio_queue is not None:
+                            # Вставляем тишину для закрытия хода модели
+                            silence = b"\x00" * 1024
+                            for _ in range(24):
+                                audio_queue.put_nowait(silence)
+                    elif mtype == "heartbeat":
+                        device_manager.update_heartbeat(client_mac, rssi=-40, uptime=0, state="online")
+                except Exception:
+                    pass
+
+    except ConnectionClosed:
+        logger.info(f"[YANDEX-WS] {client_mac} disconnected.")
+    except Exception as e:
+        logger.error(f"[YANDEX-WS] Error for {client_mac}: {e}")
+    finally:
+        session_active = False
+        if audio_queue:
+            audio_queue.put_nowait(None)
         device_manager.set_device_offline(client_mac, ws=websocket)
 
 

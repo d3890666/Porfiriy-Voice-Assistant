@@ -66,6 +66,74 @@ class OpenAIService:
         self.options_callback = options_callback
         self.default_port = default_port
         self._api_key_index = 0
+        self.dialogue_history: Dict[str, Dict[str, Any]] = {}
+
+    def _build_dialogue_turns(self, messages: List[Dict[str, Any]], mac: str, timeout_s: float = 60.0) -> Tuple[List[Any], str]:
+        """
+        Преобразует массив сообщений OpenAI в список ходов (turns) Gemini types.Content
+        с сохранением контекста непрерывного диалога между репликами.
+        """
+        user_text = ""
+        turns = []
+        has_prior = False
+
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            text_val = ""
+            if isinstance(content, str):
+                text_val = content.strip()
+            elif isinstance(content, list):
+                parts = [it.get("text", "") for it in content if isinstance(it, dict) and it.get("type") == "text"]
+                text_val = " ".join(parts).strip()
+
+            if not text_val:
+                continue
+
+            if role == "user":
+                user_text = text_val
+                if types:
+                    turns.append(types.Content(role="user", parts=[types.Part.from_text(text=text_val)]))
+            elif role in ["assistant", "model"]:
+                has_prior = True
+                if types:
+                    turns.append(types.Content(role="model", parts=[types.Part.from_text(text=text_val)]))
+
+        # Если входящий запрос от колонки содержит только 1 реплику (Quasar Bridge сбросил сессию),
+        # но пользователь продолжает говорить в течение timeout_s — восстанавливаем контекст из кэша
+        now = time.time()
+        cached = self.dialogue_history.get(mac)
+        if timeout_s > 0 and not has_prior and cached and (now - cached.get("timestamp", 0) <= timeout_s):
+            cached_turns = cached.get("turns", [])
+            if cached_turns:
+                logger.info(f"[DIALOGUE] Reusing active dialogue context for {mac} ({len(cached_turns)} prior turns)")
+                turns = cached_turns + turns
+
+        if not turns and types and user_text:
+            turns = [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
+
+        return turns, user_text
+
+    def _save_dialogue_turn(self, mac: str, user_text: str, reply_text: str):
+        """Сохраняет пару реплик (вопрос-ответ) в историю диалога станции."""
+        if not mac or not user_text or not reply_text or not types:
+            return
+        
+        now = time.time()
+        cached = self.dialogue_history.get(mac, {"turns": []})
+        current_turns = list(cached.get("turns", []))
+        
+        current_turns.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+        current_turns.append(types.Content(role="model", parts=[types.Part.from_text(text=reply_text)]))
+        
+        # Ограничиваем историю последними 6 ходами (3 пары вопрос-ответ)
+        if len(current_turns) > 6:
+            current_turns = current_turns[-6:]
+            
+        self.dialogue_history[mac] = {
+            "timestamp": now,
+            "turns": current_turns
+        }
 
     def register_routes(self, app: web.Application):
         """Регистрирует OpenAI-совместимые маршруты в приложении aiohttp."""
@@ -355,7 +423,7 @@ class OpenAIService:
         parts = [p for p in [persona, users, smart_home, general, entities_prompt, station_context, music_directive] if p.strip()]
         return "\n\n".join(parts)
 
-    async def _generate_text_response(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], is_json_mode: bool = False) -> str:
+    async def _generate_text_response(self, turns: List[Any], user_text: str, dev: Dict[str, Any], options: Dict[str, Any], is_json_mode: bool = False) -> str:
         """Генерация текстового ответа строго через Gemini Live API WebSocket (bidiGenerateContent)."""
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
@@ -377,8 +445,9 @@ class OpenAIService:
         waiting_for_tool_reply = False
         try:
             async with proxy_client.connect() as session:
+                payload_turns = turns if (turns and types) else [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
                 await session.send_client_content(
-                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
+                    turns=payload_turns,
                     turn_complete=True
                 )
 
@@ -419,7 +488,7 @@ class OpenAIService:
             logger.error(f"[OPENAI LIVE] Error generating text response via Live API with model '{model}': {e}", exc_info=True)
             raise e
 
-    async def _stream_live_audio_direct(self, user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> bool:
+    async def _stream_live_audio_direct(self, turns: List[Any], user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> Tuple[bool, str]:
         """
         Генерирует нативное аудио Gemini Live и в реальном времени стримит PCM чанки
         напрямую в колонку через SSH pipe в aplay (минуя AirPlay и задержки).
@@ -442,7 +511,7 @@ class OpenAIService:
 
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
-            return False
+            return False, ""
 
         system_prompt = await self._build_system_prompt(dev, options)
         voice_name = options.get("voice_name", "Charon")
@@ -494,11 +563,13 @@ class OpenAIService:
                 ssh_proc = None
 
         pcm_chunks = []
+        transcription_parts = []
         waiting_for_tool_reply = False
         try:
             async with proxy_client.connect() as session:
+                payload_turns = turns if (turns and types) else [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
                 await session.send_client_content(
-                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=user_text)])],
+                    turns=payload_turns,
                     turn_complete=True
                 )
 
@@ -520,9 +591,13 @@ class OpenAIService:
 
                     sc = response.server_content
                     if sc is not None:
+                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
+                            transcription_parts.append(sc.output_transcription.text)
                         if sc.model_turn is not None:
                             waiting_for_tool_reply = False
                             for part in sc.model_turn.parts:
+                                if part.text:
+                                    transcription_parts.append(part.text)
                                 if part.inline_data and part.inline_data.data:
                                     chunk = part.inline_data.data
                                     pcm_chunks.append(chunk)
@@ -550,7 +625,7 @@ class OpenAIService:
 
         except Exception as e:
             logger.error(f"[OPENAI LIVE] Error generating/streaming direct audio: {e}", exc_info=True)
-            return False
+            return False, ""
         finally:
             if ssh_conn is not None:
                 try:
@@ -567,7 +642,8 @@ class OpenAIService:
                 except Exception as e:
                     logger.debug(f"[OPENAI LIVE] Could not resume music: {e}")
 
-        return bool(pcm_chunks and (ssh_proc is not None))
+        reply_text = "".join(transcription_parts).strip()
+        return bool(pcm_chunks and (ssh_proc is not None)), reply_text
 
     async def handle_chat_completions(self, request: web.Request) -> web.Response:
         """Основной обработчик POST /v1/chat/completions."""
@@ -626,27 +702,19 @@ class OpenAIService:
                 }
             }, status=400, headers=self._cors_headers())
 
-        # Извлечение последней реплики пользователя
-        user_text = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                content = m.get("content")
-                if isinstance(content, str):
-                    user_text = content.strip()
-                elif isinstance(content, list):
-                    # Мультимодальный формат OpenAI (список блоков)
-                    text_parts = [item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"]
-                    user_text = " ".join(text_parts).strip()
-                break
-
-        if not user_text:
-            return web.json_response(self._make_openai_response("", body.get("model", "porfiriy")), headers=self._cors_headers())
-
         # 4. Определение ноды
         dev = self._resolve_device(request, body)
         mac = dev.get("mac", "unknown_station")
         dev_cfg = self.device_manager.get_device_config(mac)
         output_mode = dev_cfg.get("output_mode", "alice_tts")
+        dialogue_timeout = float(dev_cfg.get("dialogue_timeout_s", 60.0))
+
+        # Извлечение реплик и построение контекста диалога (Multi-turn Context)
+        turns, user_text = self._build_dialogue_turns(messages, mac, timeout_s=dialogue_timeout)
+
+        if not user_text:
+            return web.json_response(self._make_openai_response("", body.get("model", "porfiriy")), headers=self._cors_headers())
+
         airplay_player = (
             dev_cfg.get("airplay_player") or 
             dev_cfg.get("response_player") or 
@@ -715,22 +783,25 @@ class OpenAIService:
             )
 
             if use_direct_audio:
-                # Прямой нативный голос Порфирия без задержек через SSH прямо в dynamic Станции
+                # Прямой нативный голос Порфирия без задержек через SSH прямо в динамик Станции
                 self.device_manager.set_device_state(mac, "speaking")
-                audio_ok = await self._stream_live_audio_direct(user_text, dev, opts, request)
+                audio_ok, reply_text = await self._stream_live_audio_direct(turns, user_text, dev, opts, request)
                 self.device_manager.set_device_state(mac, "idle")
                 
                 if audio_ok:
+                    self._save_dialogue_turn(mac, user_text, reply_text or "Ответ воспроизведен.")
                     # Алиса воспроизводит тишину и молчит
                     return web.json_response(self._make_openai_response("sil <[50]>", body.get("model", "porfiriy")), headers=self._cors_headers())
                 else:
                     # Фолбэк на Alice TTS при ошибке вывода напрямую в динамик
-                    text_reply = await self._generate_text_response(user_text, dev, opts, is_json_mode=is_json_mode)
+                    text_reply = await self._generate_text_response(turns, user_text, dev, opts, is_json_mode=is_json_mode)
+                    self._save_dialogue_turn(mac, user_text, text_reply)
                     return web.json_response(self._make_openai_response(text_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
             else:
                 # Режим Alice TTS: генерируем чистый разговорный текст для проговаривания Алисой
                 self.device_manager.set_device_state(mac, "speaking")
-                text_reply = await self._generate_text_response(user_text, dev, opts, is_json_mode=is_json_mode)
+                text_reply = await self._generate_text_response(turns, user_text, dev, opts, is_json_mode=is_json_mode)
+                self._save_dialogue_turn(mac, user_text, text_reply)
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response(text_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
 

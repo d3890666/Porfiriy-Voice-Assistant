@@ -83,6 +83,8 @@ class WebServer:
         self.app.router.add_post("/api/devices/yandex/add", self.handle_add_yandex_station)
         self.app.router.add_get("/api/quasar/config", self.handle_get_quasar_config)
         self.app.router.add_post("/api/quasar/config", self.handle_save_quasar_config)
+        self.app.router.add_get("/api/quasar/version", self.handle_get_quasar_version)
+        self.app.router.add_post("/api/quasar/update", self.handle_update_quasar)
         self.app.router.add_get("/api/quasar/extract-ha-keywords", self.handle_extract_ha_keywords)
         self.app.router.add_post("/api/quasar/test-route", self.handle_quasar_test_route)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
@@ -689,6 +691,42 @@ class WebServer:
             return web.json_response(res, status=status_code)
         except Exception as e:
             logger.error(f"Error testing route: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_get_quasar_version(self, request: web.Request) -> web.Response:
+        """GET /api/quasar/version?mac=...&ip=..."""
+        mac = request.query.get("mac", "")
+        ip_query = request.query.get("ip", "")
+        ip, port = self._resolve_quasar_target(mac, ip_query)
+        if not ip or ip == "---":
+            # Если колонка не найдена в сети, отдаем хотя бы инфо о бандле
+            bundled = self.quasar_manager.get_bundled_version_info()
+            return web.json_response({
+                "success": False,
+                "error": "IP-адрес колонки не найден",
+                "bundled_version": bundled.get("version", "1.2.4-porfiriy.1"),
+                "bundled_info": bundled
+            })
+
+        res = await self.quasar_manager.get_version_info(ip, port)
+        status_code = 200 if res.get("success") else 400
+        return web.json_response(res, status=status_code)
+
+    async def handle_update_quasar(self, request: web.Request) -> web.Response:
+        """POST /api/quasar/update"""
+        try:
+            body = await request.json()
+            mac = body.get("mac", "")
+            ip_body = body.get("ip", "")
+            ip, port = self._resolve_quasar_target(mac, ip_body)
+            if not ip or ip == "---":
+                return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
+
+            res = await self.quasar_manager.update_station(ip, port)
+            status_code = 200 if res.get("success") else 400
+            return web.json_response(res, status=status_code)
+        except Exception as e:
+            logger.error(f"Error updating quasar: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=400)
 
     async def start(self):
