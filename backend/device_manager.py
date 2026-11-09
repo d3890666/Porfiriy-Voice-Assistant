@@ -303,6 +303,14 @@ class DeviceManager:
             dev["is_online"] = True
             self._notify("state_changed", dev)
 
+    def update_device_runtime(self, mac: str, data: Dict[str, Any]):
+        """Обновляет рантайм-поля устройства (например squeezelite_running) и уведомляет подписчиков."""
+        clean_mac = mac.strip().lower()
+        if clean_mac in self.devices:
+            dev = self.devices[clean_mac]
+            dev.update(data)
+            self._notify("device_update", dev)
+
     def set_device_offline(self, mac: str, ws: Any = None):
         """Фиксация отключения устройства с защитой от ложного офлайна при реконнекте."""
         clean_mac = mac.strip().lower()

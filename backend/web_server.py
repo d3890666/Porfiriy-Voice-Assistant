@@ -85,6 +85,7 @@ class WebServer:
         self.app.router.add_post("/api/quasar/config", self.handle_save_quasar_config)
         self.app.router.add_get("/api/quasar/version", self.handle_get_quasar_version)
         self.app.router.add_post("/api/quasar/update", self.handle_update_quasar)
+        self.app.router.add_post("/api/quasar/squeezelite", self.handle_quasar_squeezelite)
         self.app.router.add_get("/api/quasar/extract-ha-keywords", self.handle_extract_ha_keywords)
         self.app.router.add_post("/api/quasar/test-route", self.handle_quasar_test_route)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
@@ -728,6 +729,26 @@ class WebServer:
         except Exception as e:
             logger.error(f"Error updating quasar: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=400)
+
+    async def handle_quasar_squeezelite(self, request: web.Request) -> web.Response:
+        """POST /api/quasar/squeezelite {"mac": "...", "ip": "...", "action": "restart"}"""
+        try:
+            body = await request.json()
+            mac = body.get("mac", "")
+            ip_body = body.get("ip", "")
+            action = body.get("action", "restart")
+            ip, port = self._resolve_quasar_target(mac, ip_body)
+            if not ip or ip == "---":
+                return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
+
+            res = await self.quasar_manager.control_squeezelite(ip, port, action)
+            if mac and res.get("success"):
+                self.device_manager.update_device_runtime(mac, {"squeezelite_running": res.get("squeezelite_running", False)})
+            status_code = 200 if res.get("success") else 400
+            return web.json_response(res, status=status_code)
+        except Exception as e:
+            logger.error(f"Error controlling squeezelite: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def start(self):
         # Отключаем спам в системный журнал HA от периодического поллинга /api/ww_monitor
