@@ -5,7 +5,7 @@ import time
 import uuid
 import logging
 import asyncio
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from aiohttp import web
 
 logger = logging.getLogger("openai_service")

@@ -46,6 +46,10 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.118 (Tuple Typing Fix)
+*   **Исправление импорта Tuple в OpenAIService**: Устранена ошибка `NameError: name 'Tuple' is not defined` в `backend/openai_service.py`, падавшая при старте контейнера в методе `_build_dialogue_turns`.
+*   **Синхронизация версий**: В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.118`.
+
 ### Версия 0.0.117 (Multi-turn Context Dialogue, WebSocket Live Audio & Native Quasar)
 *   **Непрерывный режим диалога (Multi-turn Context & Dialogue Continuity)**: В `OpenAIService` реализована трансляция всей цепочки ходов сообщений (`messages` -> `types.Content` role `user`/`model`), кэш истории диалога `dialogue_history` со скользящим окном памяти и настраиваемым таймаутом удержания контекста `dialogue_timeout_s` (по умолчанию 60 сек). В `_stream_live_audio_direct` собирается аудио-транскрипция (`output_transcription.text`) для запоминания реплик модели в контексте.
 *   **Прямой WebSocket аудио-стриминг для Яндекс Станции (Live Mic Stream)**: В `backend/main.py` добавлен специализированный обработчик `handle_yandex_station_streamer` на порту `8765`, принимающий сырой 16kHz PCM аудиопоток напрямую в Gemini Live WebSocket (`bidiGenerateContent`), минуя текст Яндекса.

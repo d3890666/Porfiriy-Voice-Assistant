@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.118
+- **Исправление импорта Tuple в OpenAIService**:
+  - Устранена ошибка запуска контейнера `NameError: name 'Tuple' is not defined` в `backend/openai_service.py` при определении метода `_build_dialogue_turns`.
+- **Синхронизация версий**:
+  - Версия аддона в `config.yaml` поднята до `0.0.118`.
+  - Кэш-бастеры в `index.html` обновлены до `?v=0.0.118`.
+
+
 ## 0.0.117
 - **Непрерывный режим диалога (Multi-turn Context & Dialogue Continuity)**:
   - В `OpenAIService` реализована трансляция всей цепочки сообщений `messages` из формата OpenAI в список ходов Gemini Live (`types.Content` role `user`/`model`).
