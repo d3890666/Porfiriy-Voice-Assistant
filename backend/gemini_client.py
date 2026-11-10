@@ -149,12 +149,23 @@ class GeminiProxyClient:
         )
         search_music_tool = types.FunctionDeclaration(
             name="search_music_assistant",
-            description="Search for music (artists, albums, tracks, playlists) in Music Assistant. Returns a list of results with URIs. Use this to find the exact URI before playing.",
+            description=(
+                "Search Music Assistant catalog for artists, albums, tracks, playlists, or radio. "
+                "Always normalize the query: remove filler words ('включи', 'поставь', 'песню', 'трек', 'артиста', 'группу', 'альбом', 'музыку'), "
+                "use nominative case, and prefer original Latin spelling for foreign names (e.g. 'Боба Марли' -> 'Bob Marley', 'Куин' -> 'Queen'). "
+                "Returns items with name, artists, album, type, and uri."
+            ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "name": types.Schema(type=types.Type.STRING, description="Search query (e.g. 'Madonna')"),
-                    "media_type": types.Schema(type=types.Type.STRING, description="Optional. Type to search: 'artist', 'album', 'track', 'playlist', 'radio'"),
+                    "name": types.Schema(
+                        type=types.Type.STRING,
+                        description="Clean search query in canonical form (e.g. 'Bob Marley', 'Кино Группа крови', 'Dark Side of the Moon')."
+                    ),
+                    "media_type": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional type filter: 'artist' (when user asks for an artist/band), 'album', 'track' (for a specific song), 'playlist', or 'radio'. Omit when unsure to search all types."
+                    ),
                 },
                 required=["name"]
             )
@@ -162,12 +173,14 @@ class GeminiProxyClient:
         
         play_music_tool = types.FunctionDeclaration(
             name="play_music_assistant",
-            description="Play a music URI (obtained from search_music_assistant) on the smart speaker.",
+            description="Play a music URI obtained from search_music_assistant on the smart speaker.",
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "uri": types.Schema(type=types.Type.STRING, description="The URI of the media to play"),
-                    "player": types.Schema(type=types.Type.STRING, description="Optional. The media player entity_id. Leave empty to use default."),
+                    "uri": types.Schema(type=types.Type.STRING, description="Exact URI of the chosen item from search_music_assistant"),
+                    "media_type": types.Schema(type=types.Type.STRING, description="Optional media type of the URI: 'artist', 'album', 'track', 'playlist', or 'radio'"),
+                    "radio_mode": types.Schema(type=types.Type.BOOLEAN, description="Optional. Set true for artist/genre/mood requests to play similar music continuously."),
+                    "player": types.Schema(type=types.Type.STRING, description="Optional target media_player entity_id. Leave empty to use the speaker's default player."),
                 },
                 required=["uri"]
             )

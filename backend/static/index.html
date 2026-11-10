@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.125">
+  <link rel="stylesheet" href="static/style.css?v=0.0.126">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -517,8 +517,9 @@ STRICT CONFIRMATION RULE:
 - Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.
 
 MUSIC EXECUTION:
-- Trigger: Requests to play music, artists, albums, tracks, playlists, or radio.
-- Action: Immediately call search_music_assistant with the query and media_type, then play the URI using play_music_assistant. Do NOT use internet search for music requests.
+- Trigger: Requests to play music, artists, albums, tracks, playlists, moods, or radio.
+- Step 1 (Normalize & Search): Strip filler words ("включи", "поставь", "сыграй", "песню", "трек", "артиста", "группу", "альбом", "музыку"). Convert Russian inflected names to canonical nominative form and foreign names to original Latin spelling ("Боба Марли" -> "Bob Marley", "Куин" -> "Queen"). Pick accurate media_type ("artist" for artist/band, "album" for album, "track" for specific song, "playlist"/"radio" for mood/genre/radio, or omit when unsure). Call search_music_assistant first; if empty, retry once with a simpler query or without media_type. Do NOT use internet search for music requests.
+- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless requested), then call play_music_assistant with exact uri and media_type. Set radio_mode=true for artist/genre/mood requests.
 - Speech Output: If playback starts successfully, announce strictly: "Включаю [Artist - Title]." If not found or failed, state strictly: "Акустический паттерн не найден."
 
 CONCISENESS & STOP DIRECTIVE:
@@ -1174,8 +1175,9 @@ STRICT CONFIRMATION RULE:
 - Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.
 
 MUSIC EXECUTION:
-- Trigger: Requests to play music, artists, albums, tracks, playlists, or radio.
-- Action: Immediately call search_music_assistant with the query and media_type, then play the URI using play_music_assistant. Do NOT use internet search for music requests.
+- Trigger: Requests to play music, artists, albums, tracks, playlists, moods, or radio.
+- Step 1 (Normalize & Search): Strip filler words ("включи", "поставь", "сыграй", "песню", "трек", "артиста", "группу", "альбом", "музыку"). Convert Russian inflected names to canonical nominative form and foreign names to original Latin spelling ("Боба Марли" -> "Bob Marley", "Куин" -> "Queen"). Pick accurate media_type ("artist" for artist/band, "album" for album, "track" for specific song, "playlist"/"radio" for mood/genre/radio, or omit when unsure). Call search_music_assistant first; if empty, retry once with a simpler query or without media_type. Do NOT use internet search for music requests.
+- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless requested), then call play_music_assistant with exact uri and media_type. Set radio_mode=true for artist/genre/mood requests.
 - Speech Output: If playback starts successfully, announce strictly: "Включаю [Artist - Title]." If not found or failed, state strictly: "Акустический паттерн не найден."
 
 CONCISENESS & STOP DIRECTIVE:
@@ -1501,6 +1503,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.125"></script>
+  <script src="static/app.js?v=0.0.126"></script>
 </body>
 </html>

@@ -293,39 +293,30 @@ class OpenAIService:
 
         return None
 
-    def _is_music_request(self, text: str) -> Optional[str]:
-        """Определяет, является ли реплика запросом на воспроизведение музыки через Music Assistant."""
-        t = text.lower().strip().rstrip(".!?")
-        # Исключаем команды умного дома и таймеров
-        sh_keywords = [
-            "свет", "ламп", "люстр", "розетк", "подсветк", "штор", "кондиционер", 
-            "пылесос", "чайник", "отоплен", "таймер", "будильник", "секундомер", "напомни"
-        ]
-        if any(k in t for k in sh_keywords):
-            return None
-        prefixes = [
-            "включи песню", "поставь песню", "включи трек", "поставь трек", 
-            "включи музыку", "поставь музыку", "сыграй песню", "сыграй трек", 
-            "включи альбом", "поставь альбом", "включи группу", "поставь группу", 
-            "включи", "поставь", "сыграй", "запусти"
-        ]
-        for prefix in prefixes:
-            if t.startswith(prefix + " "):
-                query = t[len(prefix):].strip()
-                if query and len(query) > 1:
-                    return query
-        return None
-
-    async def _execute_tool(self, name: str, args: Dict[str, Any], dev: Dict[str, Any], options: Dict[str, Any]) -> Any:
-        """Выполнение инструмента (HA Service, Music Assistant, State)."""
+    @staticmethod
+    def _resolve_target_player(dev: Dict[str, Any], options: Dict[str, Any]) -> str:
+        """Возвращает entity_id медиаплеера из карточки устройства или глобальных настроек."""
         dev_cfg = dev.get("config", {})
-        airplay_player = (
-            dev_cfg.get("airplay_player") or 
-            dev_cfg.get("response_player") or 
-            options.get("default_airplay_player") or 
-            options.get("default_media_player") or 
+        return (
+            dev_cfg.get("mass_player") or
+            dev_cfg.get("airplay_player") or
+            dev_cfg.get("response_player") or
+            options.get("default_mass_player") or
+            options.get("default_airplay_player") or
+            options.get("default_media_player") or
             ""
-        )
+        ).strip()
+
+    async def _execute_tool(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        dev: Dict[str, Any],
+        options: Dict[str, Any],
+        turn_state: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """Выполнение инструмента (HA Service, Music Assistant, State)."""
+        target_default_player = self._resolve_target_player(dev, options)
 
         try:
             if name == "call_ha_service":
@@ -338,6 +329,8 @@ class OpenAIService:
                 for k in ["position", "temperature", "hvac_mode", "percentage"]:
                     if k in args and args[k] is not None:
                         service_data[k] = args[k]
+                if turn_state is not None and domain in ("media_player", "music_assistant", "mass"):
+                    turn_state["playback_changed"] = True
                 return await self.ha_api.call_ha_action(domain, service, service_data)
 
             elif name == "get_ha_state":
@@ -345,32 +338,25 @@ class OpenAIService:
                 state = await self.ha_api.get_entity_state(entity_id)
                 return state or {"status": "not_found"}
 
-            elif name in ["search_music_assistant", "play_music_assistant", "play_music"]:
-                query = args.get("query") or args.get("name") or args.get("uri") or ""
-                media_type = args.get("media_type") or "track"
-                target_player = args.get("player") or airplay_player
-                
-                if not target_player:
-                    return {"status": "error", "error": "No target AirPlay media player configured"}
+            elif name == "search_music_assistant":
+                query = args.get("name") or args.get("query") or ""
+                media_type = args.get("media_type")
+                logger.info(f"[OPENAI MUSIC] Searching MA: name='{query}', media_type={media_type}")
+                return await self.ha_api.search_music_assistant(name=query, media_type=media_type)
 
-                # Вызов Music Assistant через службу mass.play_media (с авто-фолбэком на media_player)
-                services = await self.ha_api.get_services()
-                domain = "mass" if "mass" in services else ("music_assistant" if "music_assistant" in services else "media_player")
-                
-                service_data = {
-                    "entity_id": target_player,
-                    "enqueue": "play"
-                }
-                if domain == "media_player":
-                    service_data["media_content_id"] = query
-                    service_data["media_content_type"] = "music"
-                else:
-                    service_data["media_id"] = query
-                    service_data["media_type"] = media_type
-
-                logger.info(f"[OPENAI MUSIC] Calling {domain}.play_media on {target_player}: {service_data}")
-                res = await self.ha_api.call_service(domain, "play_media", service_data)
-                return {"status": "success", "player": target_player, "result": res}
+            elif name in ["play_music_assistant", "play_music"]:
+                uri_or_query = args.get("uri") or args.get("query") or args.get("name") or ""
+                media_type = args.get("media_type")
+                radio_mode = bool(args.get("radio_mode", False))
+                target_player = args.get("player") or target_default_player
+                if turn_state is not None:
+                    turn_state["playback_changed"] = True
+                return await self.ha_api.play_music_assistant(
+                    entity_id=target_player,
+                    uri_or_query=uri_or_query,
+                    media_type=media_type,
+                    radio_mode=radio_mode
+                )
 
         except Exception as e:
             logger.error(f"[OPENAI TOOL] Error executing {name}: {e}")
@@ -380,14 +366,7 @@ class OpenAIService:
 
     async def _build_system_prompt(self, dev: Dict[str, Any], options: Dict[str, Any]) -> str:
         """Сборка системного промпта Порфирия с контекстом устройств и комнаты."""
-        dev_cfg = dev.get("config", {})
-        airplay_player = (
-            dev_cfg.get("airplay_player") or 
-            dev_cfg.get("response_player") or 
-            options.get("default_airplay_player") or 
-            options.get("default_media_player") or 
-            ""
-        )
+        target_player = self._resolve_target_player(dev, options)
         area_name = dev.get("area_name") or "Не указана"
 
         persona = options.get("prompt_persona", "")
@@ -406,7 +385,7 @@ class OpenAIService:
             f"\n\n### HARDWARE & SATELLITE CONTEXT:\n"
             f"- Device Type: Yandex Station 2 (Quasar Bridge integration).\n"
             f"- Room / Area: {area_name}.\n"
-            f"- Target AirPlay Player: {airplay_player or 'Not configured'}.\n"
+            f"- Target Music Player: {target_player or 'Not configured'}.\n"
             f"- Strict Speech Directive: You are talking to a voice synthesizer (Alice TTS). "
             f"Output strictly clean, spoken Russian without markdown, bullets, asterisks, or emojis. "
             f"Limit response strictly to 1-2 concise spoken sentences."
@@ -414,10 +393,15 @@ class OpenAIService:
 
         music_directive = (
             f"\n\n### MUSIC MANAGEMENT (MUSIC ASSISTANT):\n"
-            f"- If user asks to play any track, artist, album, playlist, or radio: "
-            f"Call play_music_assistant or call_ha_service(domain='mass', service='play_media', entity_id='{airplay_player}', "
-            f"parameters={{'media_id': query, 'enqueue': 'play'}}).\n"
-            f"- Reply strictly: 'Включаю [Artist - Title].' or 'Включаю музыку.'"
+            f"- Target player: '{target_player}'.\n"
+            f"- Step 1 (Normalize & Search): Strip filler words ('включи', 'поставь', 'сыграй', 'песню', 'трек', 'артиста', 'группу', 'альбом', 'музыку'). "
+            f"Convert Russian inflected cases to canonical nominative form and foreign names to original Latin spelling "
+            f"('Боба Марли' -> 'Bob Marley', 'Куин' -> 'Queen', 'Нирвану' -> 'Nirvana', 'Пинк Флойд' -> 'Pink Floyd'). "
+            f"Pick accurate media_type: 'artist' for artist/band, 'album' for album, 'track' for specific song, 'playlist'/'radio' for mood/genre/radio (or omit if unsure). "
+            f"Always call search_music_assistant first. If empty, retry once with a simpler query or without media_type.\n"
+            f"- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless asked). "
+            f"Call play_music_assistant with the exact uri, media_type, player='{target_player}', and radio_mode=true for artist/genre/mood requests.\n"
+            f"- Speech Output: Reply strictly 'Включаю [Artist - Title].' on success, or 'Акустический паттерн не найден.' if nothing matched."
         )
 
         parts = [p for p in [persona, users, smart_home, general, entities_prompt, station_context, music_directive] if p.strip()]
@@ -499,15 +483,7 @@ class OpenAIService:
             speaker_ip = self._extract_ip(request)
         ssh_port = int(dev_cfg.get("ssh_port", 2222))
         
-        music_player = (
-            dev_cfg.get("mass_player") or 
-            dev_cfg.get("airplay_player") or 
-            dev_cfg.get("response_player") or 
-            options.get("default_mass_player") or 
-            options.get("default_airplay_player") or 
-            options.get("default_media_player") or 
-            ""
-        )
+        music_player = self._resolve_target_player(dev, options)
 
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
@@ -565,6 +541,7 @@ class OpenAIService:
         pcm_chunks = []
         transcription_parts = []
         waiting_for_tool_reply = False
+        turn_state = {"playback_changed": False}
         try:
             async with proxy_client.connect() as session:
                 payload_turns = turns if (turns and types) else [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
@@ -579,7 +556,7 @@ class OpenAIService:
                         function_responses = []
                         for fc in response.tool_call.function_calls:
                             logger.info(f"[OPENAI LIVE FC] Model called: {fc.name} with {fc.args}")
-                            res = await self._execute_tool(fc.name, fc.args, dev, options)
+                            res = await self._execute_tool(fc.name, fc.args, dev, options, turn_state=turn_state)
                             function_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 id=fc.id,
@@ -634,8 +611,8 @@ class OpenAIService:
                 except Exception:
                     pass
 
-            # 3. Возобновляем музыку, если она была на паузе
-            if music_was_paused and music_player and self.ha_api:
+            # 3. Возобновляем музыку, если она была на паузе и за время ответа не запускался новый трек/пауза
+            if music_was_paused and not turn_state["playback_changed"] and music_player and self.ha_api:
                 try:
                     logger.info(f"[OPENAI LIVE] Resuming music playback on {music_player}")
                     await self.ha_api.call_service("media_player", "media_play", {"entity_id": music_player})
@@ -751,31 +728,13 @@ class OpenAIService:
                 return web.json_response(self._make_openai_response("связь", body.get("model", "porfiriy")), headers=self._cors_headers())
 
             # 6. Проверка быстрых команд управления медиа
-            music_player = (
-                dev_cfg.get("mass_player") or 
-                dev_cfg.get("airplay_player") or 
-                dev_cfg.get("response_player") or 
-                opts.get("default_mass_player") or 
-                opts.get("default_airplay_player") or 
-                opts.get("default_media_player") or 
-                ""
-            )
+            music_player = self._resolve_target_player(dev, opts)
             fast_playback_reply = await self._handle_direct_playback_command(user_text, music_player)
             if fast_playback_reply:
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response(fast_playback_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
 
-            # 7. Проверка команд включения музыки (в обход облака Яндекса, строго в Music Assistant)
-            music_query = self._is_music_request(user_text)
-            if music_query:
-                target_mass_player = music_player or "media_player.iandeks_stantsiia"
-                logger.info(f"[OPENAI MUSIC] Intercepted music request: '{music_query}' -> routing to Music Assistant ({target_mass_player})")
-                await self._execute_tool("play_music_assistant", {"query": music_query, "player": target_mass_player}, dev, opts)
-                self.device_manager.set_device_state(mac, "idle")
-                music_reply = f"Включаю {music_query.capitalize()}."
-                return web.json_response(self._make_openai_response(music_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
-
-            # 8. Ветвление по выбранному режиму ответа на ноде
+            # 7. Ветвление по выбранному режиму ответа на ноде (поиск музыки идет через Gemini + search_music_assistant)
             # По умолчанию для Яндекс Станции используется нативный прямой голос через SSH (ssh_stream)
             use_direct_audio = (
                 output_mode in ["ssh_stream", "airplay", "native_audio"] or 

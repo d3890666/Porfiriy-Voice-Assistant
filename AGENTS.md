@@ -46,6 +46,11 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.126 (Smart Music Assistant Search, Query Normalization & Radio Mode)
+*   В [`OpenAIService`](backend/openai_service.py) убран слепой перехват `_is_music_request` (отправлявший сырой запрос с жестким `media_type="track"`), а в [`_stream_live_audio_direct`](backend/openai_service.py) добавлен флаг `turn_state["playback_changed"]` против наложения старого трека на новый.
+*   В [`HomeAssistantAPI`](backend/ha_api.py) вынесены общие методы `search_music_assistant` (с полями `artists`, `album` и фолбэком без `media_type`) и `play_music_assistant` (`radio_mode`, `enqueue="replace"`), используемые и в [`OpenAIService`](backend/openai_service.py), и в [`main.py`](backend/main.py).
+*   Обновлены схемы инструментов в [`gemini_client.py`](backend/gemini_client.py) и директивы `MUSIC EXECUTION` в промптах для нормализации имен/латиницы и точного выбора `media_type`. Версия аддона обновлена до `0.0.126`.
+
 ### Версия 0.0.125 (Minimal Volume Sync using Device Card Player)
 *   Упрощена синхронизация громкости: [`QuasarManager._resolve_porfiriy_host`](backend/quasar_manager.py) определяет реальный LAN IP (`$SSH_CLIENT`, не-Docker `sockname`, `SQUEEZELITE_SERVER`), а [`WebServer.handle_station_volume_sync`](backend/web_server.py) синхронизирует громкость напрямую на `mass_player` / `airplay_player` из карточки устройства (по точному IP) без лишнего поиска по `player_name`.
 *   Дистрибутив Станции `v1.2.4-porfiriy.8`, версии в `config.yaml`, `CHANGELOG.md`, `index.html`, `app.js` обновлены до `0.0.125`.

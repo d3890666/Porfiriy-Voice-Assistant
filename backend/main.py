@@ -155,8 +155,9 @@ DEFAULT_GENERAL = (
     "- Tool: You have access to Google Search grounding. Use it whenever external knowledge or verification is needed.\n"
     "- Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.\n\n"
     "MUSIC EXECUTION:\n"
-    "- Trigger: Requests to play music, artists, albums, tracks, playlists, or radio.\n"
-    "- Action: Immediately call search_music_assistant with the query and media_type, then play the URI using play_music_assistant. Do NOT use internet search for music requests.\n"
+    "- Trigger: Requests to play music, artists, albums, tracks, playlists, moods, or radio.\n"
+    "- Step 1 (Normalize & Search): Strip filler words (\"включи\", \"поставь\", \"сыграй\", \"песню\", \"трек\", \"артиста\", \"группу\", \"альбом\", \"музыку\"). Convert Russian inflected names to canonical nominative form and foreign names to original Latin spelling (\"Боба Марли\" -> \"Bob Marley\", \"Куин\" -> \"Queen\"). Pick accurate media_type (\"artist\" for artist/band, \"album\" for album, \"track\" for specific song, \"playlist\"/\"radio\" for mood/genre/radio, or omit when unsure). Call search_music_assistant first; if empty, retry once with a simpler query or without media_type. Do NOT use internet search for music requests.\n"
+    "- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless requested), then call play_music_assistant with exact uri and media_type. Set radio_mode=true for artist/genre/mood requests.\n"
     "- Speech Output: If playback starts successfully, announce strictly: \"Включаю [Artist - Title].\" If not found or failed, state strictly: \"Акустический паттерн не найден.\"\n\n"
     "CONCISENESS & STOP DIRECTIVE:\n"
     "- Keep dialogue responses strictly to 1-2 concise sentences. Avoid unsolicited lectures or monologues unless explicitly asked \"Расскажи подробно\".\n"
@@ -936,50 +937,13 @@ async def handle_client(websocket):
                                         ))
                                     
                                     elif name == "search_music_assistant":
-                                        args = fc.args
+                                        args = dict(fc.args) if fc.args else {}
                                         tool_logger.info(f"Gemini Calling MA Search: {args}")
-                                        search_data = dict(args)
-                                        # HA API expects media_type to be a list if provided
-                                        if "media_type" in search_data:
-                                            search_data["media_type"] = [search_data["media_type"]]
-                                        
-                                        # Music Assistant Core requires config_entry_id for search
-                                        ma_entry_id = await ha_api.get_music_assistant_entry_id()
-                                        if ma_entry_id:
-                                            search_data["config_entry_id"] = ma_entry_id
-                                        
-                                        result = await ha_api.call_service_ws(
-                                            domain="music_assistant",
-                                            service="search",
-                                            service_data=search_data,
-                                            return_response=True
+                                        safe_result = await ha_api.search_music_assistant(
+                                            name=args.get("name") or args.get("query") or "",
+                                            media_type=args.get("media_type")
                                         )
-                                    
-                                        simplified_result = []
-                                        if isinstance(result, dict) and not "error" in result:
-                                            # HA 'call_service' with return_response=True usually wraps the output in a 'response' dict
-                                            actual_response = result.get("response", result)
-                                            if isinstance(actual_response, dict):
-                                                for cat, items in actual_response.items():
-                                                    if isinstance(items, list):
-                                                        for item in items[:5]: # top 5 per category
-                                                            simplified_result.append({
-                                                                "name": item.get("name"),
-                                                                "uri": item.get("uri"),
-                                                                "type": cat
-                                                            })
-                                            result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
-                                        
-                                        tool_logger.info(f"MA Search Result: {result}")
-                                        safe_result = {"status": "success"}
-                                        if result:
-                                            if isinstance(result, list):
-                                                safe_result["data"] = result
-                                            elif isinstance(result, dict):
-                                                safe_result = result
-                                            else:
-                                                safe_result["data"] = str(result)
-
+                                        tool_logger.info(f"MA Search Result: {safe_result}")
                                         function_responses.append(types.FunctionResponse(
                                             name=fc.name,
                                             id=fc.id,
@@ -987,37 +951,22 @@ async def handle_client(websocket):
                                         ))
                                     
                                     elif name == "play_music_assistant":
-                                        args = fc.args
-                                        uri = args.get("uri")
+                                        args = dict(fc.args) if fc.args else {}
+                                        uri = args.get("uri") or args.get("query") or args.get("name") or ""
                                         player = args.get("player") or options.get("default_media_player", "media_player.living_room")
                                         tool_logger.info(f"Gemini Playing MA URI: {uri} on {player}")
-                                    
-                                        result = await ha_api.call_service(
-                                            domain="media_player",
-                                            service="play_media",
-                                            service_data={
-                                                "entity_id": player,
-                                                "media_content_id": uri,
-                                                "media_content_type": "music"
-                                            }
+                                        safe_result = await ha_api.play_music_assistant(
+                                            entity_id=player,
+                                            uri_or_query=uri,
+                                            media_type=args.get("media_type"),
+                                            radio_mode=bool(args.get("radio_mode", False))
                                         )
-                                    
-                                        tool_logger.info(f"MA Play Result: {result}")
+                                        tool_logger.info(f"MA Play Result: {safe_result}")
                                         speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                                        if "error" in result:
+                                        if safe_result.get("status") == "error":
                                             await websocket.send(scale_pcm16(ERROR_CHIME, speaker_vol))
                                         else:
                                             await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
-                                        
-                                        safe_result = {"status": "success"}
-                                        if result:
-                                            if isinstance(result, list):
-                                                safe_result["data"] = result
-                                            elif isinstance(result, dict):
-                                                safe_result = result
-                                            else:
-                                                safe_result["data"] = str(result)
-
                                         function_responses.append(types.FunctionResponse(
                                             name=fc.name,
                                             id=fc.id,
@@ -1312,38 +1261,10 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                             ))
                         elif name == "search_music_assistant":
                             args = dict(fc.args) if fc.args else {}
-                            if "media_type" in args:
-                                args["media_type"] = [args["media_type"]]
-                            ma_entry_id = await ha_api.get_music_assistant_entry_id()
-                            if ma_entry_id:
-                                args["config_entry_id"] = ma_entry_id
-                            result = await ha_api.call_service_ws(
-                                domain="music_assistant",
-                                service="search",
-                                service_data=args,
-                                return_response=True
+                            safe_result = await ha_api.search_music_assistant(
+                                name=args.get("name") or args.get("query") or "",
+                                media_type=args.get("media_type")
                             )
-                            simplified_result = []
-                            if isinstance(result, dict) and "error" not in result:
-                                actual_response = result.get("response", result)
-                                if isinstance(actual_response, dict):
-                                    for cat, items in actual_response.items():
-                                        if isinstance(items, list):
-                                            for item in items[:5]:
-                                                simplified_result.append({
-                                                    "name": item.get("name"),
-                                                    "uri": item.get("uri"),
-                                                    "type": cat
-                                                })
-                                result = simplified_result if simplified_result else {"result": "Ничего не найдено"}
-                            safe_result = {"status": "success"}
-                            if result:
-                                if isinstance(result, list):
-                                    safe_result["data"] = result
-                                elif isinstance(result, dict):
-                                    safe_result = result
-                                else:
-                                    safe_result["data"] = str(result)
                             function_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 id=fc.id,
@@ -1351,21 +1272,18 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                             ))
                         elif name == "play_music_assistant":
                             args = dict(fc.args) if fc.args else {}
-                            uri = args.get("uri")
+                            uri = args.get("uri") or args.get("query") or args.get("name") or ""
                             player = args.get("player") or options.get("default_media_player", "media_player.living_room")
-                            result = await ha_api.call_service(
-                                domain="media_player",
-                                service="play_media",
-                                service_data={
-                                    "entity_id": player,
-                                    "media_content_id": uri,
-                                    "media_content_type": "music"
-                                }
+                            safe_result = await ha_api.play_music_assistant(
+                                entity_id=player,
+                                uri_or_query=uri,
+                                media_type=args.get("media_type"),
+                                radio_mode=bool(args.get("radio_mode", False))
                             )
                             current_cfg = device_manager.get_device_config(client_mac)
                             active_vol = float(current_cfg.get("speaker_volume", 0.5))
                             try:
-                                if "error" in result:
+                                if safe_result.get("status") == "error":
                                     await websocket.send(scale_pcm16(ERROR_CHIME, active_vol))
                                 else:
                                     await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
@@ -1374,7 +1292,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                             function_responses.append(types.FunctionResponse(
                                 name=fc.name,
                                 id=fc.id,
-                                response={"status": "success"}
+                                response=safe_result
                             ))
                         else:
                             function_responses.append(types.FunctionResponse(

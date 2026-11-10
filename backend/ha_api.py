@@ -262,6 +262,132 @@ class HomeAssistantAPI:
                 
         return None
 
+    async def _run_ma_search(self, name: str, media_type: Optional[str], limit: int) -> Any:
+        services = await self.get_services()
+        ma_domain = "music_assistant" if "music_assistant" in services else ("mass" if "mass" in services else "music_assistant")
+
+        search_data: Dict[str, Any] = {"name": name, "limit": limit}
+        if media_type:
+            mt = str(media_type).strip().lower()
+            if mt in ("artists", "albums", "tracks", "playlists", "radios"):
+                mt = mt.rstrip("s")
+            if mt:
+                search_data["media_type"] = [mt]
+
+        ma_entry_id = await self.get_music_assistant_entry_id()
+        if ma_entry_id:
+            search_data["config_entry_id"] = ma_entry_id
+
+        return await self.call_service_ws(
+            domain=ma_domain,
+            service="search",
+            service_data=search_data,
+            return_response=True
+        )
+
+    @staticmethod
+    def _simplify_ma_results(result: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:
+        actual_response = result.get("response", result)
+        if not isinstance(actual_response, dict):
+            return []
+        cat_singular = {
+            "artists": "artist", "albums": "album", "tracks": "track",
+            "playlists": "playlist", "radios": "radio", "radio": "radio",
+        }
+        items_out: List[Dict[str, Any]] = []
+        for cat, items in actual_response.items():
+            if not isinstance(items, list):
+                continue
+            item_type = cat_singular.get(cat, cat)
+            for item in items[:limit]:
+                if not isinstance(item, dict):
+                    continue
+                entry: Dict[str, Any] = {
+                    "name": item.get("name"),
+                    "uri": item.get("uri"),
+                    "type": item_type,
+                }
+                artists = item.get("artists")
+                if isinstance(artists, list):
+                    artist_names = [a.get("name") for a in artists if isinstance(a, dict) and a.get("name")]
+                    if artist_names:
+                        entry["artists"] = ", ".join(artist_names)
+                album = item.get("album")
+                if isinstance(album, dict) and album.get("name"):
+                    entry["album"] = album.get("name")
+                items_out.append(entry)
+        return items_out
+
+    async def search_music_assistant(self, name: str, media_type: Optional[str] = None, limit: int = 5) -> Dict[str, Any]:
+        """Поиск музыки в Music Assistant с возвратом артистов, альбомов и URI."""
+        query = (name or "").strip()
+        if not query:
+            return {"status": "error", "error": "Empty search query"}
+
+        result = await self._run_ma_search(query, media_type, limit)
+        if isinstance(result, dict) and "error" in result:
+            return {"status": "error", "error": result["error"]}
+
+        items = self._simplify_ma_results(result, limit=limit) if isinstance(result, dict) else []
+        # Если с фильтром по media_type ничего не нашлось, повторяем поиск по всем типам
+        if not items and media_type:
+            retry_res = await self._run_ma_search(query, None, limit)
+            if isinstance(retry_res, dict) and "error" not in retry_res:
+                items = self._simplify_ma_results(retry_res, limit=limit)
+
+        if not items:
+            return {
+                "status": "empty",
+                "results": [],
+                "hint": "Nothing found. Try a shorter query, drop filler words, or use original Latin spelling."
+            }
+        return {"status": "success", "data": items}
+
+    async def play_music_assistant(
+        self,
+        entity_id: str,
+        uri_or_query: str,
+        media_type: Optional[str] = None,
+        radio_mode: bool = False,
+        enqueue: str = "replace"
+    ) -> Dict[str, Any]:
+        """Воспроизведение найденного URI (или запроса) в Music Assistant."""
+        if not entity_id:
+            return {"status": "error", "error": "No target media player configured"}
+        if not uri_or_query:
+            return {"status": "error", "error": "No URI or query provided"}
+
+        services = await self.get_services()
+        if "music_assistant" in services and "play_media" in services.get("music_assistant", {}):
+            domain = "music_assistant"
+        elif "mass" in services and "play_media" in services.get("mass", {}):
+            domain = "mass"
+        else:
+            domain = "media_player"
+
+        if domain == "media_player":
+            service_data: Dict[str, Any] = {
+                "entity_id": entity_id,
+                "media_content_id": uri_or_query,
+                "media_content_type": "music",
+            }
+        else:
+            service_data = {
+                "entity_id": entity_id,
+                "media_id": uri_or_query,
+                "enqueue": enqueue or "replace",
+            }
+            if media_type:
+                service_data["media_type"] = media_type
+            if radio_mode:
+                service_data["radio_mode"] = True
+
+        logger.info(f"[MA PLAY] Calling {domain}.play_media on {entity_id}: {service_data}")
+        res = await self.call_service(domain, "play_media", service_data)
+        if isinstance(res, dict) and "error" in res:
+            return {"status": "error", "error": res["error"], "player": entity_id}
+        return {"status": "success", "player": entity_id, "domain": domain, "result": res}
+
     async def _ws_send_and_receive(self, payload: dict) -> dict:
         try:
             async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
