@@ -252,7 +252,7 @@ function renderDevicesGrid() {
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
               <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge">
-                v1.2.4-porfiriy.9
+                v1.2.4-porfiriy.10
               </span>
             </div>
             <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH">
@@ -364,13 +364,26 @@ function renderDevicesGrid() {
         ` : ''}
 
         <div class="quick-controls">
-          <div class="slider-row">
-            <span>🔊 Громкость:</span>
-            <input type="range" min="0.1" max="2.0" step="0.05" value="${cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5}" 
-              onchange="updateSingleDeviceConfig('${dev.mac}', 'speaker_volume', parseFloat(this.value))"
-              oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">
-            <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${volumePercent}%</span>
-          </div>
+          ${dev.device_type === 'yandex_station' ? (() => {
+            const playerVol = Math.min(1.0, Math.max(0.0, cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5));
+            return `
+              <div class="slider-row">
+                <span>🔊 Громкость плеера:</span>
+                <input type="range" min="0" max="1" step="0.05" value="${playerVol}" 
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'speaker_volume', parseFloat(this.value))"
+                  oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">
+                <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${Math.round(playerVol * 100)}%</span>
+              </div>
+            `;
+          })() : `
+            <div class="slider-row">
+              <span>🔊 Громкость:</span>
+              <input type="range" min="0.1" max="2.0" step="0.05" value="${cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5}" 
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'speaker_volume', parseFloat(this.value))"
+                oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">
+              <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${volumePercent}%</span>
+            </div>
+          `}
 
           ${isEsp ? `
             <div class="slider-row">

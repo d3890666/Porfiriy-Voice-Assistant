@@ -25,6 +25,11 @@ try:
 except ImportError:
     from quasar_manager import QuasarManager
 
+try:
+    from .station_ducking import StationDuckingManager
+except ImportError:
+    from station_ducking import StationDuckingManager
+
 def get_addon_version() -> str:
     """Считывает актуальную версию аддона напрямую из config.yaml (Single Source of Truth)."""
     candidates = [
@@ -68,8 +73,11 @@ class WebServer:
         self.dlna_manager.register_routes(self.app)
         self.device_manager.media_manager = self.dlna_manager
 
+        # Серверный авто-дакинг для Яндекс Станции через Home Assistant
+        self.ducking_manager = StationDuckingManager(self.device_manager, self.ha_api)
+
         # Интеграция OpenAI-совместимого эндпоинта (Quasar Bridge / Яндекс Станция)
-        self.openai_service = OpenAIService(self.device_manager, self.ha_api, self.options_callback)
+        self.openai_service = OpenAIService(self.device_manager, self.ha_api, self.options_callback, ducking_manager=self.ducking_manager)
         self.openai_service.register_routes(self.app)
 
         # Менеджер управления конфигурацией и маршрутизацией Quasar Bridge
@@ -87,6 +95,7 @@ class WebServer:
         self.app.router.add_post("/api/quasar/update", self.handle_update_quasar)
         self.app.router.add_post("/api/quasar/squeezelite", self.handle_quasar_squeezelite)
         self.app.router.add_post("/api/quasar/airplay", self.handle_quasar_airplay)
+        self.app.router.add_post("/api/station/alice_state", self.handle_station_alice_state)
         self.app.router.add_get("/api/quasar/extract-ha-keywords", self.handle_extract_ha_keywords)
         self.app.router.add_post("/api/quasar/test-route", self.handle_quasar_test_route)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
@@ -192,14 +201,32 @@ class WebServer:
 
     async def handle_get_devices(self, request):
         devices = self.device_manager.get_all_devices()
+        opts = self.options_callback() if self.options_callback else {}
+        states_by_id = {}
+        if self.ha_api and any(d.get("device_type") == "yandex_station" for d in devices):
+            try:
+                all_states = await asyncio.wait_for(self.ha_api.get_states(), timeout=2.0)
+                states_by_id = {s.get("entity_id"): s for s in all_states if s.get("entity_id")}
+            except Exception:
+                pass
         
-        # Обновляем имя комнат из HA если доступно
+        # Обновляем имя комнат и текущую громкость плеера для Станций
         for d in devices:
             if not d.get("area_name") and self.ha_api:
                 area_name = await self.ha_api.get_device_area_name(d["mac"])
                 if area_name:
                     d["area_name"] = area_name
                     self.device_manager.set_device_area(d["mac"], area_name)
+            if d.get("device_type") == "yandex_station":
+                saved_vol = self.ducking_manager.get_saved_volume(d["mac"])
+                if saved_vol is not None:
+                    d.setdefault("config", {})["speaker_volume"] = saved_vol
+                else:
+                    player = StationDuckingManager.resolve_station_player(d, opts)
+                    st = states_by_id.get(player)
+                    vol_lvl = st.get("attributes", {}).get("volume_level") if isinstance(st, dict) else None
+                    if vol_lvl is not None:
+                        d.setdefault("config", {})["speaker_volume"] = round(float(vol_lvl), 2)
                     
         return web.json_response({"devices": devices})
 
@@ -218,6 +245,20 @@ class WebServer:
         mac = request.match_info["mac"]
         try:
             data = await request.json()
+            if "speaker_volume" in data:
+                dev = self.device_manager.get_device(mac)
+                if dev and dev.get("device_type") == "yandex_station":
+                    vol_level = max(0.0, min(1.0, round(float(data["speaker_volume"]), 2)))
+                    data["speaker_volume"] = vol_level
+                    opts = self.options_callback() if self.options_callback else {}
+                    player = StationDuckingManager.resolve_station_player(dev, opts)
+                    if player and self.ha_api:
+                        self.ducking_manager.set_explicit_volume(mac, vol_level)
+                        logger.info(f"[CARD VOLUME] Setting {player} volume to {vol_level} from station card {mac}")
+                        await self.ha_api.call_service("media_player", "volume_set", {
+                            "entity_id": player,
+                            "volume_level": vol_level
+                        })
             success = await self.device_manager.update_device_config(mac, data)
             return web.json_response({"success": success})
         except Exception as e:
@@ -769,6 +810,21 @@ class WebServer:
             return web.json_response(res, status=status_code)
         except Exception as e:
             logger.error(f"Error controlling station airplay: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_station_alice_state(self, request: web.Request) -> web.Response:
+        """
+        Принимает событие состояния Алисы со Станции (listening / idle) для серверного авто-дакинга через HA.
+        POST /api/station/alice_state {"state": "listening"}
+        """
+        try:
+            body = await request.json()
+            state = body.get("state", "")
+            opts = self.options_callback() if self.options_callback else {}
+            res = await self.ducking_manager.on_alice_state(request.remote or "", state, opts)
+            return web.json_response(res)
+        except Exception as e:
+            logger.error(f"[SERVER DUCKING] Error in handle_station_alice_state: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def start(self):

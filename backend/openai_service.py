@@ -60,11 +60,12 @@ def sanitize_text_for_speech(text: str) -> str:
     return text
 
 class OpenAIService:
-    def __init__(self, device_manager, ha_api, options_callback, default_port: int = 8000):
+    def __init__(self, device_manager, ha_api, options_callback, default_port: int = 8000, ducking_manager=None):
         self.device_manager = device_manager
         self.ha_api = ha_api
         self.options_callback = options_callback
         self.default_port = default_port
+        self.ducking_manager = ducking_manager
         self._api_key_index = 0
         self.dialogue_history: Dict[str, Dict[str, Any]] = {}
 
@@ -293,6 +294,64 @@ class OpenAIService:
 
         return None
 
+    async def _handle_direct_volume_command(self, user_text: str, mac: str, music_player: str) -> Optional[bool]:
+        """
+        Мгновенно и бесшумно меняет громкость привязанного плеера Music Assistant через Home Assistant.
+        Возвращает True, если команда обработана (нужно ответить тишиной), иначе None.
+        """
+        if not music_player or not self.ha_api:
+            return None
+
+        t = re.sub(r'[.,!?]+$', '', user_text.lower().strip())
+        new_vol: Optional[float] = None
+        delta: Optional[float] = None
+
+        # 1. Точное значение: "громкость 4", "поставь громкость на 60%", "звук 5", "громкость 0"
+        m_abs = re.match(
+            r'^(?:поставь\s+|установи\s+|сделай\s+|включи\s+)?(?:громкость|звук)(?:\s+на)?\s+(\d{1,3})\s*(%|процент\w*)?$',
+            t
+        )
+        if m_abs:
+            val = int(m_abs.group(1))
+            has_pct = bool(m_abs.group(2))
+            if has_pct or val > 10:
+                new_vol = max(0.0, min(1.0, round(val / 100.0, 2)))
+            else:
+                new_vol = max(0.0, min(1.0, round(val / 10.0, 2)))
+        elif t in ("выключи звук", "без звука", "громкость ноль", "громкость на ноль", "звук ноль", "громкость минимум"):
+            new_vol = 0.0
+        elif t in ("громкость максимум", "громкость на максимум", "звук максимум", "максимальная громкость"):
+            new_vol = 1.0
+        elif re.match(r'^(?:сделай\s+|чуть\s+|немного\s+)?(?:погромче|громче|прибавь(?:\s+громкость|\s+звук)?)$', t):
+            delta = 0.10
+        elif re.match(r'^(?:сделай\s+|чуть\s+|немного\s+)?(?:потише|тише|убавь(?:\s+громкость|\s+звук)?)$', t):
+            delta = -0.10
+
+        if new_vol is None and delta is None:
+            return None
+
+        if delta is not None:
+            base_vol = self.ducking_manager.get_saved_volume(mac) if self.ducking_manager else None
+            if base_vol is None:
+                st = await self.ha_api.get_entity_state(music_player)
+                curr = st.get("attributes", {}).get("volume_level") if isinstance(st, dict) else None
+                base_vol = float(curr) if curr is not None else 0.5
+            new_vol = max(0.0, min(1.0, round(base_vol + delta, 2)))
+
+        logger.info(f"[OPENAI VOLUME] Setting {music_player} volume to {new_vol} (mac={mac}) silently")
+        if self.ducking_manager:
+            self.ducking_manager.set_explicit_volume(mac, new_vol)
+
+        await self.ha_api.call_service("media_player", "volume_set", {
+            "entity_id": music_player,
+            "volume_level": new_vol
+        })
+        try:
+            await self.device_manager.update_device_config(mac, {"speaker_volume": new_vol})
+        except Exception:
+            pass
+        return True
+
     @staticmethod
     def _resolve_target_player(dev: Dict[str, Any], options: Dict[str, Any]) -> str:
         """Возвращает entity_id медиаплеера из карточки устройства или глобальных настроек."""
@@ -333,6 +392,10 @@ class OpenAIService:
                     turn_state["tool_executed"] = True
                     if domain in ("media_player", "music_assistant", "mass"):
                         turn_state["playback_changed"] = True
+                    if domain == "media_player" and service == "volume_set" and self.ducking_manager:
+                        vol_lvl = service_data.get("volume_level")
+                        if vol_lvl is not None:
+                            self.ducking_manager.set_explicit_volume(dev.get("mac", ""), float(vol_lvl))
                 return await self.ha_api.call_ha_action(domain, service, service_data)
 
             elif name == "get_ha_state":
@@ -542,8 +605,10 @@ class OpenAIService:
             response_modalities=["AUDIO"]
         )
 
-        # 1. Авто-пауза музыки на время ответа ассистента
+        # 1. Авто-пауза музыки на время ответа ассистента и возврат исходной громкости до дакинга
         music_was_paused = False
+        if self.ducking_manager:
+            await self.ducking_manager.on_speech_arrived(dev.get("mac", ""), restore_immediately=True)
         if music_player and self.ha_api:
             try:
                 state = await self.ha_api.get_entity_state(music_player)
@@ -741,10 +806,19 @@ class OpenAIService:
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response("связь", body.get("model", "porfiriy")), headers=self._cors_headers())
 
-            # 6. Проверка быстрых команд управления медиа
+            # 6. Отменяем 8-секундный сторож дакинга (слова дошли до Порфирия) и проверяем быстрые команды
+            if self.ducking_manager:
+                await self.ducking_manager.on_speech_arrived(mac, restore_immediately=False)
+
             music_player = self._resolve_target_player(dev, opts)
+            if await self._handle_direct_volume_command(user_text, mac, music_player):
+                self.device_manager.set_device_state(mac, "idle")
+                return web.json_response(self._make_openai_response("sil <[50]>", body.get("model", "porfiriy")), headers=self._cors_headers())
+
             fast_playback_reply = await self._handle_direct_playback_command(user_text, music_player)
             if fast_playback_reply:
+                if self.ducking_manager:
+                    await self.ducking_manager.finish_speech(mac)
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response(fast_playback_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
 
@@ -773,12 +847,16 @@ class OpenAIService:
                 else:
                     # Фолбэк на Alice TTS при ошибке вывода напрямую в динамик
                     text_reply = await self._generate_text_response(turns, user_text, dev, opts, is_json_mode=is_json_mode)
+                    if self.ducking_manager:
+                        await self.ducking_manager.finish_speech(mac)
                     self._save_dialogue_turn(mac, user_text, text_reply)
                     return web.json_response(self._make_openai_response(text_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
             else:
                 # Режим Alice TTS: генерируем чистый разговорный текст для проговаривания Алисой
                 self.device_manager.set_device_state(mac, "speaking")
                 text_reply = await self._generate_text_response(turns, user_text, dev, opts, is_json_mode=is_json_mode)
+                if self.ducking_manager:
+                    await self.ducking_manager.finish_speech(mac)
                 self._save_dialogue_turn(mac, user_text, text_reply)
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response(text_reply, body.get("model", "porfiriy")), headers=self._cors_headers())
