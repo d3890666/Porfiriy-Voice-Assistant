@@ -1,15 +1,8 @@
 import os
-import re
 import logging
 import json
 import asyncio
-from urllib.parse import urlparse
 from typing import Dict, Any, List, Optional, Tuple
-
-try:
-    import aiohttp
-except ImportError:
-    aiohttp = None
 
 logger = logging.getLogger(__name__)
 
@@ -573,105 +566,51 @@ class QuasarManager:
 
     @staticmethod
     def _is_routable_lan_ip(host: str) -> bool:
-        if not host:
-            return False
-        host = host.strip()
-        if host in ("localhost", "0.0.0.0", "::1"):
-            return False
-        if host.startswith(("127.", "172.17.", "172.30.", "169.254.")):
-            return False
-        return True
+        host = (host or "").strip()
+        return bool(host) and not host.startswith(("127.", "172.17.", "172.30.", "169.254.")) and host not in ("localhost", "0.0.0.0", "::1")
 
-    async def _resolve_porfiriy_host(self, conn, station_ip: str = "") -> str:
+    async def _resolve_porfiriy_host(self, conn) -> str:
         """
-        Определяет реальный LAN IP хоста Porfiriy, доступный со Станции.
-        Не использует внутренний NAT-IP Docker-контейнера (172.30.x.x / 172.17.x.x).
+        Определяет реальный LAN IP хоста Porfiriy, игнорируя внутренний NAT-адрес Docker (172.30.x.x).
         """
-        # 1. URL Porfiriy из конфигурации Quasar Bridge на самой Станции
-        try:
-            cfg_res = await conn.run(f"cat {QUASAR_CONFIG_PATH} {QUASAR_DIR}/runtime.env 2>/dev/null", check=False)
-            if cfg_res.exit_status == 0 and cfg_res.stdout:
-                for match in re.findall(r'(?:https?|wss?)://([^:/"\'\s]+)', cfg_res.stdout):
-                    if self._is_routable_lan_ip(match):
-                        return match
-        except Exception:
-            pass
-
-        # 2. Исходящий IP, который видит сама Станция в SSH_CLIENT (работает и через Docker SNAT)
         try:
             ssh_res = await conn.run("echo \"$SSH_CLIENT\" | awk '{print $1}'", check=False)
-            if ssh_res.exit_status == 0:
-                ssh_ip = ssh_res.stdout.strip()
-                if self._is_routable_lan_ip(ssh_ip):
-                    return ssh_ip
+            if ssh_res.exit_status == 0 and self._is_routable_lan_ip(ssh_res.stdout.strip()):
+                return ssh_res.stdout.strip()
         except Exception:
             pass
 
-        # 3. sockname сокета, только если это не Docker-bridge / loopback адрес
         try:
             sockname = conn.get_extra_info('sockname')
-            if sockname and sockname[0] and self._is_routable_lan_ip(sockname[0]):
+            if sockname and self._is_routable_lan_ip(sockname[0]):
                 return sockname[0]
         except Exception:
             pass
 
-        # 4. IP хоста Home Assistant через Supervisor API
-        supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
-        if supervisor_token and aiohttp is not None:
-            try:
-                headers = {"Authorization": f"Bearer {supervisor_token}"}
-                async with aiohttp.ClientSession(headers=headers) as session:
-                    async with session.get("http://supervisor/network/info", timeout=aiohttp.ClientTimeout(total=2)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            interfaces = data.get("data", {}).get("interfaces", [])
-                            station_prefix = ".".join(station_ip.split(".")[:3]) if station_ip and "." in station_ip else ""
-                            fallback_ip = ""
-                            for iface in interfaces:
-                                if not iface.get("connected", True):
-                                    continue
-                                for addr in iface.get("ipv4", {}).get("address", []):
-                                    ip_only = addr.split("/")[0]
-                                    if self._is_routable_lan_ip(ip_only):
-                                        if station_prefix and ip_only.startswith(station_prefix + "."):
-                                            return ip_only
-                                        if iface.get("primary") or not fallback_ip:
-                                            fallback_ip = ip_only
-                            if fallback_ip:
-                                return fallback_ip
-            except Exception:
-                pass
-
-        # 5. SQUEEZELITE_SERVER из squeezelite.env на Станции
         try:
             sq_res = await conn.run(f"grep '^SQUEEZELITE_SERVER=' {SQUEEZELITE_DIR}/squeezelite.env 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d '\"'\\'' ' | cut -d: -f1", check=False)
-            if sq_res.exit_status == 0:
-                sq_ip = sq_res.stdout.strip()
-                if self._is_routable_lan_ip(sq_ip):
-                    return sq_ip
+            if sq_res.exit_status == 0 and self._is_routable_lan_ip(sq_res.stdout.strip()):
+                return sq_res.stdout.strip()
         except Exception:
             pass
 
         return ""
 
-    async def ensure_set_volume_wrapped(self, conn, station_ip: str = "", porfiriy_port: int = 8000) -> bool:
+    async def ensure_set_volume_wrapped(self, conn) -> bool:
         """
         Гарантирует установку обертки /system/vendor/quasar/set_volume.sh для координации громкости с авто-дакингом и синхронизации с Music Assistant.
         """
         try:
-            # Запоминаем реальный LAN IP и порт сервера Porfiriy для обратной связи от Станции
-            porfiriy_host = await self._resolve_porfiriy_host(conn, station_ip)
+            porfiriy_host = await self._resolve_porfiriy_host(conn)
             if porfiriy_host:
                 await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
-                logger.info(f"[QUASAR] Saved reachable Porfiriy host {porfiriy_host}:{porfiriy_port} to /data/opt/porfiriy_host")
+                logger.info(f"[QUASAR] Saved reachable Porfiriy host {porfiriy_host} to /data/opt/porfiriy_host")
             else:
-                # Удаляем битый Docker-IP если он там остался от прошлой версии
                 await conn.run(
                     "h=$(cat /data/opt/porfiriy_host 2>/dev/null || echo ''); "
                     "case \"$h\" in 172.17.*|172.30.*|127.*) rm -f /data/opt/porfiriy_host ;; esac",
                     check=False
                 )
-            await conn.run(f"echo '{int(porfiriy_port)}' > /data/opt/porfiriy_port", check=False)
 
             check = await conn.run(f"grep -q 'porfiriy_set_volume_v2' {SET_VOLUME_PATH} 2>/dev/null && echo 'ok'", check=False)
             if check.exit_status == 0 and check.stdout.strip() == "ok":
@@ -811,7 +750,7 @@ class QuasarManager:
             logger.error(f"[QUASAR] Error executing Ducking {action} on {ip}:{port}: {e}")
             return {"success": False, "error": str(e), "ducking_running": False}
 
-    async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT, porfiriy_port: int = 8000) -> Dict[str, Any]:
+    async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
         """
         Единое обновление станции (Quasar Bridge, Squeezelite, Station AirPlay, Auto-Ducking, ALSA Master Volume sync):
         - Записывает манифест версии version.json
@@ -828,7 +767,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.7")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.8")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:
@@ -854,7 +793,7 @@ class QuasarManager:
                 await self.ensure_asound_configured(conn)
 
                 # 5. Устанавливаем обертку set_volume.sh для координации с авто-дакингом
-                await self.ensure_set_volume_wrapped(conn, station_ip=ip, porfiriy_port=porfiriy_port)
+                await self.ensure_set_volume_wrapped(conn)
 
                 # 6. Обновляем и страхуем службу Squeezelite
                 await self.ensure_squeezelite_installed(conn)

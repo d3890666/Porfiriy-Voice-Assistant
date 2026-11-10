@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.125
+- **Упрощение синхронизации громкости (использование плеера из карточки колонки без лишних эвристик)**:
+  - В [`QuasarManager._resolve_porfiriy_host`](backend/quasar_manager.py) оставлен компактный и надежный поиск реального LAN IP (`$SSH_CLIENT`, не-Docker `sockname`, `SQUEEZELITE_SERVER`) без записи Docker-адреса `172.30.x.x` в `/data/opt/porfiriy_host`.
+  - В [`WebServer.handle_station_volume_sync`](backend/web_server.py) убрано сканирование и подбор плееров по `player_name` — громкость синхронизируется напрямую с тем `media_player`, который выбран в карточке Станции (`mass_player` / `airplay_player`), по точному IP колонки.
+  - Скрипты `set_volume.sh` и `ducking_service.sh` упрощены с сохранением защиты от Docker NAT IP и гонки при выходе из дакинга.
+- **Единый дистрибутив Станции `v1.2.4-porfiriy.8`**, версии в `config.yaml` и `index.html` подняты до `0.0.125`.
+
 ## 0.0.124
 - **Исправление обратной синхронизации громкости в Music Assistant (устранение отката громкости после голосовой команды Алисе)**:
   - **Реальный LAN IP вместо Docker NAT IP (`172.30.33.x`)**: Исправлена ошибка в `QuasarManager.ensure_set_volume_wrapped`, из-за которой `conn.get_extra_info('sockname')` внутри Docker-контейнера аддона записывал в `/data/opt/porfiriy_host` внутренний NAT-адрес `172.30.x.x`, недоступный со Станции. Внедрено надежное определение реального LAN-адреса (из конфигурации Quasar Bridge, `$SSH_CLIENT`, Supervisor `/network/info` и `SQUEEZELITE_SERVER`) и сохранение порта `openai_api_port` в `/data/opt/porfiriy_port`.
