@@ -160,7 +160,11 @@ class GeminiProxyClient:
                 properties={
                     "name": types.Schema(
                         type=types.Type.STRING,
-                        description="Clean search query in canonical form (e.g. 'Bob Marley', 'Кино Группа крови', 'Dark Side of the Moon')."
+                        description="Clean track, album, or artist title in canonical form without filler words (e.g. 'Сила ума', 'Bob Marley', 'Bohemian Rhapsody')."
+                    ),
+                    "artist": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optional artist/band name when searching for a specific album or track (e.g. 'Кирпичи', 'Queen')."
                     ),
                     "media_type": types.Schema(
                         type=types.Type.STRING,

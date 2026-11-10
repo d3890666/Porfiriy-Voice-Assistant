@@ -1,4 +1,5 @@
 import os
+import asyncio
 import aiohttp
 import websockets
 import json
@@ -278,15 +279,19 @@ class HomeAssistantAPI:
         if ma_entry_id:
             search_data["config_entry_id"] = ma_entry_id
 
-        return await self.call_service_ws(
+        logger.info(f"[MA SEARCH] Calling {ma_domain}.search: {search_data}")
+        res = await self.call_service_ws(
             domain=ma_domain,
             service="search",
             service_data=search_data,
             return_response=True
         )
+        if isinstance(res, dict) and "error" in res:
+            logger.warning(f"[MA SEARCH] Error from {ma_domain}.search: {res['error']}")
+        return res
 
     @staticmethod
-    def _simplify_ma_results(result: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:
+    def _simplify_ma_results(result: Dict[str, Any], limit: int = 5, artist_hint: Optional[str] = None) -> List[Dict[str, Any]]:
         actual_response = result.get("response", result)
         if not isinstance(actual_response, dict):
             return []
@@ -316,9 +321,21 @@ class HomeAssistantAPI:
                 if isinstance(album, dict) and album.get("name"):
                     entry["album"] = album.get("name")
                 items_out.append(entry)
+
+        if artist_hint and items_out:
+            hint_lower = artist_hint.strip().lower()
+            items_out.sort(
+                key=lambda x: 0 if hint_lower in (x.get("artists") or x.get("name") or "").lower() else 1
+            )
         return items_out
 
-    async def search_music_assistant(self, name: str, media_type: Optional[str] = None, limit: int = 5) -> Dict[str, Any]:
+    async def search_music_assistant(
+        self,
+        name: str,
+        media_type: Optional[str] = None,
+        limit: int = 5,
+        artist: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Поиск музыки в Music Assistant с возвратом артистов, альбомов и URI."""
         query = (name or "").strip()
         if not query:
@@ -328,18 +345,30 @@ class HomeAssistantAPI:
         if isinstance(result, dict) and "error" in result:
             return {"status": "error", "error": result["error"]}
 
-        items = self._simplify_ma_results(result, limit=limit) if isinstance(result, dict) else []
-        # Если с фильтром по media_type ничего не нашлось, повторяем поиск по всем типам
+        items = self._simplify_ma_results(result, limit=limit, artist_hint=artist) if isinstance(result, dict) else []
+
+        # Если с фильтром media_type ничего не нашлось, повторяем без media_type
         if not items and media_type:
             retry_res = await self._run_ma_search(query, None, limit)
             if isinstance(retry_res, dict) and "error" not in retry_res:
-                items = self._simplify_ma_results(retry_res, limit=limit)
+                items = self._simplify_ma_results(retry_res, limit=limit, artist_hint=artist)
 
+        # Если запрос состоит из нескольких слов ("Кирпичи Сила ума"), пробуем искать название без первого слова ("Сила ума")
+        if not items and " " in query:
+            words = query.split()
+            if len(words) >= 2:
+                title_only = " ".join(words[1:])
+                hint = artist or words[0]
+                retry_res = await self._run_ma_search(title_only, media_type, limit)
+                if isinstance(retry_res, dict) and "error" not in retry_res:
+                    items = self._simplify_ma_results(retry_res, limit=limit, artist_hint=hint)
+
+        logger.info(f"[MA SEARCH] Found {len(items)} items for name='{query}', artist='{artist or ''}', media_type={media_type}")
         if not items:
             return {
                 "status": "empty",
                 "results": [],
-                "hint": "Nothing found. Try a shorter query, drop filler words, or use original Latin spelling."
+                "hint": "Nothing found. Try searching only the album/track title in 'name' and putting artist in 'artist', or search only the artist."
             }
         return {"status": "success", "data": items}
 
@@ -388,25 +417,31 @@ class HomeAssistantAPI:
             return {"status": "error", "error": res["error"], "player": entity_id}
         return {"status": "success", "player": entity_id, "domain": domain, "result": res}
 
-    async def _ws_send_and_receive(self, payload: dict) -> dict:
-        try:
-            async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
-                await ws.recv() # auth_required
-                
+    async def _ws_send_and_receive(self, payload: dict, timeout: float = 8.0) -> dict:
+        async def _exchange():
+            async with websockets.connect(self.ws_url, max_size=16*1024*1024, open_timeout=timeout) as ws:
+                await ws.recv()  # auth_required
+
                 token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
                 await ws.send(json.dumps({"type": "auth", "access_token": token}))
-                await ws.recv() # auth_ok
-                
+                await ws.recv()  # auth_ok
+
                 if "id" not in payload:
                     payload["id"] = 2
-                    
+
                 await ws.send(json.dumps(payload))
-                
+
                 while True:
                     resp_str = await ws.recv()
                     resp = json.loads(resp_str)
                     if resp.get("id") == payload.get("id") and resp.get("type") == "result":
                         return resp
+
+        try:
+            return await asyncio.wait_for(_exchange(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"WS communication timed out after {timeout}s for {payload.get('type')}")
+            return {"success": False, "error": {"message": f"WS timeout after {timeout}s"}}
         except Exception as e:
             logger.error(f"Error in WS communication: {e}")
             return {"success": False, "error": {"message": str(e)}}

@@ -340,9 +340,10 @@ class OpenAIService:
 
             elif name == "search_music_assistant":
                 query = args.get("name") or args.get("query") or ""
+                artist = args.get("artist")
                 media_type = args.get("media_type")
-                logger.info(f"[OPENAI MUSIC] Searching MA: name='{query}', media_type={media_type}")
-                return await self.ha_api.search_music_assistant(name=query, media_type=media_type)
+                logger.info(f"[OPENAI MUSIC] Searching MA: name='{query}', artist='{artist or ''}', media_type={media_type}")
+                return await self.ha_api.search_music_assistant(name=query, media_type=media_type, artist=artist)
 
             elif name in ["play_music_assistant", "play_music"]:
                 uri_or_query = args.get("uri") or args.get("query") or args.get("name") or ""
@@ -397,6 +398,7 @@ class OpenAIService:
             f"- Step 1 (Normalize & Search): Strip filler words ('включи', 'поставь', 'сыграй', 'песню', 'трек', 'артиста', 'группу', 'альбом', 'музыку'). "
             f"Convert Russian inflected cases to canonical nominative form and foreign names to original Latin spelling "
             f"('Боба Марли' -> 'Bob Marley', 'Куин' -> 'Queen', 'Нирвану' -> 'Nirvana', 'Пинк Флойд' -> 'Pink Floyd'). "
+            f"When user specifies both artist and album/track (e.g. 'альбом Сила ума группы Кирпичи'), put ONLY the title in name ('Сила ума') and put the band in artist ('Кирпичи'). "
             f"Pick accurate media_type: 'artist' for artist/band, 'album' for album, 'track' for specific song, 'playlist'/'radio' for mood/genre/radio (or omit if unsure). "
             f"Always call search_music_assistant first. If empty, retry once with a simpler query or without media_type.\n"
             f"- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless asked). "
@@ -406,6 +408,67 @@ class OpenAIService:
 
         parts = [p for p in [persona, users, smart_home, general, entities_prompt, station_context, music_directive] if p.strip()]
         return "\n\n".join(parts)
+
+    async def _consume_live_session(
+        self,
+        session: Any,
+        dev: Dict[str, Any],
+        options: Dict[str, Any],
+        turn_state: Optional[Dict[str, Any]] = None,
+        on_audio_chunk: Optional[Any] = None,
+    ) -> Tuple[List[str], List[bytes]]:
+        """
+        Читает все сообщения Gemini Live до завершения ответа (включая многошаговые tool calls).
+        В google-genai session.receive() завершает итератор на turn_complete, поэтому используем внешний цикл.
+        """
+        text_parts: List[str] = []
+        pcm_chunks: List[bytes] = []
+        waiting_for_tool_reply = False
+        turn_done = False
+
+        async def _loop():
+            nonlocal waiting_for_tool_reply, turn_done
+            while not turn_done:
+                got_any = False
+                async for response in session.receive():
+                    got_any = True
+                    if response.tool_call is not None:
+                        function_responses = []
+                        for fc in response.tool_call.function_calls:
+                            logger.info(f"[OPENAI LIVE FC] Model called: {fc.name} with {fc.args}")
+                            tool_res = await self._execute_tool(fc.name, fc.args, dev, options, turn_state=turn_state)
+                            logger.info(f"[OPENAI LIVE FC] Tool {fc.name} result: {tool_res}")
+                            function_responses.append(types.FunctionResponse(
+                                name=fc.name,
+                                id=fc.id,
+                                response={"result": tool_res}
+                            ))
+                        await session.send_tool_response(function_responses=function_responses)
+                        waiting_for_tool_reply = True
+                        continue
+
+                    sc = response.server_content
+                    if sc is not None:
+                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
+                            text_parts.append(sc.output_transcription.text)
+                        if sc.model_turn is not None:
+                            waiting_for_tool_reply = False
+                            for part in sc.model_turn.parts:
+                                if part.text:
+                                    text_parts.append(part.text)
+                                if part.inline_data and part.inline_data.data:
+                                    chunk = part.inline_data.data
+                                    pcm_chunks.append(chunk)
+                                    if on_audio_chunk is not None:
+                                        await on_audio_chunk(chunk)
+                        if sc.turn_complete and not waiting_for_tool_reply:
+                            turn_done = True
+                            break
+                if not got_any:
+                    break
+
+        await asyncio.wait_for(_loop(), timeout=25.0)
+        return text_parts, pcm_chunks
 
     async def _generate_text_response(self, turns: List[Any], user_text: str, dev: Dict[str, Any], options: Dict[str, Any], is_json_mode: bool = False) -> str:
         """Генерация текстового ответа строго через Gemini Live API WebSocket (bidiGenerateContent)."""
@@ -425,8 +488,6 @@ class OpenAIService:
             response_modalities=["AUDIO"]
         )
 
-        text_parts = []
-        waiting_for_tool_reply = False
         try:
             async with proxy_client.connect() as session:
                 payload_turns = turns if (turns and types) else [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
@@ -434,39 +495,14 @@ class OpenAIService:
                     turns=payload_turns,
                     turn_complete=True
                 )
-
-                async for response in session.receive():
-                    if response.tool_call is not None:
-                        function_responses = []
-                        for fc in response.tool_call.function_calls:
-                            logger.info(f"[OPENAI LIVE FC] Model called: {fc.name} with {fc.args}")
-                            tool_res = await self._execute_tool(fc.name, fc.args, dev, options)
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response={"result": tool_res}
-                            ))
-                        await session.send_tool_response(function_responses=function_responses)
-                        waiting_for_tool_reply = True
-                        continue
-
-                    sc = response.server_content
-                    if sc is not None:
-                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
-                            text_parts.append(sc.output_transcription.text)
-                        if sc.model_turn is not None:
-                            waiting_for_tool_reply = False
-                            for part in sc.model_turn.parts:
-                                if part.text:
-                                    text_parts.append(part.text)
-                        if sc.turn_complete:
-                            if not waiting_for_tool_reply:
-                                break
+                text_parts, _ = await self._consume_live_session(session, dev, options)
 
             raw_text = "".join(text_parts).strip()
-            if not raw_text:
-                return "Команда выполнена."
-            return raw_text if is_json_mode else sanitize_text_for_speech(raw_text)
+            reply = raw_text if is_json_mode else sanitize_text_for_speech(raw_text)
+            if not reply:
+                reply = "Команда выполнена."
+            logger.info(f"[OPENAI LIVE] Text reply: '{reply}'")
+            return reply
 
         except Exception as e:
             logger.error(f"[OPENAI LIVE] Error generating text response via Live API with model '{model}': {e}", exc_info=True)
@@ -540,8 +576,18 @@ class OpenAIService:
 
         pcm_chunks = []
         transcription_parts = []
-        waiting_for_tool_reply = False
         turn_state = {"playback_changed": False}
+        first_chunk = True
+
+        async def _stream_chunk(chunk: bytes):
+            nonlocal first_chunk
+            if ssh_proc is not None:
+                if first_chunk:
+                    logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
+                    first_chunk = False
+                ssh_proc.stdin.write(chunk)
+                await ssh_proc.stdin.drain()
+
         try:
             async with proxy_client.connect() as session:
                 payload_turns = turns if (turns and types) else [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
@@ -549,44 +595,9 @@ class OpenAIService:
                     turns=payload_turns,
                     turn_complete=True
                 )
-
-                first_chunk = True
-                async for response in session.receive():
-                    if response.tool_call is not None:
-                        function_responses = []
-                        for fc in response.tool_call.function_calls:
-                            logger.info(f"[OPENAI LIVE FC] Model called: {fc.name} with {fc.args}")
-                            res = await self._execute_tool(fc.name, fc.args, dev, options, turn_state=turn_state)
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response={"result": res}
-                            ))
-                        await session.send_tool_response(function_responses=function_responses)
-                        waiting_for_tool_reply = True
-                        continue
-
-                    sc = response.server_content
-                    if sc is not None:
-                        if getattr(sc, "output_transcription", None) and sc.output_transcription.text:
-                            transcription_parts.append(sc.output_transcription.text)
-                        if sc.model_turn is not None:
-                            waiting_for_tool_reply = False
-                            for part in sc.model_turn.parts:
-                                if part.text:
-                                    transcription_parts.append(part.text)
-                                if part.inline_data and part.inline_data.data:
-                                    chunk = part.inline_data.data
-                                    pcm_chunks.append(chunk)
-                                    if ssh_proc is not None:
-                                        if first_chunk:
-                                            logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
-                                            first_chunk = False
-                                        ssh_proc.stdin.write(chunk)
-                                        await ssh_proc.stdin.drain()
-                        if sc.turn_complete:
-                            if not waiting_for_tool_reply:
-                                break
+                transcription_parts, pcm_chunks = await self._consume_live_session(
+                    session, dev, options, turn_state=turn_state, on_audio_chunk=_stream_chunk
+                )
 
             # Сохраняем итоговый WAV для веб-интерфейса (кнопка "Ответ Gemini")
             if pcm_chunks:

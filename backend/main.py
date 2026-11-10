@@ -941,7 +941,8 @@ async def handle_client(websocket):
                                         tool_logger.info(f"Gemini Calling MA Search: {args}")
                                         safe_result = await ha_api.search_music_assistant(
                                             name=args.get("name") or args.get("query") or "",
-                                            media_type=args.get("media_type")
+                                            media_type=args.get("media_type"),
+                                            artist=args.get("artist")
                                         )
                                         tool_logger.info(f"MA Search Result: {safe_result}")
                                         function_responses.append(types.FunctionResponse(
@@ -1263,7 +1264,8 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                             args = dict(fc.args) if fc.args else {}
                             safe_result = await ha_api.search_music_assistant(
                                 name=args.get("name") or args.get("query") or "",
-                                media_type=args.get("media_type")
+                                media_type=args.get("media_type"),
+                                artist=args.get("artist")
                             )
                             function_responses.append(types.FunctionResponse(
                                 name=fc.name,
