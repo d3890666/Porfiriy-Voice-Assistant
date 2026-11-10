@@ -287,13 +287,6 @@ class QuasarManager:
                 ap_autostart_check = await conn.run(f"test -x {STATION_AIRPLAY_INIT_PATH} && echo 'ok'", check=False)
                 ap_autostart = (ap_autostart_check.exit_status == 0 and ap_autostart_check.stdout.strip() == "ok")
 
-                # 5. Проверка статуса station-ducking и автозапуска
-                duck_check = await conn.run("ps | grep -v grep | grep ducking", check=False)
-                duck_running = (duck_check.exit_status == 0 and bool(duck_check.stdout.strip()))
-
-                duck_autostart_check = await conn.run(f"test -x {STATION_DUCKING_INIT_PATH} && echo 'ok'", check=False)
-                duck_autostart = (duck_autostart_check.exit_status == 0 and duck_autostart_check.stdout.strip() == "ok")
-
                 has_update = (installed_ver != bundled_ver)
 
                 return {
@@ -308,8 +301,6 @@ class QuasarManager:
                     "squeezelite_autostart": sq_autostart,
                     "airplay_running": ap_running,
                     "airplay_autostart": ap_autostart,
-                    "ducking_running": duck_running,
-                    "ducking_autostart": duck_autostart,
                     "bundled_info": bundled
                 }
         except Exception as e:
@@ -539,235 +530,45 @@ class QuasarManager:
             logger.error(f"[QUASAR] Error executing AirPlay {action} on {ip}:{port}: {e}")
             return {"success": False, "error": str(e), "airplay_running": False}
 
-    async def ensure_asound_configured(self, conn) -> bool:
+    async def _cleanup_legacy_volume_ducking(self, conn) -> None:
         """
-        Гарантирует правильную конфигурацию ALSA (/etc/asound.conf):
-        1. Наличие ctl.soft_volume { type hw card 0 }
-        2. Маршрутизацию pcm.!default через soft_volume (чтобы все аудиопотоки подчинялись Master громкости и авто-дакингу)
+        Останавливает и удаляет старый блок auto-ducking / volume_sync / soft_volume со Станции,
+        возвращая штатную маршрутизацию ALSA и чистый set_volume.sh.
         """
         try:
-            check = await conn.run("grep -q 'ctl.soft_volume' /etc/asound.conf 2>/dev/null && grep -q 'playback.pcm \"soft_volume\"' /etc/asound.conf 2>/dev/null && echo 'ok'", check=False)
-            if check.exit_status == 0 and check.stdout.strip() == "ok":
-                return True
-
-            logger.info("[QUASAR] Configuring ALSA /etc/asound.conf for Master volume & Auto-Ducking...")
-            asound_cmd = (
-                "mount -o remount,rw / && "
-                "sed -i 's/playback.pcm \"dmix_spk_plug\"/playback.pcm \"soft_volume\"/' /etc/asound.conf && "
-                "grep -q 'ctl.soft_volume' /etc/asound.conf || echo -e '\\nctl.soft_volume {\\n  type hw\\n  card 0\\n}\\n' >> /etc/asound.conf && "
-                "sync && "
-                "mount -o remount,ro /"
+            logger.info("[QUASAR] Cleaning up legacy station-ducking, set_volume wrapper and soft_volume...")
+            cleanup_cmd = (
+                f"sh {STATION_DUCKING_SERVICE_PATH} stop 2>/dev/null || true; "
+                "killall -9 ducking 2>/dev/null || true; "
+                f"rm -rf {STATION_DUCKING_DIR} /data/opt/porfiriy_host /data/opt/porfiriy_port /tmp/station_ducking_*; "
+                "mount -o remount,rw / 2>/dev/null && ("
+                f"rm -f {STATION_DUCKING_INIT_PATH}; "
+                f"sed -i 's/playback.pcm \"soft_volume\"/playback.pcm \"dmix_spk_plug\"/' {ASOUND_CONF_PATH} 2>/dev/null || true; "
+                f"if grep -qE 'station_ducking|volume_sync|porfiriy_set_volume' {SET_VOLUME_PATH} 2>/dev/null; then "
+                f"printf '#!/bin/sh\\ntarget=\"${{1:-50}}\"\\ncase \"$target\" in *[!0-9]*|\"\") target=50 ;; esac\\necho \"$target\" > /tmp/quasar_volume\\namixer set \\x27Master\\x27 \"${{target}}%\" >/dev/null 2>&1 || true\\n' > {SET_VOLUME_PATH} && chmod 755 {SET_VOLUME_PATH}; "
+                "fi; "
+                "sync; mount -o remount,ro / 2>/dev/null || true)"
             )
-            await conn.run(asound_cmd, check=False)
-            return True
+            await conn.run(cleanup_cmd, check=False)
         except Exception as e:
-            logger.warning(f"[QUASAR] Could not configure ALSA asound.conf: {e}")
-            return False
-
-    @staticmethod
-    def _is_routable_lan_ip(host: str) -> bool:
-        host = (host or "").strip()
-        return bool(host) and not host.startswith(("127.", "172.17.", "172.30.", "169.254.")) and host not in ("localhost", "0.0.0.0", "::1")
-
-    async def _resolve_porfiriy_host(self, conn) -> str:
-        """
-        Определяет реальный LAN IP хоста Porfiriy, игнорируя внутренний NAT-адрес Docker (172.30.x.x).
-        """
-        try:
-            ssh_res = await conn.run("echo \"$SSH_CLIENT\" | awk '{print $1}'", check=False)
-            if ssh_res.exit_status == 0 and self._is_routable_lan_ip(ssh_res.stdout.strip()):
-                return ssh_res.stdout.strip()
-        except Exception:
-            pass
-
-        try:
-            sockname = conn.get_extra_info('sockname')
-            if sockname and self._is_routable_lan_ip(sockname[0]):
-                return sockname[0]
-        except Exception:
-            pass
-
-        try:
-            sq_res = await conn.run(f"grep '^SQUEEZELITE_SERVER=' {SQUEEZELITE_DIR}/squeezelite.env 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d '\"'\\'' ' | cut -d: -f1", check=False)
-            if sq_res.exit_status == 0 and self._is_routable_lan_ip(sq_res.stdout.strip()):
-                return sq_res.stdout.strip()
-        except Exception:
-            pass
-
-        return ""
-
-    async def ensure_set_volume_wrapped(self, conn) -> bool:
-        """
-        Гарантирует установку обертки /system/vendor/quasar/set_volume.sh для координации громкости с авто-дакингом и синхронизации с Music Assistant.
-        """
-        try:
-            porfiriy_host = await self._resolve_porfiriy_host(conn)
-            if porfiriy_host:
-                await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
-                logger.info(f"[QUASAR] Saved reachable Porfiriy host {porfiriy_host} to /data/opt/porfiriy_host")
-            else:
-                await conn.run(
-                    "h=$(cat /data/opt/porfiriy_host 2>/dev/null || echo ''); "
-                    "case \"$h\" in 172.17.*|172.30.*|127.*) rm -f /data/opt/porfiriy_host ;; esac",
-                    check=False
-                )
-
-            check = await conn.run(f"grep -q 'porfiriy_set_volume_v2' {SET_VOLUME_PATH} 2>/dev/null && echo 'ok'", check=False)
-            if check.exit_status == 0 and check.stdout.strip() == "ok":
-                return True
-
-            set_vol_src = os.path.join(STATION_DIST_DIR, "set_volume.sh")
-            content = ""
-            if os.path.exists(set_vol_src):
-                with open(set_vol_src, "r", encoding="utf-8") as f:
-                    content = f.read()
-
-            if not content:
-                content = (
-                    "#!/bin/sh\n"
-                    "# porfiriy_set_volume_v2\n"
-                    "target=\"${1:-50}\"\n"
-                    "case \"$target\" in *[!0-9]*|\"\") target=50 ;; esac\n"
-                    "echo \"$target\" > /tmp/quasar_volume\n"
-                    "amixer set 'Master' \"${target}%\" >/dev/null 2>&1 || true\n"
-                    "porfiriy_host=$(cat /data/opt/porfiriy_host 2>/dev/null || echo '192.168.1.50')\n"
-                    "curl -s -m 2 -X POST \"http://${porfiriy_host}:8000/api/station/volume_sync\" -H \"Content-Type: application/json\" -d \"{\\\"volume\\\": $target}\" >/dev/null 2>&1 &\n"
-                )
-
-            logger.info("[QUASAR] Installing set_volume.sh wrapper with Music Assistant sync to /system/vendor/quasar/set_volume.sh...")
-            install_cmd = (
-                "mount -o remount,rw / && "
-                f"cat << 'EOF' > {SET_VOLUME_PATH}\n{content}\nEOF\n"
-                f"chmod 755 {SET_VOLUME_PATH} && "
-                "sync && "
-                "mount -o remount,ro /"
-            )
-            await conn.run(install_cmd, check=False)
-            return True
-        except Exception as e:
-            logger.warning(f"[QUASAR] Could not wrap set_volume.sh: {e}")
-            return False
-
-    async def ensure_station_ducking_installed(self, conn) -> bool:
-        """
-        Гарантирует установку и актуальность службы Station Ducking и скрипта автозапуска в /etc/init.d/S96ducking.
-        """
-        try:
-            await conn.run(f"mkdir -p {STATION_DUCKING_DIR}", check=False)
-
-            service_src = os.path.join(STATION_DIST_DIR, "ducking_service.sh")
-            service_content = ""
-            if os.path.exists(service_src):
-                with open(service_src, "r", encoding="utf-8") as f:
-                    service_content = f.read()
-
-            if service_content:
-                await conn.run(f"cat << 'EOF' > {STATION_DUCKING_SERVICE_PATH}\n{service_content}\nEOF\nchmod 755 {STATION_DUCKING_SERVICE_PATH}", check=False)
-            else:
-                await conn.run(f"chmod 755 {STATION_DUCKING_SERVICE_PATH} 2>/dev/null || true", check=False)
-
-            hook_check = await conn.run(f"grep -q 'Station Ducking autostart hook' {STATION_DUCKING_INIT_PATH} 2>/dev/null && echo 'ok'", check=False)
-            if hook_check.exit_status != 0 or hook_check.stdout.strip() != "ok":
-                init_src = os.path.join(STATION_DIST_DIR, "ducking_init.sh")
-                init_content = ""
-                if os.path.exists(init_src):
-                    with open(init_src, "r", encoding="utf-8") as f:
-                        init_content = f.read()
-
-                if not init_content:
-                    init_content = (
-                        "#!/bin/sh\n"
-                        "# Station Ducking autostart hook for Porfiriy & Music Assistant\n"
-                        "case \"${1:-start}\" in\n"
-                        "    start)\n"
-                        "        sh /data/opt/station-ducking/service start >/dev/null 2>&1 &\n"
-                        "        ;;\n"
-                        "    stop)\n"
-                        "        sh /data/opt/station-ducking/service stop\n"
-                        "        ;;\n"
-                        "    restart)\n"
-                        "        sh /data/opt/station-ducking/service restart\n"
-                        "        ;;\n"
-                        "    status)\n"
-                        "        exec sh /data/opt/station-ducking/service status\n"
-                        "        ;;\n"
-                        "    *)\n"
-                        "        exec sh /data/opt/station-ducking/service \"$@\"\n"
-                        "        ;;\n"
-                        "esac\n"
-                    )
-
-                logger.info("[QUASAR] Installing non-blocking Ducking autostart hook to /etc/init.d/S96ducking...")
-                install_cmd = (
-                    "mount -o remount,rw / && "
-                    f"cat << 'EOF' > {STATION_DUCKING_INIT_PATH}\n{init_content}\nEOF\n"
-                    f"chmod 755 {STATION_DUCKING_INIT_PATH} && "
-                    "sync && "
-                    "mount -o remount,ro /"
-                )
-                await conn.run(install_cmd, check=False)
-
-            return True
-        except Exception as e:
-            logger.warning(f"[QUASAR] Could not ensure station ducking installed: {e}")
-            return False
-
-    async def control_station_ducking(self, ip: str, port: int = DEFAULT_SSH_PORT, action: str = "restart") -> Dict[str, Any]:
-        """
-        Управляет службой Station Ducking (start, stop, restart, status) на Станции по SSH.
-        """
-        if not ip or ip == "---":
-            return {"error": "IP-адрес колонки не указан"}
-
-        action = action.strip().lower()
-        if action not in ["start", "stop", "restart", "status"]:
-            return {"error": f"Неизвестное действие: {action}"}
-
-        try:
-            async with await self._open_ssh_connection(ip, port) as conn:
-                await self.ensure_station_ducking_installed(conn)
-
-                cmd = f"sh {STATION_DUCKING_SERVICE_PATH} {action}"
-                res = await conn.run(cmd, check=False)
-                out = res.stdout.strip()
-                err = res.stderr.strip()
-
-                await asyncio.sleep(0.5)
-                duck_check = await conn.run("ps | grep -v grep | grep ducking", check=False)
-                duck_running = (duck_check.exit_status == 0 and bool(duck_check.stdout.strip()))
-
-                msg = out or err or f"Команда {action} выполнена"
-                logger.info(f"[QUASAR] Ducking {action} on {ip}:{port} -> running={duck_running} ({msg})")
-
-                return {
-                    "success": True,
-                    "action": action,
-                    "ducking_running": duck_running,
-                    "message": msg,
-                    "output": out
-                }
-        except Exception as e:
-            logger.error(f"[QUASAR] Error executing Ducking {action} on {ip}:{port}: {e}")
-            return {"success": False, "error": str(e), "ducking_running": False}
+            logger.warning(f"[QUASAR] Legacy volume/ducking cleanup warning: {e}")
 
     async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
         """
-        Единое обновление станции (Quasar Bridge, Squeezelite, Station AirPlay, Auto-Ducking, ALSA Master Volume sync):
+        Единое обновление станции (Quasar Bridge, Squeezelite, Station AirPlay):
+        - Очищает устаревший блок auto-ducking / volume_sync
         - Записывает манифест версии version.json
         - Загружает обновленный бинарник из station_dist/bin/ (если присутствует)
-        - Конфигурирует ALSA asound.conf (soft_volume)
-        - Устанавливает обертку set_volume.sh
         - Обновляет службу и автозапуск Squeezelite
         - Обновляет службу и автозапуск Station AirPlay
-        - Обновляет службу и автозапуск Station Ducking
         - Выполняет валидацию конфигурации -check-config
-        - Перезапускает Quasar Bridge, Squeezelite, Station AirPlay и Station Ducking
+        - Перезапускает Quasar Bridge, Squeezelite и Station AirPlay
         """
         if not ip or ip == "---":
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.8")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.9")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:
@@ -789,22 +590,16 @@ class QuasarManager:
                 escaped_ver = ver_json_str.replace("'", "'\\''")
                 await conn.run(f"echo '{escaped_ver}' > {QUASAR_DIR}/version.json", check=False)
 
-                # 4. Гарантируем ALSA маршрутизацию soft_volume и Master громкости
-                await self.ensure_asound_configured(conn)
+                # 4. Выпиливаем старый блок auto-ducking / volume_sync / soft_volume
+                await self._cleanup_legacy_volume_ducking(conn)
 
-                # 5. Устанавливаем обертку set_volume.sh для координации с авто-дакингом
-                await self.ensure_set_volume_wrapped(conn)
-
-                # 6. Обновляем и страхуем службу Squeezelite
+                # 5. Обновляем и страхуем службу Squeezelite
                 await self.ensure_squeezelite_installed(conn)
 
-                # 7. Обновляем и страхуем службу Station AirPlay
+                # 6. Обновляем и страхуем службу Station AirPlay
                 await self.ensure_station_airplay_installed(conn)
 
-                # 8. Обновляем и страхуем службу Station Ducking
-                await self.ensure_station_ducking_installed(conn)
-
-                # 9. Проверяем конфигурацию Quasar перед перезапуском
+                # 7. Проверяем конфигурацию Quasar перед перезапуском
                 check_cmd = f"cd {QUASAR_DIR} && set -a && . ./runtime.env && set +a && ./app/bin/quasar-bridge -config {QUASAR_CONFIG_PATH} -check-config"
                 check_res = await conn.run(check_cmd, check=False)
                 if check_res.exit_status != 0:
@@ -812,7 +607,7 @@ class QuasarManager:
                         "error": f"Конфигурация не прошла валидацию: {check_res.stderr.strip() or check_res.stdout.strip()}"
                     }
 
-                # 10. Перезапускаем Quasar Bridge
+                # 8. Перезапускаем Quasar Bridge
                 restart_cmd = f"sh {QUASAR_DIR}/app/control.sh restart"
                 restart_res = await conn.run(restart_cmd, check=False)
                 if restart_res.exit_status != 0:
@@ -820,32 +615,25 @@ class QuasarManager:
                         "error": f"Ошибка перезапуска Quasar Bridge: {restart_res.stderr.strip()}"
                     }
 
-                # 11. Перезапускаем Squeezelite
+                # 9. Перезапускаем Squeezelite
                 await conn.run(f"sh {SQUEEZELITE_SERVICE_PATH} restart", check=False)
                 await asyncio.sleep(0.5)
                 sq_check = await conn.run("ps | grep -v grep | grep squeezelite", check=False)
                 sq_running = (sq_check.exit_status == 0 and bool(sq_check.stdout.strip()))
 
-                # 12. Перезапускаем Station AirPlay
+                # 10. Перезапускаем Station AirPlay
                 await conn.run(f"sh {STATION_AIRPLAY_SERVICE_PATH} restart", check=False)
                 await asyncio.sleep(0.5)
                 ap_check = await conn.run("ps | grep -v grep | grep station-airplay", check=False)
                 ap_running = (ap_check.exit_status == 0 and bool(ap_check.stdout.strip()))
 
-                # 13. Перезапускаем Station Ducking
-                await conn.run(f"sh {STATION_DUCKING_SERVICE_PATH} restart", check=False)
-                await asyncio.sleep(0.5)
-                duck_check = await conn.run("ps | grep -v grep | grep ducking", check=False)
-                duck_running = (duck_check.exit_status == 0 and bool(duck_check.stdout.strip()))
-
-                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver} (Squeezelite running={sq_running}, AirPlay running={ap_running}, Ducking running={duck_running})")
+                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver} (Squeezelite running={sq_running}, AirPlay running={ap_running})")
                 return {
                     "success": True,
                     "message": f"Единый пакет Яндекс Станции успешно обновлен до {bundled_ver}",
                     "version": bundled_ver,
                     "squeezelite_running": sq_running,
                     "airplay_running": ap_running,
-                    "ducking_running": duck_running,
                     "output": restart_res.stdout.strip()
                 }
         except Exception as e:

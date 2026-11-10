@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.129
+- **Полное удаление блока Auto-Ducking / `set_volume.sh` / `volume_sync` / `-V Master` (возврат к чистой базе для новой реализации с нуля)**:
+  - Удалены скрипты `ducking_service.sh`, `ducking_init.sh`, `set_volume.sh` из `backend/station_dist/`, а также эндпоинты `/api/quasar/ducking`, `/api/station/volume_sync` и интерфейс `Auto-Ducking` из веб-панели.
+  - В [`squeezelite_service.sh`](backend/station_dist/squeezelite_service.sh) возвращен вывод `default` без аппаратного микшера `-V Master`.
+  - В [`QuasarManager.update_station`](backend/quasar_manager.py) добавлена автоматическая очистка старого блока на Станции (`_cleanup_legacy_volume_ducking`: остановка и удаление `/data/opt/station-ducking`, `/etc/init.d/S96ducking`, `/data/opt/porfiriy_host`, возврат `dmix_spk_plug` в `/etc/asound.conf` и чистого `set_volume.sh` без дакинга и `volume_sync`).
+- **Единый дистрибутив Станции `v1.2.4-porfiriy.9`**, версии в `config.yaml` и `index.html` подняты до `0.0.129`.
+
 ## 0.0.128
 - **Устранение таймаута Gemini Live (`TimeoutError` 25s) и повторного запуска альбомов**:
   - **Неблокирующая отправка `play_music_assistant`**: В [`HomeAssistantAPI.play_music_assistant`](backend/ha_api.py) ожидание ответа `music_assistant.play_media` ограничено `1.5s` (`asyncio.shield`), после чего буферизация Apple Music / провайдера продолжается в фоне, а Gemini Live сразу получает подтверждение и не зависает в ожидании ~10 секунд на открытом WebSocket.

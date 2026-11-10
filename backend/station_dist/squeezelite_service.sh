@@ -9,11 +9,10 @@ envfile="$base/squeezelite.env"
 [ -f "$envfile" ] && . "$envfile"
 
 server="${SQUEEZELITE_SERVER:-192.168.1.50}"
-output="${SQUEEZELITE_OUTPUT:-soft_volume}"
+output="${SQUEEZELITE_OUTPUT:-default}"
 name="${SQUEEZELITE_NAME:-Яндекс Станция}"
 buffers="${SQUEEZELITE_BUFFERS:-2048:3445}"
 close_timeout="${SQUEEZELITE_CLOSE_TIMEOUT:-2}"
-mixer="${SQUEEZELITE_MIXER:-Master}"
 
 running() {
     test -s "$pidfile" || return 1
@@ -58,7 +57,7 @@ start() {
     wait_network || true
 
     # Start squeezelite
-    nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" -V "$mixer" >>"$logfile" 2>&1 &
+    nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
     echo $! > "$pidfile"
 
     sleep 1
@@ -69,7 +68,7 @@ start() {
 
     # Retry once after 2 seconds if first attempt failed (e.g. sound card busy during boot)
     sleep 2
-    nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" -V "$mixer" >>"$logfile" 2>&1 &
+    nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
     echo $! > "$pidfile"
 
     sleep 1

@@ -87,8 +87,6 @@ class WebServer:
         self.app.router.add_post("/api/quasar/update", self.handle_update_quasar)
         self.app.router.add_post("/api/quasar/squeezelite", self.handle_quasar_squeezelite)
         self.app.router.add_post("/api/quasar/airplay", self.handle_quasar_airplay)
-        self.app.router.add_post("/api/quasar/ducking", self.handle_quasar_ducking)
-        self.app.router.add_post("/api/station/volume_sync", self.handle_station_volume_sync)
         self.app.router.add_get("/api/quasar/extract-ha-keywords", self.handle_extract_ha_keywords)
         self.app.router.add_post("/api/quasar/test-route", self.handle_quasar_test_route)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
@@ -771,99 +769,6 @@ class WebServer:
             return web.json_response(res, status=status_code)
         except Exception as e:
             logger.error(f"Error controlling station airplay: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
-
-    async def handle_quasar_ducking(self, request: web.Request) -> web.Response:
-        """POST /api/quasar/ducking {"mac": "...", "ip": "...", "action": "restart"}"""
-        try:
-            body = await request.json()
-            mac = body.get("mac", "")
-            ip_body = body.get("ip", "")
-            action = body.get("action", "restart")
-            ip, port = self._resolve_quasar_target(mac, ip_body)
-            if not ip or ip == "---":
-                return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
-
-            res = await self.quasar_manager.control_station_ducking(ip, port, action)
-            if mac and res.get("success"):
-                self.device_manager.update_device_runtime(mac, {"ducking_running": res.get("ducking_running", False)})
-            status_code = 200 if res.get("success") else 400
-            return web.json_response(res, status=status_code)
-        except Exception as e:
-            logger.error(f"Error controlling station ducking: {e}")
-            return web.json_response({"success": False, "error": str(e)}, status=500)
-
-    async def handle_station_volume_sync(self, request: web.Request) -> web.Response:
-        """
-        Синхронизирует изменение громкости со Станции (от Алисы или кольца) в Music Assistant / Home Assistant.
-        POST /api/station/volume_sync {"volume": 40}
-        """
-        try:
-            body = await request.json()
-            vol = body.get("volume")
-            if vol is None:
-                return web.json_response({"error": "volume is required"}, status=400)
-
-            try:
-                vol_int = int(vol)
-            except (ValueError, TypeError):
-                return web.json_response({"error": "invalid volume integer"}, status=400)
-
-            vol_float = max(0.0, min(1.0, vol_int / 100.0))
-            client_ip = (request.remote or "").strip()
-            if client_ip.startswith("::ffff:"):
-                client_ip = client_ip[7:]
-            logger.info(f"[VOLUME SYNC] Received volume sync from {client_ip}: {vol_int}% ({vol_float})")
-
-            if not self.ha_api:
-                return web.json_response({"success": False, "error": "ha_api not initialized"}, status=503)
-
-            # 1. Ищем устройство по точному IP среди зарегистрированных Станций и берем выбранный в карточке плеер
-            target_player = None
-            all_devices = self.device_manager.get_devices() if self.device_manager else []
-            for dev in all_devices:
-                dev_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
-                if dev_ip and dev_ip == client_ip:
-                    cfg = dev.get("config", {})
-                    target_player = (cfg.get("mass_player") or cfg.get("airplay_player") or "").strip()
-                    break
-
-            # 2. Фолбэк на активный играющий плеер или глобальный плеер по умолчанию
-            if not target_player:
-                playing = await self.ha_api.get_playing_media_players()
-                for p in playing:
-                    eid = p.get("entity_id", "")
-                    if any(k in eid.lower() for k in ["squeezelite", "mass", "airplay", "yandex", "station"]):
-                        target_player = eid
-                        break
-                if not target_player and playing:
-                    target_player = playing[0].get("entity_id")
-
-            if not target_player:
-                global_opts = self.options_callback() if self.options_callback else {}
-                target_player = (global_opts.get("default_airplay_player") or "").strip()
-
-            if not target_player:
-                logger.warning(f"[VOLUME SYNC] No suitable media_player found to sync volume {vol_int}% for {client_ip}")
-                return web.json_response({"success": False, "error": "No media player found"}, status=404)
-
-            logger.info(f"[VOLUME SYNC] Updating Home Assistant player {target_player} volume to {vol_float} ({vol_int}%)")
-            res = await self.ha_api.call_service("media_player", "volume_set", {
-                "entity_id": target_player,
-                "volume_level": vol_float
-            })
-            if isinstance(res, dict) and "error" in res:
-                logger.error(f"[VOLUME SYNC] Failed updating {target_player}: {res['error']}")
-                return web.json_response({"success": False, "player": target_player, "error": res["error"]}, status=502)
-
-            return web.json_response({
-                "success": True,
-                "player": target_player,
-                "volume": vol_int,
-                "volume_level": vol_float
-            })
-        except Exception as e:
-            logger.error(f"[VOLUME SYNC] Error processing volume sync: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
     async def start(self):

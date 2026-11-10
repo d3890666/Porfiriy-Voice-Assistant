@@ -252,7 +252,7 @@ function renderDevicesGrid() {
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
               <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge">
-                v1.2.4-porfiriy.8
+                v1.2.4-porfiriy.9
               </span>
             </div>
             <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH">
@@ -280,17 +280,6 @@ function renderDevicesGrid() {
                 </span>
               </div>
               <button class="btn btn-secondary btn-sm" onclick="controlAirplay('${dev.mac}', 'restart')" style="font-size: 11px; padding: 2px 8px; color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" title="Перезапустить службу AirPlay на Станции">
-                🔄 Рестарт
-              </button>
-            </div>
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.25); border-radius: 8px;">
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="font-size: 12px; color: #fbbf24; font-weight: 600;">🦆 Auto-Ducking:</span>
-                <span id="duck-badge-${dev.mac}" class="badge ${dev.ducking_running !== false ? 'badge-success' : 'badge-error'}" style="font-size: 10px; padding: 2px 6px;">
-                  ${dev.ducking_running !== false ? 'Активен' : 'Остановлен'}
-                </span>
-              </div>
-              <button class="btn btn-secondary btn-sm" onclick="controlDucking('${dev.mac}', 'restart')" style="font-size: 11px; padding: 2px 8px; color: #fbbf24; border-color: rgba(251, 191, 36, 0.4);" title="Перезапустить службу авто-дакинга на Станции">
                 🔄 Рестарт
               </button>
             </div>
@@ -2301,7 +2290,6 @@ async function updateQuasarComponents(mac) {
       if (dev) {
         if (data.squeezelite_running !== undefined) dev.squeezelite_running = data.squeezelite_running;
         if (data.airplay_running !== undefined) dev.airplay_running = data.airplay_running;
-        if (data.ducking_running !== undefined) dev.ducking_running = data.ducking_running;
       }
       fetchDevices();
     } else {
@@ -2383,41 +2371,6 @@ async function controlAirplay(mac, action = 'restart') {
 }
 window.controlAirplay = controlAirplay;
 
-async function controlDucking(mac, action = 'restart') {
-  const dev = devices.find(x => x.mac === mac);
-  const ip = dev?.ip || dev?.config?.ip || '';
-  showToast(`Ducking: отправка команды ${action}...`);
-  try {
-    const res = await fetch(`${API_BASE}/api/quasar/ducking`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mac: mac, ip: ip, action: action })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast(`Ducking: ${data.message || 'команда выполнена'}`);
-      if (dev) {
-        dev.ducking_running = data.ducking_running;
-      }
-      const badge = document.getElementById(`duck-badge-${mac}`);
-      if (badge) {
-        badge.className = `badge ${data.ducking_running ? 'badge-success' : 'badge-error'}`;
-        badge.textContent = data.ducking_running ? 'Активен' : 'Остановлен';
-      }
-      const modalBadge = document.getElementById('quasar-modal-duck-badge');
-      if (modalBadge) {
-        modalBadge.className = `fw-badge ${data.ducking_running ? 'fw-up-to-date' : 'fw-update-available'}`;
-        modalBadge.textContent = data.ducking_running ? 'Активен' : 'Остановлен';
-      }
-    } else {
-      showToast(`Ошибка Ducking: ${data.error || 'сбой'}`, true);
-    }
-  } catch (err) {
-    showToast('Сетевая ошибка при управлении Ducking', true);
-  }
-}
-window.controlDucking = controlDucking;
-
 async function openQuasarRoutingModal(mac) {
   currentQuasarMac = mac;
   const dev = devices.find(d => d.mac === mac);
@@ -2435,7 +2388,7 @@ async function openQuasarRoutingModal(mac) {
   const testRes = document.getElementById('quasar-test-result');
   if (testRes) testRes.style.display = 'none';
 
-  // Опрашиваем статус компонентов, Squeezelite, AirPlay и Ducking
+  // Опрашиваем статус компонентов, Squeezelite и AirPlay
   try {
     fetch(`${API_BASE}/api/quasar/version?mac=${encodeURIComponent(mac)}`)
       .then(r => r.json())
@@ -2450,11 +2403,6 @@ async function openQuasarRoutingModal(mac) {
           if (apBadge) {
             apBadge.className = `fw-badge ${vData.airplay_running ? 'fw-up-to-date' : 'fw-update-available'}`;
             apBadge.textContent = vData.airplay_running ? 'В сети' : 'Остановлен';
-          }
-          const duckBadge = document.getElementById('quasar-modal-duck-badge');
-          if (duckBadge) {
-            duckBadge.className = `fw-badge ${vData.ducking_running ? 'fw-up-to-date' : 'fw-update-available'}`;
-            duckBadge.textContent = vData.ducking_running ? 'Активен' : 'Остановлен';
           }
         }
       }).catch(() => {});

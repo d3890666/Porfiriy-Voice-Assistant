@@ -46,6 +46,10 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.129 (Remove Station Auto-Ducking & Volume Sync Block)
+*   Полностью удален блок локального авто-дакинга, обертки `set_volume.sh`, `/api/station/volume_sync`, `/api/quasar/ducking`, UI-элементов `Auto-Ducking` и привязки Squeezelite `-V Master` / `soft_volume` (вернули `default` в `squeezelite_service.sh`).
+*   В [`QuasarManager._cleanup_legacy_volume_ducking`](backend/quasar_manager.py) добавлена автоматическая зачистка старых файлов/служб/настроек `asound.conf` и `set_volume.sh` при нажатии «Обновить Quasar» (дистрибутив Станции `v1.2.4-porfiriy.9`). Версия аддона обновлена до `0.0.129`.
+
 ### Версия 0.0.128 (Non-blocking MA Play Dispatch & Double-Execution Guard)
 *   В [`HomeAssistantAPI.play_music_assistant`](backend/ha_api.py) добавлено ожидание до `1.5s` (`asyncio.shield`), чтобы медленная буферизация Apple Music (9–10с) не вызывала таймаут Gemini Live WebSocket (`25s`).
 *   В [`OpenAIService`](backend/openai_service.py) добавлен флаг `tool_executed` (защита от повторного выполнения команды в `_generate_text_response` при фолбэке) и мгновенные команды «нажми на play»/«плей». Версия аддона обновлена до `0.0.128`.
