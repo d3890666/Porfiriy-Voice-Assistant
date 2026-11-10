@@ -267,27 +267,27 @@ class OpenAIService:
         text_lower = user_text.lower().strip().rstrip(".!?")
 
         # 1. Пауза
-        if text_lower in ["пауза", "поставь на паузу", "на паузу", "сделай паузу"]:
+        if text_lower in ["пауза", "поставь на паузу", "на паузу", "сделай паузу", "паузу", "замри"]:
             await self.ha_api.call_service("media_player", "media_play_pause", {"entity_id": airplay_player})
             return "Ставлю на паузу."
 
         # 2. Стоп
-        if text_lower in ["стоп", "останови музыку", "выключи музыку", "хватит", "замолчи"]:
+        if text_lower in ["стоп", "останови музыку", "выключи музыку", "хватит", "замолчи", "останови"]:
             await self.ha_api.call_service("media_player", "media_stop", {"entity_id": airplay_player})
             return "Останавливаю воспроизведение."
 
         # 3. Продолжить
-        if text_lower in ["продолжи", "возобнови", "играй дальше", "сними с паузы", "продолжить"]:
+        if text_lower in ["продолжи", "возобнови", "играй дальше", "сними с паузы", "продолжить", "играй", "музыку", "включи музыку", "запусти музыку"]:
             await self.ha_api.call_service("media_player", "media_play", {"entity_id": airplay_player})
             return "Продолжаю воспроизведение."
 
         # 4. Следующий трек
-        if text_lower in ["следующий трек", "следующую", "дальше", "переключи трек", "переключи"]:
+        if text_lower in ["следующий трек", "следующую", "следующий", "следующая", "дальше", "дальше трек", "переключи трек", "переключи", "пропусти", "скип"]:
             await self.ha_api.call_service("media_player", "media_next_track", {"entity_id": airplay_player})
             return "Включаю следующий трек."
 
         # 5. Предыдущий трек
-        if text_lower in ["предыдущий трек", "предыдущую", "назад"]:
+        if text_lower in ["предыдущий трек", "предыдущую", "предыдущий", "назад", "прошлый трек"]:
             await self.ha_api.call_service("media_player", "media_previous_track", {"entity_id": airplay_player})
             return "Возвращаю предыдущий трек."
 

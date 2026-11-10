@@ -737,7 +737,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.5")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.6")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:

@@ -1,8 +1,8 @@
 {
-  "version": "1.2.4-porfiriy.5",
+  "version": "1.2.4-porfiriy.6",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Unified Station distribution: Native WebSocket audio streaming, Squeezelite, Station AirPlay, Auto-Ducking on Alice wake word and bi-directional Music Assistant volume sync",
+  "description": "Unified Station distribution: Native WebSocket audio streaming, Squeezelite, Station AirPlay, 8s fast auto-ducking watchdog and bi-directional Music Assistant volume sync",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",
