@@ -46,6 +46,13 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.124 (Music Assistant Volume Sync Fix & Race-Free Ducking Coordination)
+*   **Устранение отката громкости в Music Assistant после голосовой команды Алисе**:
+    - В `QuasarManager._resolve_porfiriy_host` устранена ошибка записи внутреннего Docker NAT IP (`172.30.x.x`) в `/data/opt/porfiriy_host` (используются URL из `quasar-bridge`, `$SSH_CLIENT`, не-Docker `sockname`, Supervisor `/network/info` и `SQUEEZELITE_SERVER`), а также сохраняется порт в `/data/opt/porfiriy_port`.
+    - В `set_volume.sh` (`# porfiriy_set_volume_v2`) и `ducking_service.sh` устранена гонка `curl .../api/station/volume_sync` при активном дакинге: добавлен флаг `/tmp/station_ducking_vol_changed`, отбрасываются Docker/loopback IP и передается `player_name`.
+    - В `WebServer.handle_station_volume_sync` исправлено точное сопоставление IP (`::ffff:` нормализация), добавлен поиск плеера MASS/Squeezelite по `player_name` и проверка ошибок вызова `ha_api.call_service`.
+*   **Единый дистрибутив Станции `v1.2.4-porfiriy.7`** и синхронизация версий в `config.yaml`, `CHANGELOG.md`, `index.html`, `app.js` до `0.0.124`.
+
 ### Версия 0.0.123 (Fast 8s Ducking Watchdog & Expanded Media Playback Controls)
 *   **Сокращение таймаута авто-дакинга до 8 секунд**:
     - В `ducking_service.sh` таймаут сторожа ожидания речи `MAX_DUCK_DURATION` уменьшен с 45 до 8 секунд. При случайном ложном срабатывании Алисы или зависании диалога громкость музыки автоматически восстанавливается ровно через 8 секунд без долгого приглушения.

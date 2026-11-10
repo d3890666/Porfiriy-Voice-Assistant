@@ -12,6 +12,75 @@ duck_volume="${DUCK_VOLUME:-15}"
 max_duck_duration="${MAX_DUCK_DURATION:-8}"
 active_flag="/tmp/station_ducking_active"
 saved_vol_file="/tmp/station_ducking_saved_vol"
+vol_changed_flag="/tmp/station_ducking_vol_changed"
+
+is_bad_host() {
+    case "$1" in
+        ""|127.*|172.17.*|172.30.*|169.254.*|0.0.0.0|localhost) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+resolve_porfiriy_host() {
+    h=$(cat /data/opt/porfiriy_host 2>/dev/null | tr -d ' \r\n' || echo "")
+    if ! is_bad_host "$h"; then
+        printf '%s' "$h"
+        return 0
+    fi
+    if [ -f /data/opt/quasar-bridge/config.json ]; then
+        h=$(awk -F'://' '/http:\/\//{split($2,a,"[:/\" ]"); print a[1]; exit}' /data/opt/quasar-bridge/config.json 2>/dev/null || echo "")
+        if ! is_bad_host "$h"; then
+            printf '%s' "$h"
+            return 0
+        fi
+    fi
+    if [ -f /data/opt/squeezelite/squeezelite.env ]; then
+        h=$(grep '^SQUEEZELITE_SERVER=' /data/opt/squeezelite/squeezelite.env 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d '"'\'' \r' | cut -d: -f1 || echo "")
+        if ! is_bad_host "$h"; then
+            printf '%s' "$h"
+            return 0
+        fi
+    fi
+    printf '%s' "192.168.1.50"
+}
+
+sync_volume_to_ha() {
+    vol_val="$1"
+    porfiriy_host=$(resolve_porfiriy_host)
+    porfiriy_port=$(cat /data/opt/porfiriy_port 2>/dev/null | tr -d ' \r\n' || echo "8000")
+    case "$porfiriy_port" in *[!0-9]*|"") porfiriy_port="8000" ;; esac
+
+    player_name=""
+    if [ -f /data/opt/squeezelite/squeezelite.env ]; then
+        player_name=$(grep '^SQUEEZELITE_NAME=' /data/opt/squeezelite/squeezelite.env 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d '"'\''\r' || echo "")
+    fi
+    [ -z "$player_name" ] && [ -f /data/opt/station-airplay/name ] && player_name=$(cat /data/opt/station-airplay/name 2>/dev/null | tr -d '\r\n' || echo "")
+    player_name_esc=$(printf '%s' "$player_name" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+    curl -s -m 2 -X POST "http://${porfiriy_host}:${porfiriy_port}/api/station/volume_sync" \
+        -H "Content-Type: application/json" \
+        -d "{\"volume\": $vol_val, \"player_name\": \"$player_name_esc\"}" >/dev/null 2>&1 &
+}
+
+restore_from_ducking() {
+    reason="$1"
+    restore_vol=""
+    if [ -f "$saved_vol_file" ]; then
+        restore_vol=$(cat "$saved_vol_file" 2>/dev/null || echo "")
+    fi
+    case "$restore_vol" in *[!0-9]*|"") restore_vol=60 ;; esac
+
+    should_sync=0
+    [ -f "$vol_changed_flag" ] && should_sync=1
+
+    amixer set 'Master' "${restore_vol}%" >/dev/null 2>&1 || true
+    rm -f "$active_flag" "$saved_vol_file" "$vol_changed_flag"
+    echo "$(date '+%Y/%m/%d %H:%M:%S') ${reason} volume restored to ${restore_vol}%" >> "$logfile"
+
+    if [ "$should_sync" -eq 1 ]; then
+        sync_volume_to_ha "$restore_vol"
+    fi
+}
 
 running() {
     test -s "$pidfile" || return 1
@@ -33,7 +102,7 @@ run_watchdog() {
     touch "$airplay_log"
 
     echo "$(date '+%Y/%m/%d %H:%M:%S') [DUCK] Station Ducking watchdog started (target_duck_vol=${duck_volume}%)" >> "$logfile"
-    rm -f "$active_flag" "$saved_vol_file"
+    rm -f "$active_flag" "$saved_vol_file" "$vol_changed_flag"
 
     tail -n 0 -F "$airplay_log" 2>/dev/null | while IFS= read -r line; do
         now=$(date +%s)
@@ -42,21 +111,7 @@ run_watchdog() {
         if [ -f "$active_flag" ]; then
             mtime=$(stat -c %Y "$active_flag" 2>/dev/null || echo "$now")
             if [ $((now - mtime)) -gt "$max_duck_duration" ]; then
-                echo "$(date '+%Y/%m/%d %H:%M:%S') [WARN] Ducking timeout ($max_duck_duration s) exceeded, auto-restoring..." >> "$logfile"
-                restore_vol=""
-                if [ -f "$saved_vol_file" ]; then
-                    restore_vol=$(cat "$saved_vol_file" 2>/dev/null)
-                fi
-                case "$restore_vol" in *[!0-9]*|"") restore_vol=60 ;; esac
-                amixer set 'Master' "${restore_vol}%" >/dev/null 2>&1 || true
-                rm -f "$active_flag" "$saved_vol_file"
-
-                porfiriy_host=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "")
-                [ -z "$porfiriy_host" ] && [ -f /data/opt/squeezelite/squeezelite.env ] && porfiriy_host=$(grep SQUEEZELITE_SERVER /data/opt/squeezelite/squeezelite.env 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'")
-                [ -z "$porfiriy_host" ] && porfiriy_host="192.168.1.50"
-                curl -s -m 2 -X POST "http://${porfiriy_host}:8000/api/station/volume_sync" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"volume\": $restore_vol}" >/dev/null 2>&1 &
+                restore_from_ducking "[WARN] Ducking timeout (${max_duck_duration}s) exceeded:"
             fi
         fi
 
@@ -67,6 +122,7 @@ run_watchdog() {
                     case "$curr_vol" in *[!0-9]*|"") curr_vol=60 ;; esac
 
                     if [ "$curr_vol" -gt "$duck_volume" ]; then
+                        rm -f "$vol_changed_flag"
                         echo "$curr_vol" > "$saved_vol_file"
                         touch "$active_flag"
                         amixer set 'Master' "${duck_volume}%" >/dev/null 2>&1 || true
@@ -76,22 +132,7 @@ run_watchdog() {
                 ;;
             *alice_ipc_state*state=0*)
                 if [ -f "$active_flag" ]; then
-                    restore_vol=""
-                    if [ -f "$saved_vol_file" ]; then
-                        restore_vol=$(cat "$saved_vol_file" 2>/dev/null)
-                    fi
-                    case "$restore_vol" in *[!0-9]*|"") restore_vol=60 ;; esac
-
-                    amixer set 'Master' "${restore_vol}%" >/dev/null 2>&1 || true
-                    rm -f "$active_flag" "$saved_vol_file"
-                    echo "$(date '+%Y/%m/%d %H:%M:%S') [UNDUCK] Alice idle: volume restored to ${restore_vol}%" >> "$logfile"
-
-                    porfiriy_host=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "")
-                    [ -z "$porfiriy_host" ] && [ -f /data/opt/squeezelite/squeezelite.env ] && porfiriy_host=$(grep SQUEEZELITE_SERVER /data/opt/squeezelite/squeezelite.env 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'")
-                    [ -z "$porfiriy_host" ] && porfiriy_host="192.168.1.50"
-                    curl -s -m 2 -X POST "http://${porfiriy_host}:8000/api/station/volume_sync" \
-                        -H "Content-Type: application/json" \
-                        -d "{\"volume\": $restore_vol}" >/dev/null 2>&1 &
+                    restore_from_ducking "[UNDUCK] Alice idle:"
                 fi
                 ;;
         esac
@@ -136,15 +177,11 @@ stop() {
         rm -f "$pidfile"
         # Unduck on stop if was active
         if [ -f "$active_flag" ]; then
-            restore_vol=""
-            [ -f "$saved_vol_file" ] && restore_vol=$(cat "$saved_vol_file" 2>/dev/null)
-            case "$restore_vol" in *[!0-9]*|"") restore_vol=60 ;; esac
-            amixer set 'Master' "${restore_vol}%" >/dev/null 2>&1 || true
-            rm -f "$active_flag" "$saved_vol_file"
+            restore_from_ducking "[STOP] Service stopping:"
         fi
         echo "Station Ducking stopped"
     else
-        rm -f "$pidfile" "$active_flag" "$saved_vol_file"
+        rm -f "$pidfile" "$active_flag" "$saved_vol_file" "$vol_changed_flag"
         echo "Station Ducking not running"
     fi
 }

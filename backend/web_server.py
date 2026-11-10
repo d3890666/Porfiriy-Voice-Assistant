@@ -726,7 +726,9 @@ class WebServer:
             if not ip or ip == "---":
                 return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
 
-            res = await self.quasar_manager.update_station(ip, port)
+            opts = self.options_callback() if self.options_callback else {}
+            porfiriy_port = int(opts.get("openai_api_port", 8000) or 8000)
+            res = await self.quasar_manager.update_station(ip, port, porfiriy_port=porfiriy_port)
             status_code = 200 if res.get("success") else 400
             return web.json_response(res, status=status_code)
         except Exception as e:
@@ -796,7 +798,7 @@ class WebServer:
     async def handle_station_volume_sync(self, request: web.Request) -> web.Response:
         """
         Синхронизирует изменение громкости со Станции (от Алисы или кольца) в Music Assistant / Home Assistant.
-        POST /api/station/volume_sync {"volume": 40}
+        POST /api/station/volume_sync {"volume": 40, "player_name": "Яндекс Станция"}
         """
         try:
             body = await request.json()
@@ -810,58 +812,98 @@ class WebServer:
                 return web.json_response({"error": "invalid volume integer"}, status=400)
 
             vol_float = max(0.0, min(1.0, vol_int / 100.0))
-            client_ip = request.remote or ""
-            logger.info(f"[VOLUME SYNC] Received volume sync from {client_ip}: {vol_int}% ({vol_float})")
+            client_ip = (request.remote or "").strip()
+            if client_ip.startswith("::ffff:"):
+                client_ip = client_ip[7:]
+            player_name = str(body.get("player_name") or "").strip()
+            logger.info(f"[VOLUME SYNC] Received volume sync from {client_ip} (player_name='{player_name}'): {vol_int}% ({vol_float})")
 
             if not self.ha_api:
                 return web.json_response({"success": False, "error": "ha_api not initialized"}, status=503)
 
-            # 1. Ищем устройство по IP среди зарегистрированных Станций
-            target_player = None
+            # 1. Ищем устройство по точному IP среди зарегистрированных Станций
+            target_players: List[str] = []
             all_devices = self.device_manager.get_devices() if self.device_manager else []
             matching_dev = None
 
             for dev in all_devices:
-                dev_ip = dev.get("ip") or dev.get("config", {}).get("ip") or ""
-                if dev_ip and (dev_ip == client_ip or client_ip in dev_ip):
+                dev_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
+                if dev_ip and dev_ip == client_ip:
                     matching_dev = dev
                     break
 
             if matching_dev:
                 cfg = matching_dev.get("config", {})
-                target_player = cfg.get("mass_player") or cfg.get("airplay_player")
+                configured_player = (cfg.get("mass_player") or cfg.get("airplay_player") or "").strip()
+                if configured_player:
+                    target_players.append(configured_player)
 
-            # 2. Если плеер не найден в карточке устройства, проверяем активные играющие плееры в HA
-            if not target_player:
-                playing = await self.ha_api.get_playing_media_players()
+            # 2. Проверяем активные играющие плееры в HA (и точное совпадение по player_name, если передано)
+            playing = await self.ha_api.get_playing_media_players()
+            if player_name:
+                pn_lower = player_name.lower()
+                for p in playing:
+                    eid = p.get("entity_id", "")
+                    fname = str(p.get("attributes", {}).get("friendly_name", "")).strip().lower()
+                    if fname == pn_lower or pn_lower in fname:
+                        if eid and eid not in target_players:
+                            target_players.append(eid)
+
+            if not target_players and player_name:
+                pn_lower = player_name.lower()
+                all_players = await self.ha_api.get_media_players()
+                for p in all_players:
+                    eid = p.get("entity_id", "")
+                    fname = str(p.get("name", "")).strip().lower()
+                    if fname == pn_lower or pn_lower in fname:
+                        if eid and eid not in target_players:
+                            target_players.append(eid)
+
+            if not target_players:
                 for p in playing:
                     eid = p.get("entity_id", "")
                     if any(k in eid.lower() for k in ["squeezelite", "mass", "airplay", "yandex", "station"]):
-                        target_player = eid
+                        target_players.append(eid)
                         break
-                if not target_player and playing:
-                    target_player = playing[0].get("entity_id")
+                if not target_players and playing:
+                    target_players.append(playing[0].get("entity_id"))
 
             # 3. Фолбэк на глобальный плеер по умолчанию
-            if not target_player:
+            if not target_players:
                 global_opts = self.options_callback() if self.options_callback else {}
-                target_player = global_opts.get("default_airplay_player")
+                default_p = (global_opts.get("default_airplay_player") or "").strip()
+                if default_p:
+                    target_players.append(default_p)
 
-            if not target_player:
+            target_players = [p for p in dict.fromkeys(target_players) if p]
+            if not target_players:
                 logger.warning(f"[VOLUME SYNC] No suitable media_player found to sync volume {vol_int}% for {client_ip}")
                 return web.json_response({"success": False, "error": "No media player found"}, status=404)
 
-            logger.info(f"[VOLUME SYNC] Updating Home Assistant player {target_player} volume to {vol_float} ({vol_int}%)")
-            await self.ha_api.call_service("media_player", "volume_set", {
-                "entity_id": target_player,
-                "volume_level": vol_float
-            })
+            synced_players = []
+            errors = []
+            for tp in target_players:
+                logger.info(f"[VOLUME SYNC] Updating Home Assistant player {tp} volume to {vol_float} ({vol_int}%)")
+                res = await self.ha_api.call_service("media_player", "volume_set", {
+                    "entity_id": tp,
+                    "volume_level": vol_float
+                })
+                if isinstance(res, dict) and "error" in res:
+                    logger.error(f"[VOLUME SYNC] Failed updating {tp}: {res['error']}")
+                    errors.append({"player": tp, "error": res["error"]})
+                else:
+                    synced_players.append(tp)
+
+            if not synced_players:
+                return web.json_response({"success": False, "errors": errors}, status=502)
 
             return web.json_response({
                 "success": True,
-                "player": target_player,
+                "player": synced_players[0],
+                "players": synced_players,
                 "volume": vol_int,
-                "volume_level": vol_float
+                "volume_level": vol_float,
+                "errors": errors or None
             })
         except Exception as e:
             logger.error(f"[VOLUME SYNC] Error processing volume sync: {e}")
