@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.128
+- **Устранение таймаута Gemini Live (`TimeoutError` 25s) и повторного запуска альбомов**:
+  - **Неблокирующая отправка `play_music_assistant`**: В [`HomeAssistantAPI.play_music_assistant`](backend/ha_api.py) ожидание ответа `music_assistant.play_media` ограничено `1.5s` (`asyncio.shield`), после чего буферизация Apple Music / провайдера продолжается в фоне, а Gemini Live сразу получает подтверждение и не зависает в ожидании ~10 секунд на открытом WebSocket.
+  - **Защита от дублирования при фолбэке**: В [`OpenAIService._stream_live_audio_direct`](backend/openai_service.py) добавлен флаг `tool_executed` — если инструмент уже выполнен, фолбэк больше не вызывает `_generate_text_response` повторно.
+  - **Быстрые фразы для продолжения**: В `_handle_direct_playback_command` добавлены «нажми на play», «нажми play», «нажми плей», «плей», «возобнови музыку».
+- **Синхронизация версий**: `config.yaml` и `index.html` обновлены до `0.0.128`.
+
 ## 0.0.127
 - **Исправление обрыва ответа после вызова `search_music_assistant` и поиск `name` + `artist`**:
   - **Внешний цикл чтения `session.receive()` в `OpenAIService._consume_live_session`**: Исправлен критический баг в `openai_service.py`, из-за которого `async for response in session.receive():` завершался сразу после первого `tool_call` (`search_music_assistant`), не дожидаясь следующего шага от Gemini (`play_music_assistant` и голосового ответа). Теперь используется общий цикл `while not turn_done:` с таймаутом `25s` и подробным логированием результатов инструментов.

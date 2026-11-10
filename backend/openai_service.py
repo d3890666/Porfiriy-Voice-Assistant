@@ -277,7 +277,7 @@ class OpenAIService:
             return "Останавливаю воспроизведение."
 
         # 3. Продолжить
-        if text_lower in ["продолжи", "возобнови", "играй дальше", "сними с паузы", "продолжить", "играй", "музыку", "включи музыку", "запусти музыку"]:
+        if text_lower in ["продолжи", "возобнови", "возобнови музыку", "играй дальше", "сними с паузы", "продолжить", "играй", "музыку", "включи музыку", "запусти музыку", "нажми на play", "нажми play", "нажми плей", "плей"]:
             await self.ha_api.call_service("media_player", "media_play", {"entity_id": airplay_player})
             return "Продолжаю воспроизведение."
 
@@ -329,8 +329,10 @@ class OpenAIService:
                 for k in ["position", "temperature", "hvac_mode", "percentage"]:
                     if k in args and args[k] is not None:
                         service_data[k] = args[k]
-                if turn_state is not None and domain in ("media_player", "music_assistant", "mass"):
-                    turn_state["playback_changed"] = True
+                if turn_state is not None:
+                    turn_state["tool_executed"] = True
+                    if domain in ("media_player", "music_assistant", "mass"):
+                        turn_state["playback_changed"] = True
                 return await self.ha_api.call_ha_action(domain, service, service_data)
 
             elif name == "get_ha_state":
@@ -351,6 +353,7 @@ class OpenAIService:
                 radio_mode = bool(args.get("radio_mode", False))
                 target_player = args.get("player") or target_default_player
                 if turn_state is not None:
+                    turn_state["tool_executed"] = True
                     turn_state["playback_changed"] = True
                 return await self.ha_api.play_music_assistant(
                     entity_id=target_player,
@@ -508,7 +511,7 @@ class OpenAIService:
             logger.error(f"[OPENAI LIVE] Error generating text response via Live API with model '{model}': {e}", exc_info=True)
             raise e
 
-    async def _stream_live_audio_direct(self, turns: List[Any], user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> Tuple[bool, str]:
+    async def _stream_live_audio_direct(self, turns: List[Any], user_text: str, dev: Dict[str, Any], options: Dict[str, Any], request: web.Request) -> Tuple[bool, str, bool]:
         """
         Генерирует нативное аудио Gemini Live и в реальном времени стримит PCM чанки
         напрямую в колонку через SSH pipe в aplay (минуя AirPlay и задержки).
@@ -523,7 +526,7 @@ class OpenAIService:
 
         api_key = self._get_active_gemini_key(options.get("gemini_api_key", ""))
         if not api_key:
-            return False, ""
+            return False, "", False
 
         system_prompt = await self._build_system_prompt(dev, options)
         voice_name = options.get("voice_name", "Charon")
@@ -576,7 +579,7 @@ class OpenAIService:
 
         pcm_chunks = []
         transcription_parts = []
-        turn_state = {"playback_changed": False}
+        turn_state = {"playback_changed": False, "tool_executed": False}
         first_chunk = True
 
         async def _stream_chunk(chunk: bytes):
@@ -613,7 +616,7 @@ class OpenAIService:
 
         except Exception as e:
             logger.error(f"[OPENAI LIVE] Error generating/streaming direct audio: {e}", exc_info=True)
-            return False, ""
+            return False, "", bool(turn_state.get("tool_executed"))
         finally:
             if ssh_conn is not None:
                 try:
@@ -631,7 +634,7 @@ class OpenAIService:
                     logger.debug(f"[OPENAI LIVE] Could not resume music: {e}")
 
         reply_text = "".join(transcription_parts).strip()
-        return bool(pcm_chunks and (ssh_proc is not None)), reply_text
+        return bool(pcm_chunks and (ssh_proc is not None)), reply_text, bool(turn_state.get("tool_executed"))
 
     async def handle_chat_completions(self, request: web.Request) -> web.Response:
         """Основной обработчик POST /v1/chat/completions."""
@@ -755,13 +758,18 @@ class OpenAIService:
             if use_direct_audio:
                 # Прямой нативный голос Порфирия без задержек через SSH прямо в динамик Станции
                 self.device_manager.set_device_state(mac, "speaking")
-                audio_ok, reply_text = await self._stream_live_audio_direct(turns, user_text, dev, opts, request)
+                audio_ok, reply_text, tool_executed = await self._stream_live_audio_direct(turns, user_text, dev, opts, request)
                 self.device_manager.set_device_state(mac, "idle")
                 
                 if audio_ok:
                     self._save_dialogue_turn(mac, user_text, reply_text or "Ответ воспроизведен.")
                     # Алиса воспроизводит тишину и молчит
                     return web.json_response(self._make_openai_response("sil <[50]>", body.get("model", "porfiriy")), headers=self._cors_headers())
+                elif tool_executed:
+                    # Инструмент уже выполнен — не запускаем повторный вызов через _generate_text_response
+                    fallback_text = reply_text or "Выполнено."
+                    self._save_dialogue_turn(mac, user_text, fallback_text)
+                    return web.json_response(self._make_openai_response(fallback_text, body.get("model", "porfiriy")), headers=self._cors_headers())
                 else:
                     # Фолбэк на Alice TTS при ошибке вывода напрямую в динамик
                     text_reply = await self._generate_text_response(turns, user_text, dev, opts, is_json_mode=is_json_mode)

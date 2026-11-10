@@ -412,10 +412,25 @@ class HomeAssistantAPI:
                 service_data["radio_mode"] = True
 
         logger.info(f"[MA PLAY] Calling {domain}.play_media on {entity_id}: {service_data}")
-        res = await self.call_service(domain, "play_media", service_data)
-        if isinstance(res, dict) and "error" in res:
-            return {"status": "error", "error": res["error"], "player": entity_id}
-        return {"status": "success", "player": entity_id, "domain": domain, "result": res}
+        play_task = asyncio.create_task(self.call_service(domain, "play_media", service_data))
+
+        def _log_bg_error(t: asyncio.Task):
+            try:
+                r = t.result()
+                if isinstance(r, dict) and "error" in r:
+                    logger.error(f"[MA PLAY] Background play_media error on {entity_id}: {r['error']}")
+            except Exception as exc:
+                logger.error(f"[MA PLAY] Background play_media exception on {entity_id}: {exc}")
+
+        play_task.add_done_callback(_log_bg_error)
+        try:
+            res = await asyncio.wait_for(asyncio.shield(play_task), timeout=1.5)
+            if isinstance(res, dict) and "error" in res:
+                return {"status": "error", "error": res["error"], "player": entity_id}
+            return {"status": "success", "player": entity_id, "domain": domain, "result": res}
+        except asyncio.TimeoutError:
+            logger.info(f"[MA PLAY] Dispatch continuing in background on {entity_id} (buffering >1.5s)")
+            return {"status": "success", "player": entity_id, "domain": domain, "note": "Playback starting"}
 
     async def _ws_send_and_receive(self, payload: dict, timeout: float = 8.0) -> dict:
         async def _exchange():

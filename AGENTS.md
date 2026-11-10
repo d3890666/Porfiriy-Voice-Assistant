@@ -46,6 +46,10 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.128 (Non-blocking MA Play Dispatch & Double-Execution Guard)
+*   В [`HomeAssistantAPI.play_music_assistant`](backend/ha_api.py) добавлено ожидание до `1.5s` (`asyncio.shield`), чтобы медленная буферизация Apple Music (9–10с) не вызывала таймаут Gemini Live WebSocket (`25s`).
+*   В [`OpenAIService`](backend/openai_service.py) добавлен флаг `tool_executed` (защита от повторного выполнения команды в `_generate_text_response` при фолбэке) и мгновенные команды «нажми на play»/«плей». Версия аддона обновлена до `0.0.128`.
+
 ### Версия 0.0.127 (Fix Multi-Step Tool Loop in OpenAIService & Artist+Title Search)
 *   В [`OpenAIService._consume_live_session`](backend/openai_service.py) добавлен внешний цикл `while not turn_done:` вокруг `session.receive()` (исправлен преждевременный выход после `search_music_assistant` без ожидания `play_music_assistant`), плюс логирование результатов инструментов и таймаут 25s.
 *   В [`HomeAssistantAPI._ws_send_and_receive`](backend/ha_api.py) добавлен таймаут 8s; в `search_music_assistant` и схеме [`gemini_client.py`](backend/gemini_client.py) добавлен параметр `artist` и фолбэк поиска по названию без первого слова для запросов вида «Кирпичи Сила ума». Версия аддона обновлена до `0.0.127`.
