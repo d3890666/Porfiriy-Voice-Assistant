@@ -566,10 +566,18 @@ class QuasarManager:
 
     async def ensure_set_volume_wrapped(self, conn) -> bool:
         """
-        Гарантирует установку обертки /system/vendor/quasar/set_volume.sh для координации громкости с авто-дакингом.
+        Гарантирует установку обертки /system/vendor/quasar/set_volume.sh для координации громкости с авто-дакингом и синхронизации с Music Assistant.
         """
         try:
-            check = await conn.run(f"grep -q 'station_ducking_saved_vol' {SET_VOLUME_PATH} 2>/dev/null && echo 'ok'", check=False)
+            # Запоминаем IP адрес сервера Porfiriy для обратной связи от Станции
+            try:
+                sockname = conn.get_extra_info('sockname')
+                if sockname and sockname[0]:
+                    await conn.run(f"echo '{sockname[0]}' > /data/opt/porfiriy_host", check=False)
+            except Exception:
+                pass
+
+            check = await conn.run(f"grep -q 'volume_sync' {SET_VOLUME_PATH} 2>/dev/null && echo 'ok'", check=False)
             if check.exit_status == 0 and check.stdout.strip() == "ok":
                 return True
 
@@ -592,9 +600,11 @@ class QuasarManager:
                     "    amixer set 'Master' \"${target}%\" >/dev/null 2>&1 || true\n"
                     "    echo \"$(date '+%Y/%m/%d %H:%M:%S') [SET_VOL] Master set to ${target}%\" >> /data/opt/station-ducking/ducking.log 2>/dev/null || true\n"
                     "fi\n"
+                    "porfiriy_host=$(cat /data/opt/porfiriy_host 2>/dev/null || echo '192.168.1.50')\n"
+                    "curl -s -m 2 -X POST \"http://${porfiriy_host}:8000/api/station/volume_sync\" -H \"Content-Type: application/json\" -d \"{\\\"volume\\\": $target}\" >/dev/null 2>&1 &\n"
                 )
 
-            logger.info("[QUASAR] Installing set_volume.sh wrapper to /system/vendor/quasar/set_volume.sh...")
+            logger.info("[QUASAR] Installing set_volume.sh wrapper with Music Assistant sync to /system/vendor/quasar/set_volume.sh...")
             install_cmd = (
                 "mount -o remount,rw / && "
                 f"cat << 'EOF' > {SET_VOLUME_PATH}\n{content}\nEOF\n"
@@ -727,7 +737,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.4")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.5")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:

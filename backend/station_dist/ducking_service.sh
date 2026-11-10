@@ -78,6 +78,13 @@ run_watchdog() {
                     amixer set 'Master' "${restore_vol}%" >/dev/null 2>&1 || true
                     rm -f "$active_flag" "$saved_vol_file"
                     echo "$(date '+%Y/%m/%d %H:%M:%S') [UNDUCK] Alice idle: volume restored to ${restore_vol}%" >> "$logfile"
+
+                    porfiriy_host=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "")
+                    [ -z "$porfiriy_host" ] && [ -f /data/opt/squeezelite/squeezelite.env ] && porfiriy_host=$(grep SQUEEZELITE_SERVER /data/opt/squeezelite/squeezelite.env 2>/dev/null | cut -d= -f2 | tr -d '"' | tr -d "'")
+                    [ -z "$porfiriy_host" ] && porfiriy_host="192.168.1.50"
+                    curl -s -m 2 -X POST "http://${porfiriy_host}:8000/api/station/volume_sync" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"volume\": $restore_vol}" >/dev/null 2>&1 &
                 fi
                 ;;
         esac
