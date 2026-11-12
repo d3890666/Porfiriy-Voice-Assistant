@@ -251,11 +251,11 @@ function renderDevicesGrid() {
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
-              <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge">
-                v1.2.4-porfiriy.10
+              <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge Porfiriy Edition">
+                v1.2.4-porfiriy.11
               </span>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH">
+            <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH с перепривязкой IP">
               ⚡ Обновить Quasar
             </button>
           </div>
@@ -336,7 +336,7 @@ function renderDevicesGrid() {
         `}
 
         <div class="dev-meta">
-          <div>IP: ${isEsp && dev.ip && dev.ip !== '---' ? `<a href="http://${dev.ip}" target="_blank" class="dev-ip-link" title="Открыть страницу колонки">${dev.ip} ↗</a>` : (dev.ip || '---')}</div>
+          <div>IP: ${isEsp && dev.ip && dev.ip !== '---' ? `<a href="http://${dev.ip}" target="_blank" class="dev-ip-link" title="Открыть страницу колонки">${dev.ip} ↗</a>` : (dev.ip || '---')}${dev.device_type === 'yandex_station' ? ` <button onclick="editDeviceIp('${dev.mac}')" title="Изменить IP-адрес Станции" style="background:none;border:none;cursor:pointer;font-size:11px;padding:0 2px;" class="btn-hover-scale">✏️</button>` : ''}</div>
           <div>MAC: ${dev.mac}</div>
           <div>Аптайм: ${formatUptime(dev.uptime)}</div>
           <div>Тип: ${dev.device_type || 'ESP32'}</div>
@@ -2284,13 +2284,26 @@ window.toggleOpenAiKeyVisibility = toggleOpenAiKeyVisibility;
 let currentQuasarMac = '';
 let currentQuasarIp = '';
 
+async function editDeviceIp(mac) {
+  const dev = devices.find(x => x.mac === mac);
+  const currentIp = dev?.ip || '';
+  const newIp = prompt(`Введите актуальный IP-адрес Яндекс Станции (${dev?.name || mac}):`, currentIp);
+  if (newIp === null) return;
+  const trimmed = newIp.trim();
+  if (!trimmed || trimmed === currentIp) return;
+  await saveYandexConfig(mac, 'ip', trimmed);
+  if (dev) dev.ip = trimmed;
+  renderDevices();
+}
+window.editDeviceIp = editDeviceIp;
+
 async function updateQuasarComponents(mac) {
   const dev = devices.find(x => x.mac === mac);
   const ip = dev?.ip || dev?.config?.ip || '';
-  if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition по SSH?`)) {
+  if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition по SSH с авто-привязкой IP сервера?`)) {
     return;
   }
-  showToast('Подключение по SSH и обновление Quasar Bridge, Squeezelite и AirPlay...');
+  showToast('Подключение по SSH и обновление пакета на Станции...');
   try {
     const res = await fetch(`${API_BASE}/api/quasar/update`, {
       method: 'POST',
@@ -2299,7 +2312,7 @@ async function updateQuasarComponents(mac) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Компоненты Quasar успешно обновлены до ${data.version}!`);
+      showToast(`Компоненты Quasar успешно обновлены до ${data.version}! Привязан сервер ${data.server_ip || 'auto'}`);
       if (dev) {
         if (data.squeezelite_running !== undefined) dev.squeezelite_running = data.squeezelite_running;
         if (data.airplay_running !== undefined) dev.airplay_running = data.airplay_running;
@@ -2416,6 +2429,10 @@ async function openQuasarRoutingModal(mac) {
           if (apBadge) {
             apBadge.className = `fw-badge ${vData.airplay_running ? 'fw-up-to-date' : 'fw-update-available'}`;
             apBadge.textContent = vData.airplay_running ? 'В сети' : 'Остановлен';
+          }
+          const hostBadge = document.getElementById('quasar-modal-host-badge');
+          if (hostBadge) {
+            hostBadge.textContent = `🌐 Сервер: ${vData.bound_server_ip || 'auto'}`;
           }
         }
       }).catch(() => {});

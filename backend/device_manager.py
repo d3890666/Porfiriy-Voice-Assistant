@@ -520,6 +520,10 @@ class DeviceManager:
             
         dev.setdefault("config", {})
         dev["config"].update(new_config)
+        if "ip" in new_config and new_config["ip"]:
+            dev["ip"] = str(new_config["ip"]).strip()
+        if "name" in new_config and new_config["name"]:
+            dev["name"] = str(new_config["name"]).strip()
         self._save()
         
         # Только для ESP32 держим speaker_volume = 1.0 (pass-through), так как сервер масштабирует PCM напрямую

@@ -761,11 +761,22 @@ class WebServer:
             body = await request.json()
             mac = body.get("mac", "")
             ip_body = body.get("ip", "")
+            server_ip = body.get("server_ip") or None
+            opts = self.options_callback() if self.options_callback else {}
+            openai_port = int(opts.get("openai_api_port", 8000))
+
             ip, port = self._resolve_quasar_target(mac, ip_body)
             if not ip or ip == "---":
                 return web.json_response({"success": False, "error": "IP-адрес колонки не найден"}, status=400)
 
-            res = await self.quasar_manager.update_station(ip, port)
+            res = await self.quasar_manager.update_station(ip, port, server_ip=server_ip, openai_port=openai_port)
+            if mac and res.get("success"):
+                dev = self.device_manager.get_device(mac)
+                if dev and dev.get("ip") != ip:
+                    dev["ip"] = ip
+                    self.device_manager.save_devices()
+                    self.device_manager._notify("registered", dev)
+
             status_code = 200 if res.get("success") else 400
             return web.json_response(res, status=status_code)
         except Exception as e:

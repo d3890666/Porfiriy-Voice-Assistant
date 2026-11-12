@@ -46,6 +46,21 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.131 (Auto Server Host Sync across Station Env Files & Quick IP Edit)
+*   **Автоматическая синхронизация и перепривязка IP сервера в env-файлах Станции**:
+    - В `QuasarManager.ensure_server_host_synced` реализована автоматическая перезапись адреса сервера при любом обновлении пакета Станции (`update_station`).
+    - **Quasar Bridge (`runtime.env` & `config.json`)**: переменные `LLM_BASE_URL` и `llm_base_url` обновляются на `http://<server_ip>:<openai_port>/v1`, а также обновляется секция `llm.base_url` в `config.json`. При смене подсети роутера Станция автоматически переключается на новый адрес сервера.
+    - **Squeezelite (`squeezelite.env`)**: переменная `SQUEEZELITE_SERVER` обновляется на актуальный IP. В `squeezelite_service.sh` добавлено динамическое чтение дефолтного сервера из `/data/opt/porfiriy_host`.
+    - **`/data/opt/porfiriy_host`**: гарантированно обновляется для обратной связи и `alice-watcher`.
+*   **Интерфейс пользователя и Web API**:
+    - В карточке Яндекс Станции рядом с IP добавлена кнопка `✏️` (`editDeviceIp`) для быстрого ввода нового IP-адреса без удаления и повторного создания устройства.
+    - В `DeviceManager.update_device_config` добавлена авто-актуализация поля `dev["ip"]` верхнего уровня.
+    - В модальное окно «🎛️ Маршрутизация Quasar Bridge» добавлен индикатор привязанного сервера `🌐 Сервер: <bound_server_ip>`.
+*   **Единый дистрибутив Станции `v1.2.4-porfiriy.11`**:
+    - Включена функция `auto_server_host_sync` и обновлен `squeezelite_service.sh`.
+*   **Синхронизация версий**:
+    - В `config.yaml`, `CHANGELOG.md` и `index.html` установлена версия `0.0.131`.
+
 ### Версия 0.0.130 (Server-Side -60% HA Ducking, Silent Voice Volume & Card Player Slider)
 *   Реализован серверный [`StationDuckingManager`](backend/station_ducking.py) + наблюдатель [`alice_watcher_service.sh`](backend/station_dist/alice_watcher_service.sh) (`POST /api/station/alice_state`): при вызове Алисы громкость привязанного плеера в HA снижается на 60% (`orig * 0.40`) с 8-секундным таймером; при приходе речи в [`OpenAIService`](backend/openai_service.py) таймер отменяется, при ответе музыка ставится на паузу и восстанавливается до исходной громкости до дакинга.
 *   Добавлено мгновенное тихое управление громкостью (`_handle_direct_volume_command` → `media_player.volume_set` + `sil <[50]>`) и автоматический перевод команд громкости из `yandex_system_controls` в [`QuasarManager._route_volume_to_llm`](backend/quasar_manager.py).

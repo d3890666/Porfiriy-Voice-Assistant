@@ -240,7 +240,7 @@ class QuasarManager:
             except Exception as e:
                 logger.error(f"[QUASAR] Failed to read bundled version manifest: {e}")
         return {
-            "version": "1.2.4-porfiriy.1",
+            "version": "1.2.4-porfiriy.11",
             "name": "Quasar Bridge Porfiriy Edition",
             "target": "yandex_station_2"
         }
@@ -251,7 +251,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.1")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.11")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:
@@ -275,6 +275,10 @@ class QuasarManager:
                         installed_ver = bin_check.stdout.strip()
                     else:
                         installed_ver = "1.2.3 (сторонний)"
+
+                # 2.1 Читаем текущий привязанный IP сервера Porfiriy
+                host_check = await conn.run("cat /data/opt/porfiriy_host 2>/dev/null", check=False)
+                bound_server_ip = host_check.stdout.strip() if host_check.exit_status == 0 else ""
 
                 # 3. Проверка статуса squeezelite и автозапуска
                 sq_check = await conn.run("ps | grep -v grep | grep squeezelite", check=False)
@@ -304,6 +308,7 @@ class QuasarManager:
                     "squeezelite_autostart": sq_autostart,
                     "airplay_running": ap_running,
                     "airplay_autostart": ap_autostart,
+                    "bound_server_ip": bound_server_ip,
                     "bundled_info": bundled
                 }
         except Exception as e:
@@ -586,15 +591,115 @@ class QuasarManager:
 
         return ""
 
+    async def ensure_server_host_synced(self, conn, server_ip: Optional[str] = None, openai_port: int = 8000) -> str:
+        """
+        Гарантирует синхронизацию и перепривязку актуального LAN IP сервера во всех env-файлах и конфигурациях Станции:
+        1. /data/opt/porfiriy_host: адрес сервера для alice-watcher.
+        2. /data/opt/squeezelite/squeezelite.env: SQUEEZELITE_SERVER="<server_ip>".
+        3. /data/opt/quasar-bridge/runtime.env: LLM_BASE_URL="http://<server_ip>:<openai_port>/v1" и llm_base_url.
+        4. /data/opt/quasar-bridge/config.json: секция llm.base_url / llm.url при наличии.
+        """
+        porfiriy_host = (server_ip or "").strip()
+        if not porfiriy_host or not self._is_routable_lan_ip(porfiriy_host):
+            porfiriy_host = await self._resolve_porfiriy_host(conn)
+
+        if not porfiriy_host:
+            logger.warning("[QUASAR] Could not resolve routable LAN IP for Porfiriy server")
+            return ""
+
+        try:
+            logger.info(f"[QUASAR] Syncing server host IP {porfiriy_host}:{openai_port} to station env files...")
+
+            # 1. /data/opt/porfiriy_host
+            await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
+
+            # 2. /data/opt/squeezelite/squeezelite.env
+            sq_cmd = (
+                f"mkdir -p {SQUEEZELITE_DIR} && "
+                f"if [ -f {SQUEEZELITE_DIR}/squeezelite.env ]; then "
+                f"    if grep -q 'SQUEEZELITE_SERVER' {SQUEEZELITE_DIR}/squeezelite.env; then "
+                f"        sed -i 's/^SQUEEZELITE_SERVER=.*/SQUEEZELITE_SERVER=\"{porfiriy_host}\"/' {SQUEEZELITE_DIR}/squeezelite.env; "
+                f"    else "
+                f"        echo 'SQUEEZELITE_SERVER=\"{porfiriy_host}\"' >> {SQUEEZELITE_DIR}/squeezelite.env; "
+                f"    fi; "
+                f"else "
+                f"    echo 'SQUEEZELITE_SERVER=\"{porfiriy_host}\"' > {SQUEEZELITE_DIR}/squeezelite.env && "
+                f"    echo 'SQUEEZELITE_OUTPUT=\"default\"' >> {SQUEEZELITE_DIR}/squeezelite.env && "
+                f"    echo 'SQUEEZELITE_NAME=\"Яндекс Станция\"' >> {SQUEEZELITE_DIR}/squeezelite.env; "
+                f"fi"
+            )
+            await conn.run(sq_cmd, check=False)
+
+            # 3. /data/opt/quasar-bridge/runtime.env
+            llm_url = f"http://{porfiriy_host}:{openai_port}/v1"
+            rt_env_path = f"{QUASAR_DIR}/runtime.env"
+            rt_cmd = (
+                f"mkdir -p {QUASAR_DIR} && "
+                f"if [ -f {rt_env_path} ]; then "
+                f"    if grep -qi 'llm_base_url' {rt_env_path}; then "
+                f"        sed -i 's|^[# ]*\\(export \\)\\?[Ll][Ll][Mm]_[Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]=.*|\\1LLM_BASE_URL=\"{llm_url}\"|g' {rt_env_path}; "
+                f"    else "
+                f"        echo 'LLM_BASE_URL=\"{llm_url}\"' >> {rt_env_path}; "
+                f"    fi; "
+                f"    if grep -qi 'llm_api' {rt_env_path}; then "
+                f"        sed -i 's|^[# ]*\\(export \\)\\?[Ll][Ll][Mm]_[Aa][Pp][Ii]=.*|\\1LLM_API=\"chat_completions\"|g' {rt_env_path}; "
+                f"    else "
+                f"        echo 'LLM_API=\"chat_completions\"' >> {rt_env_path}; "
+                f"    fi; "
+                f"    if grep -q 'QUASAR_BRIDGE_LLM_BASE_URL' {rt_env_path}; then "
+                f"        sed -i 's|^[# ]*\\(export \\)\\?QUASAR_BRIDGE_LLM_BASE_URL=.*|\\1QUASAR_BRIDGE_LLM_BASE_URL=\"{llm_url}\"|g' {rt_env_path}; "
+                f"    fi; "
+                f"else "
+                f"    echo 'LLM_BASE_URL=\"{llm_url}\"' > {rt_env_path} && "
+                f"    echo 'llm_base_url=\"{llm_url}\"' >> {rt_env_path} && "
+                f"    echo 'LLM_API=\"chat_completions\"' >> {rt_env_path} && "
+                f"    echo 'llm_api=\"chat_completions\"' >> {rt_env_path}; "
+                f"fi"
+            )
+            await conn.run(rt_cmd, check=False)
+
+            # 4. /data/opt/quasar-bridge/config.json (если внутри есть секция llm / llm_base_url)
+            cfg_check = await conn.run(f"cat {QUASAR_CONFIG_PATH} 2>/dev/null", check=False)
+            if cfg_check.exit_status == 0 and cfg_check.stdout.strip():
+                try:
+                    c_data = json.loads(cfg_check.stdout.strip())
+                    changed = False
+                    if "llm" in c_data and isinstance(c_data["llm"], dict):
+                        llm_obj = c_data["llm"]
+                        if "base_url" in llm_obj and llm_obj["base_url"] != llm_url:
+                            llm_obj["base_url"] = llm_url
+                            changed = True
+                        if "url" in llm_obj and llm_obj["url"] != llm_url:
+                            llm_obj["url"] = llm_url
+                            changed = True
+                    if "llm_base_url" in c_data and c_data["llm_base_url"] != llm_url:
+                        c_data["llm_base_url"] = llm_url
+                        changed = True
+
+                    if changed:
+                        escaped = json.dumps(c_data, indent=2, ensure_ascii=False).replace("'", "'\\''")
+                        await conn.run(f"echo '{escaped}' > {QUASAR_CONFIG_PATH}", check=False)
+                        logger.info(f"[QUASAR] Updated llm base_url in {QUASAR_CONFIG_PATH} to {llm_url}")
+                except Exception as ex:
+                    logger.warning(f"[QUASAR] Could not check/update config.json LLM section: {ex}")
+
+            logger.info(f"[QUASAR] Successfully synced Porfiriy server IP ({porfiriy_host}:{openai_port}) across station env files")
+            return porfiriy_host
+        except Exception as e:
+            logger.warning(f"[QUASAR] Error syncing server host IP: {e}")
+            return porfiriy_host
+
     async def ensure_alice_watcher_installed(self, conn) -> bool:
         """
         Устанавливает легкий наблюдатель состояния Алисы (alice-watcher) и сохраняет реальный LAN IP Porfiriy.
         Скрипт не трогает ALSA/amixer, а только отправляет POST /api/station/alice_state на сервер.
         """
         try:
-            porfiriy_host = await self._resolve_porfiriy_host(conn)
-            if porfiriy_host:
-                await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
+            porfiriy_host = await self.ensure_server_host_synced(conn)
+            if not porfiriy_host:
+                porfiriy_host = await self._resolve_porfiriy_host(conn)
+                if porfiriy_host:
+                    await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
                 logger.info(f"[QUASAR] Saved Porfiriy host {porfiriy_host} for alice-watcher")
 
             await conn.run(f"mkdir -p {ALICE_WATCHER_DIR}", check=False)
@@ -659,12 +764,13 @@ class QuasarManager:
         except Exception as e:
             logger.warning(f"[QUASAR] Could not update volume routing in config.json: {e}")
 
-    async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+    async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT, server_ip: Optional[str] = None, openai_port: int = 8000) -> Dict[str, Any]:
         """
         Единое обновление станции (Quasar Bridge, Squeezelite, Station AirPlay, Alice Watcher):
         - Очищает устаревший блок локального ALSA auto-ducking / volume_sync
         - Записывает манифест версии version.json
         - Загружает обновленный бинарник из station_dist/bin/ (если присутствует)
+        - Синхронизирует актуальный IP сервера в runtime.env, squeezelite.env и porfiriy_host
         - Обновляет службу и автозапуск Squeezelite, Station AirPlay и Alice Watcher
         - Переводит голосовые команды громкости на Порфирий (в Music Assistant)
         - Выполняет валидацию конфигурации -check-config и перезапускает службы
@@ -673,7 +779,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.10")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.11")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:
@@ -698,19 +804,22 @@ class QuasarManager:
                 # 4. Выпиливаем старый локальный ALSA auto-ducking / volume_sync / soft_volume
                 await self._cleanup_legacy_volume_ducking(conn)
 
-                # 5. Переводим команды громкости с Алисы на Порфирий (Music Assistant)
+                # 5. Синхронизируем актуальный IP сервера во всех env-файлах колонки
+                synced_host = await self.ensure_server_host_synced(conn, server_ip=server_ip, openai_port=openai_port)
+
+                # 6. Переводим команды громкости с Алисы на Порфирий (Music Assistant)
                 await self._route_volume_to_llm(conn)
 
-                # 6. Обновляем и страхуем службу Squeezelite
+                # 7. Обновляем и страхуем службу Squeezelite
                 await self.ensure_squeezelite_installed(conn)
 
-                # 7. Обновляем и страхуем службу Station AirPlay
+                # 8. Обновляем и страхуем службу Station AirPlay
                 await self.ensure_station_airplay_installed(conn)
 
-                # 8. Устанавливаем легкий наблюдатель состояния Алисы для серверного дакинга
+                # 9. Устанавливаем легкий наблюдатель состояния Алисы для серверного дакинга
                 await self.ensure_alice_watcher_installed(conn)
 
-                # 9. Проверяем конфигурацию Quasar перед перезапуском
+                # 10. Проверяем конфигурацию Quasar перед перезапуском
                 check_cmd = f"cd {QUASAR_DIR} && set -a && . ./runtime.env && set +a && ./app/bin/quasar-bridge -config {QUASAR_CONFIG_PATH} -check-config"
                 check_res = await conn.run(check_cmd, check=False)
                 if check_res.exit_status != 0:
@@ -718,7 +827,7 @@ class QuasarManager:
                         "error": f"Конфигурация не прошла валидацию: {check_res.stderr.strip() or check_res.stdout.strip()}"
                     }
 
-                # 10. Перезапускаем Quasar Bridge
+                # 11. Перезапускаем Quasar Bridge
                 restart_cmd = f"sh {QUASAR_DIR}/app/control.sh restart"
                 restart_res = await conn.run(restart_cmd, check=False)
                 if restart_res.exit_status != 0:
@@ -726,26 +835,27 @@ class QuasarManager:
                         "error": f"Ошибка перезапуска Quasar Bridge: {restart_res.stderr.strip()}"
                     }
 
-                # 11. Перезапускаем Squeezelite
+                # 12. Перезапускаем Squeezelite
                 await conn.run(f"sh {SQUEEZELITE_SERVICE_PATH} restart", check=False)
                 await asyncio.sleep(0.5)
                 sq_check = await conn.run("ps | grep -v grep | grep squeezelite", check=False)
                 sq_running = (sq_check.exit_status == 0 and bool(sq_check.stdout.strip()))
 
-                # 12. Перезапускаем Station AirPlay
+                # 13. Перезапускаем Station AirPlay
                 await conn.run(f"sh {STATION_AIRPLAY_SERVICE_PATH} restart", check=False)
                 await asyncio.sleep(0.5)
                 ap_check = await conn.run("ps | grep -v grep | grep station-airplay", check=False)
                 ap_running = (ap_check.exit_status == 0 and bool(ap_check.stdout.strip()))
 
-                # 13. Перезапускаем Alice Watcher
+                # 14. Перезапускаем Alice Watcher
                 await conn.run(f"sh {ALICE_WATCHER_SERVICE_PATH} restart", check=False)
 
-                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver} (Squeezelite running={sq_running}, AirPlay running={ap_running})")
+                logger.info(f"[QUASAR] Successfully updated station {ip} to {bundled_ver} (Server={synced_host}, Squeezelite running={sq_running}, AirPlay running={ap_running})")
                 return {
                     "success": True,
-                    "message": f"Единый пакет Яндекс Станции успешно обновлен до {bundled_ver}",
+                    "message": f"Единый пакет Яндекс Станции успешно обновлен до {bundled_ver} (сервер {synced_host or 'auto'})",
                     "version": bundled_ver,
+                    "server_ip": synced_host,
                     "squeezelite_running": sq_running,
                     "airplay_running": ap_running,
                     "output": restart_res.stdout.strip()

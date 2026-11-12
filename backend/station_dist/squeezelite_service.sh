@@ -8,7 +8,8 @@ envfile="$base/squeezelite.env"
 
 [ -f "$envfile" ] && . "$envfile"
 
-server="${SQUEEZELITE_SERVER:-192.168.1.50}"
+def_server=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "192.168.1.50")
+server="${SQUEEZELITE_SERVER:-$def_server}"
 output="${SQUEEZELITE_OUTPUT:-default}"
 name="${SQUEEZELITE_NAME:-Яндекс Станция}"
 buffers="${SQUEEZELITE_BUFFERS:-2048:3445}"
