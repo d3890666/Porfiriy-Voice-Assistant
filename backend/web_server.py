@@ -779,7 +779,12 @@ class WebServer:
                     dev.setdefault("config", {})["quasar_version"] = inst_ver
                     dev["target_firmware"] = res.get("bundled_version", "")
                     dev["has_update"] = res.get("has_update", False)
-                    self.device_manager.save_devices()
+                    if "squeezelite_running" in res:
+                        dev["squeezelite_running"] = res["squeezelite_running"]
+                    if "airplay_running" in res:
+                        dev["airplay_running"] = res["airplay_running"]
+                    self.device_manager._save()
+                    self.device_manager._notify("registered", dev)
         status_code = 200 if res.get("success") else 400
         return web.json_response(res, status=status_code)
 
@@ -809,7 +814,11 @@ class WebServer:
                         dev["target_firmware"] = new_ver
                         dev.setdefault("config", {})["quasar_version"] = new_ver
                         dev["has_update"] = False
-                    self.device_manager.save_devices()
+                    if "squeezelite_running" in res:
+                        dev["squeezelite_running"] = res["squeezelite_running"]
+                    if "airplay_running" in res:
+                        dev["airplay_running"] = res["airplay_running"]
+                    self.device_manager._save()
                     self.device_manager._notify("registered", dev)
 
             status_code = 200 if res.get("success") else 400

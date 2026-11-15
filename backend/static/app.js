@@ -2353,10 +2353,25 @@ async function updateQuasarComponents(mac) {
   const btn = document.getElementById(`quasar-update-btn-${mac}`);
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '⏳ Обновление по SSH...';
+    btn.innerHTML = '⏳ Подключение по SSH (0с)...';
     btn.classList.remove('quasar-update-btn-needed');
     btn.style.opacity = '0.7';
   }
+
+  let updateSeconds = 0;
+  const updateTimer = setInterval(() => {
+    updateSeconds++;
+    const currentBtn = document.getElementById(`quasar-update-btn-${mac}`);
+    if (currentBtn) {
+      if (updateSeconds < 5) {
+        currentBtn.innerHTML = `⏳ Подключение по SSH (${updateSeconds}с)...`;
+      } else if (updateSeconds < 12) {
+        currentBtn.innerHTML = `⏳ Установка пакета (${updateSeconds}с)...`;
+      } else {
+        currentBtn.innerHTML = `⏳ Перезапуск служб (${updateSeconds}с)...`;
+      }
+    }
+  }, 1000);
 
   showToast('Подключение по SSH и обновление пакета на Станции...');
   try {
@@ -2366,18 +2381,20 @@ async function updateQuasarComponents(mac) {
       body: JSON.stringify({ mac: mac, ip: ip })
     });
     const data = await res.json();
+    clearInterval(updateTimer);
     if (data.success) {
-      showToast(`Пакет Станции успешно обновлен до ${data.version || targetVer}!`);
+      const finalVer = data.version || targetVer;
+      showToast(`Пакет Станции успешно обновлен до ${finalVer}!`);
       if (dev) {
-        dev.firmware = data.version || targetVer;
-        dev.target_firmware = data.version || targetVer;
+        dev.firmware = finalVer;
+        dev.target_firmware = finalVer;
         dev.has_update = false;
         dev.config = dev.config || {};
-        dev.config.quasar_version = data.version || targetVer;
+        dev.config.quasar_version = finalVer;
         if (data.squeezelite_running !== undefined) dev.squeezelite_running = data.squeezelite_running;
         if (data.airplay_running !== undefined) dev.airplay_running = data.airplay_running;
       }
-      quasarVersionChecked[mac] = false;
+      quasarVersionChecked[mac] = true;
       renderDevicesGrid();
       fetchDevices();
     } else {
@@ -2390,6 +2407,7 @@ async function updateQuasarComponents(mac) {
       }
     }
   } catch (err) {
+    clearInterval(updateTimer);
     showToast('Сетевая ошибка при обновлении Quasar', true);
     if (btn) {
       btn.disabled = false;

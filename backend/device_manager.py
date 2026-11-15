@@ -194,6 +194,10 @@ class DeviceManager:
         except Exception as e:
             logger.error(f"Failed to save devices to {self.storage_path}: {e}")
 
+    def save_devices(self):
+        """Публичный метод сохранения устройств на диск."""
+        self._save()
+
     def add_subscriber(self, callback: Callable[[str, Dict[str, Any]], Any]):
         """Подписка на события изменения состояния устройств (для SSE и MQTT)."""
         self.subscribers.append(callback)
