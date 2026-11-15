@@ -265,8 +265,6 @@ function renderDevicesGrid() {
               ${hasUpdate ? `⚡ Обновить (v${targetVer})` : `✓ Quasar v${currentVer || targetVer}`}
             </button>
           </div>
-          `;
-        })() : `
           <!-- Players bar: Squeezelite & AirPlay -->
           <div style="margin: 8px 0 4px 0; display: flex; flex-direction: column; gap: 6px;">
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
@@ -336,7 +334,8 @@ function renderDevicesGrid() {
               ▶ Ответ Gemini
             </button>
           </div>
-        ` : `
+          `;
+        })() : `
           <div class="virtual-client-banner">
             <span>💻 Клиент (${escapeHtml(dev.device_type || 'ПК')})</span>
             <span class="virtual-tag">Виртуальное устройство</span>
