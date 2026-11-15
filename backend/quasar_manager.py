@@ -36,7 +36,64 @@ class QuasarManager:
     """Управление конфигурацией и маршрутизацией Quasar Bridge на Яндекс Станции через SSH."""
 
     def __init__(self):
-        pass
+        self._vol_tasks: Dict[str, asyncio.Task] = {}
+        self._target_vols: Dict[str, int] = {}
+
+    def set_station_hw_volume(self, dev: Dict[str, Any], volume_percent: int) -> None:
+        """
+        Запускает фоновую неблокирующую задачу синхронизации аппаратной громкости
+        ALSA Master и /tmp/quasar_volume на Станции с дебаунсингом.
+        """
+        if not HAS_ASYNCSSH or not isinstance(dev, dict):
+            return
+        mac = (dev.get("mac") or "").strip().lower()
+        if not mac:
+            return
+
+        target = max(0, min(100, int(volume_percent)))
+        self._target_vols[mac] = target
+
+        existing = self._vol_tasks.get(mac)
+        if existing is None or existing.done():
+            self._vol_tasks[mac] = asyncio.create_task(self._station_volume_worker(dev, mac))
+
+    async def _station_volume_worker(self, dev: Dict[str, Any], mac: str) -> None:
+        """Рабочий воркер установки аппаратной громкости на Станции через SSH."""
+        try:
+            cfg = dev.get("config", {}) if isinstance(dev, dict) else {}
+            ip = (dev.get("ip") or cfg.get("ip") or "").strip()
+            port = int(cfg.get("ssh_port", DEFAULT_SSH_PORT))
+            if not ip or ip == "---" or ip.startswith("127."):
+                return
+
+            last_applied = None
+            while True:
+                target = self._target_vols.get(mac)
+                if target is None or target == last_applied:
+                    break
+
+                cmd = (
+                    f"if [ -x {SET_VOLUME_PATH} ]; then "
+                    f"sh {SET_VOLUME_PATH} {target}; "
+                    f"else "
+                    f"echo '{target}' > /tmp/quasar_volume; "
+                    f"amixer set 'Master' '{target}%' >/dev/null 2>&1 || true; "
+                    f"fi"
+                )
+                try:
+                    async with await self._open_ssh_connection(ip, port, timeout=2.5) as conn:
+                        await conn.run(cmd, check=False)
+                    last_applied = target
+                    logger.info(f"[QUASAR] Synced hardware voice volume to {target}% on station {ip}:{port} (mac={mac})")
+                except Exception as e_ssh:
+                    logger.warning(f"[QUASAR] Error setting hardware volume on station {ip}:{port}: {e_ssh}")
+                    break
+
+                # Если пока выполнялась команда, целевой уровень не менялся — завершаем
+                if self._target_vols.get(mac) == target:
+                    break
+        except Exception as e:
+            logger.warning(f"[QUASAR] Hardware volume worker error for {mac}: {e}")
 
     async def _open_ssh_connection(self, ip: str, port: int = DEFAULT_SSH_PORT, timeout: float = 3.0):
         if not HAS_ASYNCSSH:

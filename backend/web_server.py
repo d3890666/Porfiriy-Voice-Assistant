@@ -76,12 +76,18 @@ class WebServer:
         # Серверный авто-дакинг для Яндекс Станции через Home Assistant
         self.ducking_manager = StationDuckingManager(self.device_manager, self.ha_api)
 
-        # Интеграция OpenAI-совместимого эндпоинта (Quasar Bridge / Яндекс Станция)
-        self.openai_service = OpenAIService(self.device_manager, self.ha_api, self.options_callback, ducking_manager=self.ducking_manager)
-        self.openai_service.register_routes(self.app)
-
         # Менеджер управления конфигурацией и маршрутизацией Quasar Bridge
         self.quasar_manager = QuasarManager()
+
+        # Интеграция OpenAI-совместимого эндпоинта (Quasar Bridge / Яндекс Станция)
+        self.openai_service = OpenAIService(
+            self.device_manager,
+            self.ha_api,
+            self.options_callback,
+            ducking_manager=self.ducking_manager,
+            quasar_manager=self.quasar_manager
+        )
+        self.openai_service.register_routes(self.app)
 
         self._setup_routes()
 
@@ -259,6 +265,9 @@ class WebServer:
                             "entity_id": player,
                             "volume_level": vol_level
                         })
+                    if self.quasar_manager:
+                        target_pct = int(round(vol_level * 100))
+                        self.quasar_manager.set_station_hw_volume(dev, target_pct)
             success = await self.device_manager.update_device_config(mac, data)
             return web.json_response({"success": success})
         except Exception as e:

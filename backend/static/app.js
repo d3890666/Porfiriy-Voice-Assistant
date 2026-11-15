@@ -368,7 +368,7 @@ function renderDevicesGrid() {
             const playerVol = Math.min(1.0, Math.max(0.0, cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5));
             return `
               <div class="slider-row">
-                <span>🔊 Громкость плеера:</span>
+                <span>🔊 Громкость:</span>
                 <input type="range" min="0" max="1" step="0.05" value="${playerVol}" 
                   onchange="updateSingleDeviceConfig('${dev.mac}', 'speaker_volume', parseFloat(this.value))"
                   oninput="this.nextElementSibling.innerText = Math.round(this.value * 100) + '%'">

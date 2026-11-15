@@ -60,12 +60,13 @@ def sanitize_text_for_speech(text: str) -> str:
     return text
 
 class OpenAIService:
-    def __init__(self, device_manager, ha_api, options_callback, default_port: int = 8000, ducking_manager=None):
+    def __init__(self, device_manager, ha_api, options_callback, default_port: int = 8000, ducking_manager=None, quasar_manager=None):
         self.device_manager = device_manager
         self.ha_api = ha_api
         self.options_callback = options_callback
         self.default_port = default_port
         self.ducking_manager = ducking_manager
+        self.quasar_manager = quasar_manager
         self._api_key_index = 0
         self.dialogue_history: Dict[str, Dict[str, Any]] = {}
 
@@ -350,6 +351,17 @@ class OpenAIService:
             await self.device_manager.update_device_config(mac, {"speaker_volume": new_vol})
         except Exception:
             pass
+
+        # Синхронно обновляем аппаратную громкость усилителя (ALSA Master) на Яндекс Станции
+        if self.quasar_manager:
+            try:
+                dev = self.device_manager.get_device(mac)
+                if dev and dev.get("device_type") == "yandex_station":
+                    target_pct = int(round(new_vol * 100))
+                    self.quasar_manager.set_station_hw_volume(dev, target_pct)
+            except Exception as e_vol:
+                logger.warning(f"[OPENAI VOLUME] Hardware volume sync note: {e_vol}")
+
         return True
 
     @staticmethod
