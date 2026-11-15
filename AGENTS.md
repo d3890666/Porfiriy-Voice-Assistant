@@ -46,6 +46,13 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.138 (Fix ALSA asound.conf Syntax Error & SSH Stream Pipe Guard)
+*   **Устранение сбоя прямого ALSA вывода голоса `BrokenPipeError: Channel not open for sending`**:
+    - В `/etc/asound.conf` исправлена ошибка с экранированными кавычками `\"`, приводившая к поломке ALSA конфигурации (`Unexpected char ... audio open error: Invalid argument`) и аварийному выходу `aplay`.
+    - В `QuasarManager.ensure_asound_music_duck` добавлена авто-очистка кавычек и запись через чистый heredoc `cat << 'EOF'`.
+    - В `OpenAIService._stream_chunk` ошибка записи в SSH-процесс перехватывается, защищая сессию Gemini Live от срыва.
+    - Дистрибутив Станции `v1.2.4-porfiriy.13`, версии в `config.yaml`, `CHANGELOG.md` и `index.html` синхронизированы до `0.0.138`.
+
 ### Версия 0.0.137 (Real-time Station Update & Fix DeviceManager.save_devices)
 *   **Устранение ошибки обновления Quasar и обновление карточки в реальном времени**:
     - В `DeviceManager` добавлен метод `save_devices()`, предотвращающий ошибку `AttributeError: 'DeviceManager' object has no attribute 'save_devices'`.

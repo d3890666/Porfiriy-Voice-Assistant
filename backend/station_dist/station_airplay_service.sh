@@ -47,7 +47,7 @@ case "${1:-status}" in
   [ "$device" = "default" ] && [ "$def_device" = "music_duck" ] && device="music_duck"
   aplay=$(cat "$base/aplay" 2>/dev/null || echo "")
   if [ "$device" = "music_duck" ]; then
-    aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true
+    aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true
     amixer set 'Music' 100% >/dev/null 2>&1 || true
   fi
   # A failing library/config preflight must fail start before reporting a PID.

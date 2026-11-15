@@ -628,34 +628,38 @@ class QuasarManager:
         и аппаратно приглушать любую музыку на время диалога без влияния на голос Алисы/Порфирия.
         """
         try:
+            # 1. Автоматически исправляем экранированные кавычки в /etc/asound.conf, если они были записаны ранее
+            clean_cmd = "mount -o remount,rw / 2>/dev/null && (sed -i 's/\\\\\"/\"/g' /etc/asound.conf; sync; mount -o remount,ro / 2>/dev/null || true)"
+            await conn.run(clean_cmd, check=False)
+
             check = await conn.run("grep -q 'pcm.music_duck' /etc/asound.conf 2>/dev/null && echo 'ok'", check=False)
             if check.exit_status == 0 and check.stdout.strip() == "ok":
+                await conn.run("aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true; amixer set 'Music' 100% >/dev/null 2>&1 || true", check=False)
                 return True
 
             logger.info("[QUASAR] Configuring ALSA /etc/asound.conf with pcm.music_duck (softvol)...")
-            asound_block = (
-                "\\n"
-                "ctl.Music {\\n"
-                "  type hw\\n"
-                "  card 0\\n"
-                "}\\n"
-                "\\n"
-                "pcm.music_duck {\\n"
-                "  type softvol\\n"
-                "  slave.pcm \\\"dmix_spk_plug\\\"\\n"
-                "  control {\\n"
-                "    name \\\"Music\\\"\\n"
-                "    card 0\\n"
-                "  }\\n"
-                "  min_dB -50.0\\n"
-                "  max_dB 0.0\\n"
-                "}\\n"
-            )
             asound_cmd = (
                 "mount -o remount,rw / 2>/dev/null && ("
-                f"grep -q 'pcm.music_duck' /etc/asound.conf || printf '{asound_block}' >> /etc/asound.conf; "
+                "cat << 'EOF' >> /etc/asound.conf\n"
+                "\n"
+                "ctl.Music {\n"
+                "  type hw\n"
+                "  card 0\n"
+                "}\n"
+                "\n"
+                "pcm.music_duck {\n"
+                "  type softvol\n"
+                "  slave.pcm \"dmix_spk_plug\"\n"
+                "  control {\n"
+                "    name \"Music\"\n"
+                "    card 0\n"
+                "  }\n"
+                "  min_dB -50.0\n"
+                "  max_dB 0.0\n"
+                "}\n"
+                "EOF\n"
                 "sync; mount -o remount,ro / 2>/dev/null || true); "
-                "aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true; "
+                "aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true; "
                 "amixer set 'Music' 100% >/dev/null 2>&1 || true"
             )
             await conn.run(asound_cmd, check=False)

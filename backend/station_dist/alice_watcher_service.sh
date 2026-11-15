@@ -59,7 +59,7 @@ run_watcher() {
     watchdog_pid=""
 
     # Гарантируем регистрацию и начальный уровень 100% для виртуального микшера Music
-    aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true
+    aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true
     unduck_music
 
     tail -n 0 -F "$airplay_log" 2>/dev/null | while IFS= read -r line; do

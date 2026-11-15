@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.138
+- **Устранение сбоя прямого ALSA вывода голоса `BrokenPipeError: Channel not open for sending`**:
+  - **Исправление синтаксиса `/etc/asound.conf` на Станции**: при генерации блока `pcm.music_duck` экранированные кавычки `\"` попадали в файл буквально, из-за чего ALSA парсер отвергал весь конфигурационный файл (`Unexpected char ... audio open error: Invalid argument`), приводя к мгновенному аварийному завершению `aplay`.
+  - В `QuasarManager.ensure_asound_music_duck` внедрена автоматическая очистка битых кавычек `sed -i 's/\\"/\"/g' /etc/asound.conf` и запись чистого блока через heredoc `cat << 'EOF'`.
+  - **Защита потока в `OpenAIService._stream_chunk`**: ошибка записи в пайп SSH (`BrokenPipeError`) перехватывается без падения сессии Gemini Live, предотвращая срыв генерации и ложный откат на Алису.
+  - В тестовых вызовах `aplay /dev/zero` добавлен корректный формат `-f S16_LE -c 2 -r 48000`.
+- **Единый дистрибутив Станции `v1.2.4-porfiriy.13`** и синхронизация версий в `config.yaml`, `CHANGELOG.md`, `index.html` (кэш-бастеры) до `0.0.138`.
+
 ## 0.0.137
 - **Устранение ошибки обновления Quasar и обновление карточки в реальном времени**:
   - В `DeviceManager` добавлен публичный метод `save_devices()`, предотвращающий `AttributeError: 'DeviceManager' object has no attribute 'save_devices'` при завершении обновления Станции.

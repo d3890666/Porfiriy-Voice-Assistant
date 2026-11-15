@@ -218,7 +218,7 @@ class WebServer:
         
         # Обновляем имя комнат, версию прошивки и текущую громкость плеера для Станций
         bundled_quasar_info = self.quasar_manager.get_bundled_version_info()
-        bundled_quasar_ver = bundled_quasar_info.get("version", "1.2.4-porfiriy.12")
+        bundled_quasar_ver = bundled_quasar_info.get("version", "1.2.4-porfiriy.13")
 
         for d in devices:
             if not d.get("area_name") and self.ha_api:

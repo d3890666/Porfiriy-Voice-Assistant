@@ -660,13 +660,21 @@ class OpenAIService:
         first_chunk = True
 
         async def _stream_chunk(chunk: bytes):
-            nonlocal first_chunk
+            nonlocal first_chunk, ssh_proc
             if ssh_proc is not None:
                 if first_chunk:
                     logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
                     first_chunk = False
-                ssh_proc.stdin.write(chunk)
-                await ssh_proc.stdin.drain()
+                try:
+                    ssh_proc.stdin.write(chunk)
+                    await ssh_proc.stdin.drain()
+                except Exception as stream_err:
+                    logger.warning(f"[OPENAI LIVE] Direct stream write failed ({stream_err}), closing SSH aplay pipe")
+                    try:
+                        ssh_proc.stdin.close()
+                    except Exception:
+                        pass
+                    ssh_proc = None
 
         try:
             async with proxy_client.connect() as session:
@@ -687,9 +695,12 @@ class OpenAIService:
 
             # Завершаем стрим в aplay и ждем доигрывания
             if ssh_proc is not None:
-                ssh_proc.stdin.write_eof()
-                await ssh_proc.wait()
-                logger.info(f"[OPENAI LIVE] Direct audio playback finished on {speaker_ip}")
+                try:
+                    ssh_proc.stdin.write_eof()
+                    await asyncio.wait_for(ssh_proc.wait(), timeout=10.0)
+                    logger.info(f"[OPENAI LIVE] Direct audio playback finished on {speaker_ip}")
+                except Exception as e:
+                    logger.warning(f"[OPENAI LIVE] Error finishing aplay stream: {e}")
 
         except Exception as e:
             logger.error(f"[OPENAI LIVE] Error generating/streaming direct audio: {e}", exc_info=True)

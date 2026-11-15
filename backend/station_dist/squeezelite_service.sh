@@ -63,7 +63,7 @@ start() {
 
     # Гарантируем регистрацию softvol Music микшера
     if [ "$output" = "music_duck" ]; then
-        aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true
+        aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true
         amixer set 'Music' 100% >/dev/null 2>&1 || true
     fi
 
