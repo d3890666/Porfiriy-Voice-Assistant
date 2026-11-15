@@ -712,9 +712,10 @@ class OpenAIService:
                     logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
                     first_chunk = False
                 try:
-                    # Нормализация громкости голоса Порфирия (+5.1 dB / x1.8) для баланса с Alice TTS и музыкой
-                    if audioop:
-                        chunk = audioop.mul(chunk, 2, 1.8)
+                    # Чистый PCM звук без искусственного завышения и клиппинга; Master регулятор ALSA управляет общей громкостью
+                    vol = float(dev_cfg.get("speaker_volume", 1.0))
+                    if audioop and 0.0 < vol < 0.99:
+                        chunk = audioop.mul(chunk, 2, max(0.1, vol))
                     ssh_proc.stdin.write(chunk)
                     await ssh_proc.stdin.drain()
                 except Exception as stream_err:

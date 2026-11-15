@@ -647,7 +647,7 @@ class QuasarManager:
                 f"rm -rf {STATION_DUCKING_DIR} /data/opt/porfiriy_host /data/opt/porfiriy_port /tmp/station_ducking_*; "
                 "mount -o remount,rw / 2>/dev/null && ("
                 f"rm -f {STATION_DUCKING_INIT_PATH}; "
-                f"sed -i 's/playback.pcm \"soft_volume\"/playback.pcm \"dmix_spk_plug\"/' {ASOUND_CONF_PATH} 2>/dev/null || true; "
+                f"sed -i 's/playback.pcm \"dmix_spk_plug\"/playback.pcm \"soft_volume\"/' {ASOUND_CONF_PATH} 2>/dev/null || true; "
                 f"cat << 'EOF' > {SET_VOLUME_PATH}\n"
                 "#!/bin/sh\n"
                 'target="${1:-50}"\n'
@@ -664,21 +664,27 @@ class QuasarManager:
 
     async def ensure_asound_music_duck(self, conn) -> bool:
         """
-        Настраивает виртуальное ALSA устройство music_duck (type softvol) в /etc/asound.conf.
-        Через него выводят звук Squeezelite и Station AirPlay, что позволяет независимо
-        и аппаратно приглушать любую музыку на время диалога без влияния на голос Алисы/Порфирия.
+        Настраивает единую иерархию ALSA в /etc/asound.conf:
+        Master (soft_volume) является единым корнем громкости всей колонки (Алиса, Порфирий, Squeezelite, AirPlay).
+        music_duck (softvol) выводит в soft_volume и служит исключительно для дакинга музыки (-75%).
         """
         try:
-            # 1. Автоматически исправляем экранированные кавычки в /etc/asound.conf, если они были записаны ранее
-            clean_cmd = "mount -o remount,rw / 2>/dev/null && (sed -i 's/\\\\\"/\"/g' /etc/asound.conf; sync; mount -o remount,ro / 2>/dev/null || true)"
-            await conn.run(clean_cmd, check=False)
+            # 1. Исправляем экранирование, привязываем playback default и slave music_duck к soft_volume
+            sync_asound_cmd = (
+                "mount -o remount,rw / 2>/dev/null && ("
+                "sed -i 's/\\\\\"/\"/g' /etc/asound.conf; "
+                "sed -i 's/playback.pcm \"dmix_spk_plug\"/playback.pcm \"soft_volume\"/' /etc/asound.conf; "
+                "sed -i '/pcm.music_duck/,/}/s/slave.pcm \"dmix_spk_plug\"/slave.pcm \"soft_volume\"/' /etc/asound.conf; "
+                "sync; mount -o remount,ro / 2>/dev/null || true)"
+            )
+            await conn.run(sync_asound_cmd, check=False)
 
             check = await conn.run("grep -q 'pcm.music_duck' /etc/asound.conf 2>/dev/null && echo 'ok'", check=False)
             if check.exit_status == 0 and check.stdout.strip() == "ok":
                 await conn.run("aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true; amixer set 'Music' 100% >/dev/null 2>&1 || true", check=False)
                 return True
 
-            logger.info("[QUASAR] Configuring ALSA /etc/asound.conf with pcm.music_duck (softvol)...")
+            logger.info("[QUASAR] Configuring ALSA /etc/asound.conf with pcm.music_duck (softvol -> soft_volume)...")
             asound_cmd = (
                 "mount -o remount,rw / 2>/dev/null && ("
                 "cat << 'EOF' >> /etc/asound.conf\n"
@@ -690,7 +696,7 @@ class QuasarManager:
                 "\n"
                 "pcm.music_duck {\n"
                 "  type softvol\n"
-                "  slave.pcm \"dmix_spk_plug\"\n"
+                "  slave.pcm \"soft_volume\"\n"
                 "  control {\n"
                 "    name \"Music\"\n"
                 "    card 0\n"
