@@ -1,5 +1,14 @@
 # Журнал изменений (Changelog)
 
+## 0.0.139
+- **Взаимное исключение воспроизведения AirPlay и Squeezelite (Music Assistant)**:
+  - **AirPlay ➔ Пауза Squeezelite**: при запуске потока с iPhone (`playing=true` / `RTSP RECORD` в логе `station-airplay`) наблюдатель `alice_watcher_service.sh` мгновенно отправляет событие в аддон (`POST /api/station/airplay_state`), а `StationDuckingManager` через Home Assistant API ставит привязанный плеер Squeezelite (`mass_player`) на паузу (`media_player.media_pause`).
+  - **Squeezelite ➔ Остановка AirPlay**:
+    - При старте музыки через Порфирия (голосовые команды «плей», «включи музыку», вызов `play_music_assistant`) или внешний запуск в Home Assistant / Music Assistant (через WebSocket подписку на `state_changed`) вызывается `stop_station_airplay_if_playing`.
+    - Локальный сторож в `alice_watcher_service.sh` также отслеживает одновременную активность дескриптора `pcmC0D0p` и процесса `station-pcm`, мгновенно перезапуская службу AirPlay.
+  - В `station_airplay_service.sh` реализован быстрый перезапуск (`usleep 100000` / `200000`), сокративший время перезапуска с 3.6 сек до 0.3 сек.
+- **Единый дистрибутив Станции `v1.2.4-porfiriy.14`** и синхронизация версий в `config.yaml`, `CHANGELOG.md`, `index.html` (кэш-бастеры) до `0.0.139`.
+
 ## 0.0.138
 - **Устранение сбоя прямого ALSA вывода голоса `BrokenPipeError: Channel not open for sending`**:
   - **Исправление синтаксиса `/etc/asound.conf` на Станции**: при генерации блока `pcm.music_duck` экранированные кавычки `\"` попадали в файл буквально, из-за чего ALSA парсер отвергал весь конфигурационный файл (`Unexpected char ... audio open error: Invalid argument`), приводя к мгновенному аварийному завершению `aplay`.

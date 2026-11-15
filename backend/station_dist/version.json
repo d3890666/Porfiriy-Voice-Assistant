@@ -1,8 +1,8 @@
 {
-  "version": "1.2.4-porfiriy.13",
+  "version": "1.2.4-porfiriy.14",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Unified Station distribution: Fix ALSA /etc/asound.conf syntax, Universal hardware ducking via pcm.music_duck (AirPlay + Squeezelite), Auto server IP sync, Native WebSocket audio streaming, and Alice state watcher",
+  "description": "Unified Station distribution: Mutual exclusive playback between AirPlay and Squeezelite (auto pause/stop), fast AirPlay restart, Universal hardware ducking via pcm.music_duck, and Alice state watcher",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",

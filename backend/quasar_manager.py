@@ -598,6 +598,31 @@ class QuasarManager:
             logger.error(f"[QUASAR] Error executing AirPlay {action} on {ip}:{port}: {e}")
             return {"success": False, "error": str(e), "airplay_running": False}
 
+    async def stop_station_airplay_if_playing(self, ip: str, port: int = DEFAULT_SSH_PORT) -> bool:
+        """
+        Проверяет, выводит ли сейчас AirPlay звук на Станции (station-pcm).
+        Если да, мгновенно перезапускает службу Station AirPlay, закрывая сессию и ставя iPhone на паузу.
+        """
+        if not ip or ip == "---":
+            return False
+
+        try:
+            async with await self._open_ssh_connection(ip, port) as conn:
+                cmd = (
+                    "if ps | grep -v grep | grep -q 'station-pcm'; then "
+                    f"sh {STATION_AIRPLAY_SERVICE_PATH} restart >/dev/null 2>&1; echo 'stopped'; "
+                    "else echo 'idle'; fi"
+                )
+                res = await asyncio.wait_for(conn.run(cmd, check=False), timeout=3.0)
+                status = res.stdout.strip()
+                if status == "stopped":
+                    logger.info(f"[MUTUAL PLAYBACK] AirPlay active stream disconnected on {ip} to let Squeezelite play")
+                    return True
+                return False
+        except Exception as e:
+            logger.debug(f"[MUTUAL PLAYBACK] Could not check/stop station airplay on {ip}: {e}")
+            return False
+
     async def _cleanup_legacy_volume_ducking(self, conn) -> None:
         """
         Останавливает и удаляет старый блок auto-ducking / volume_sync / soft_volume со Станции,

@@ -198,3 +198,37 @@ class StationDuckingManager:
         st = self._states.get(mac)
         if st and st.get("active"):
             await self._restore_volume(mac, "speech_finished")
+
+    async def on_airplay_state(self, client_ip: str, state: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Обрабатывает событие воспроизведения AirPlay со Станции.
+        Если AirPlay начинает воспроизведение ('playing'), ставит на паузу медиаплеер Squeezelite (Music Assistant).
+        """
+        dev = self.find_station_by_ip(client_ip)
+        if not dev:
+            return {"success": False, "error": f"Station not found for IP {client_ip}"}
+
+        mac = dev.get("mac", "")
+        player = self.resolve_station_player(dev, options)
+        state_norm = (state or "").strip().lower()
+
+        if state_norm in ("playing", "active", "1"):
+            dev["airplay_state"] = "playing"
+            if player and self.ha_api:
+                try:
+                    entity_state = await self.ha_api.get_entity_state(player)
+                    curr_state = entity_state.get("state") if isinstance(entity_state, dict) else ""
+                    if curr_state == "playing":
+                        logger.info(f"[MUTUAL PLAYBACK] AirPlay started on {dev.get('name', mac)} -> Pausing Squeezelite ({player})")
+                        await self.ha_api.call_service("media_player", "media_pause", {"entity_id": player})
+                        return {"success": True, "action": "paused_squeezelite", "player": player}
+                    else:
+                        logger.debug(f"[MUTUAL PLAYBACK] AirPlay started on {dev.get('name', mac)}, Squeezelite ({player}) is {curr_state}")
+                        return {"success": True, "action": "squeezelite_not_playing", "player": player, "state": curr_state}
+                except Exception as e:
+                    logger.error(f"[MUTUAL PLAYBACK] Error pausing {player}: {e}")
+                    return {"success": False, "error": str(e)}
+            return {"success": True, "action": "no_player"}
+        else:
+            dev["airplay_state"] = "idle"
+            return {"success": True, "action": "airplay_idle"}

@@ -5,7 +5,7 @@ import websockets
 import json
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -751,5 +751,57 @@ class HomeAssistantAPI:
                     if stem not in stop_words:
                         target_set.add(stem)
                     break
+
+    async def start_state_listener(self, on_state_changed: Callable[[str, str, str], Any]):
+        """
+        Подключается к WebSocket Home Assistant и слушает события state_changed.
+        Вызывает on_state_changed(entity_id, new_state, old_state) при любых изменениях.
+        Автоматически переподключается при обрывах соединения.
+        """
+        while True:
+            try:
+                async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
+                    await ws.recv()  # auth_required
+                    token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
+                    await ws.send(json.dumps({"type": "auth", "access_token": token}))
+                    auth_resp = json.loads(await ws.recv())
+                    if auth_resp.get("type") != "auth_ok":
+                        logger.warning(f"[HA WS] Auth failed: {auth_resp}")
+                        await asyncio.sleep(10)
+                        continue
+
+                    await ws.send(json.dumps({
+                        "id": 1,
+                        "type": "subscribe_events",
+                        "event_type": "state_changed"
+                    }))
+                    sub_resp = json.loads(await ws.recv())
+                    if not sub_resp.get("success"):
+                        logger.warning(f"[HA WS] Subscription failed: {sub_resp}")
+                        await asyncio.sleep(10)
+                        continue
+
+                    logger.info("[HA WS] Subscribed to Home Assistant state_changed events")
+                    while True:
+                        msg_str = await ws.recv()
+                        msg = json.loads(msg_str)
+                        if msg.get("type") == "event":
+                            evt_data = msg.get("event", {}).get("data", {})
+                            eid = evt_data.get("entity_id", "")
+                            if eid.startswith("media_player."):
+                                new_st = evt_data.get("new_state", {}).get("state", "")
+                                old_st = evt_data.get("old_state", {}).get("state", "")
+                                if new_st and new_st != old_st:
+                                    try:
+                                        res = on_state_changed(eid, new_st, old_st)
+                                        if asyncio.iscoroutine(res):
+                                            asyncio.create_task(res)
+                                    except Exception as e:
+                                        logger.error(f"[HA WS] Error in state callback: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"[HA WS] Listener disconnected ({e}), reconnecting in 5s...")
+                await asyncio.sleep(5)
 
 

@@ -26,6 +26,15 @@ send_state() {
         -d "{\"state\": \"$st\"}" >/dev/null 2>&1 &
 }
 
+send_airplay_state() {
+    st="$1"
+    host=$(resolve_porfiriy_host)
+    my_ip=$(cat /data/opt/porfiriy_my_ip 2>/dev/null || ip route get 1 2>/dev/null | awk '{print $NF;exit}' || echo "")
+    curl -s -m 2 -X POST "http://${host}:8000/api/station/airplay_state" \
+        -H "Content-Type: application/json" \
+        -d "{\"state\": \"$st\", \"ip\": \"$my_ip\"}" >/dev/null 2>&1 &
+}
+
 running() {
     test -s "$pidfile" || return 1
     pid=$(cat "$pidfile" 2>/dev/null) || return 1
@@ -62,8 +71,33 @@ run_watcher() {
     aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true
     unduck_music
 
+    # Фоновый сторож взаимного исключения: если Squeezelite начинает играть при активном AirPlay, останавливаем AirPlay
+    (
+        while true; do
+            sleep 1
+            sq_pid=$(cat /data/opt/squeezelite/squeezelite.pid 2>/dev/null || true)
+            if [ -n "$sq_pid" ] && [ -d "/proc/$sq_pid/fd" ]; then
+                if ls -la "/proc/$sq_pid/fd" 2>/dev/null | grep -q 'pcmC0D0p'; then
+                    if ps | grep -v grep | grep -q 'station-pcm'; then
+                        echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Squeezelite playing detected while AirPlay active -> Stopping AirPlay" >> "$logfile"
+                        sh /data/opt/station-airplay/service restart >/dev/null 2>&1 || true
+                        sleep 1
+                    fi
+                fi
+            fi
+        done
+    ) &
+
     tail -n 0 -F "$airplay_log" 2>/dev/null | while IFS= read -r line; do
         case "$line" in
+            *alice_airplay_state*playing=true*|*RTSP*RECORD*)
+                send_airplay_state "playing"
+                echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] AirPlay started playing -> notified Porfiriy to pause Squeezelite" >> "$logfile"
+                ;;
+            *alice_airplay_state*playing=false*|*alice_airplay_state*connected=false*|*RTSP*TEARDOWN*)
+                send_airplay_state "idle"
+                echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] AirPlay idle -> notified Porfiriy" >> "$logfile"
+                ;;
             *alice_ipc_state*state=1*|*alice_ipc_state*state=2*|*alice_ipc_state*state=3*)
                 if [ "$in_dialog" -eq 0 ]; then
                     in_dialog=1

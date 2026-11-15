@@ -62,13 +62,13 @@ case "${1:-status}" in
   if running; then
    kill -TERM "$pid" 2>/dev/null || true
    count=0
-   while running && [ "$count" -lt 5 ]; do sleep 1;count=$((count+1));done
-   if running; then kill -KILL "$pid" 2>/dev/null || true;fi
+   while running && [ "$count" -lt 15 ]; do usleep 100000 2>/dev/null || sleep 1; count=$((count+1)); done
+   if running; then kill -KILL "$pid" 2>/dev/null || true; fi
   fi
   rm -f "$pidfile"
   echo "Station AirPlay stopped"
   ;;
- restart) "$self" stop; sleep 1; "$self" start;;
+ restart) "$self" stop; usleep 200000 2>/dev/null || sleep 1; "$self" start;;
  status) if running;then echo "Station AirPlay running ($pid)";else echo "Station AirPlay stopped";exit 1;fi;;
  *) echo "Usage: service {start|stop|restart|status}" >&2;exit 2;;
 esac

@@ -261,7 +261,7 @@ class OpenAIService:
         })
         return dev
 
-    async def _handle_direct_playback_command(self, user_text: str, airplay_player: str) -> Optional[str]:
+    async def _handle_direct_playback_command(self, user_text: str, airplay_player: str, dev: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Быстрый перехват команд управления плеером (пауза, стоп, дальше, тише/громче)."""
         if not airplay_player or not self.ha_api:
             return None
@@ -280,6 +280,10 @@ class OpenAIService:
 
         # 3. Продолжить
         if text_lower in ["продолжи", "возобнови", "возобнови музыку", "играй дальше", "сними с паузы", "продолжить", "играй", "музыку", "включи музыку", "запусти музыку", "нажми на play", "нажми play", "нажми плей", "плей"]:
+            if dev and self.quasar_manager:
+                speaker_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
+                if speaker_ip and speaker_ip != "---":
+                    asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
             await self.ha_api.call_service("media_player", "media_play", {"entity_id": airplay_player})
             return "Продолжаю воспроизведение."
 
@@ -430,6 +434,10 @@ class OpenAIService:
                 if turn_state is not None:
                     turn_state["tool_executed"] = True
                     turn_state["playback_changed"] = True
+                if self.quasar_manager:
+                    speaker_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
+                    if speaker_ip and speaker_ip != "---":
+                        asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
                 return await self.ha_api.play_music_assistant(
                     entity_id=target_player,
                     uri_or_query=uri_or_query,
@@ -838,7 +846,7 @@ class OpenAIService:
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response("sil <[50]>", body.get("model", "porfiriy")), headers=self._cors_headers())
 
-            fast_playback_reply = await self._handle_direct_playback_command(user_text, music_player)
+            fast_playback_reply = await self._handle_direct_playback_command(user_text, music_player, dev=dev)
             if fast_playback_reply:
                 if self.ducking_manager:
                     await self.ducking_manager.finish_speech(mac)

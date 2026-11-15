@@ -102,6 +102,7 @@ class WebServer:
         self.app.router.add_post("/api/quasar/squeezelite", self.handle_quasar_squeezelite)
         self.app.router.add_post("/api/quasar/airplay", self.handle_quasar_airplay)
         self.app.router.add_post("/api/station/alice_state", self.handle_station_alice_state)
+        self.app.router.add_post("/api/station/airplay_state", self.handle_station_airplay_state)
         self.app.router.add_get("/api/quasar/extract-ha-keywords", self.handle_extract_ha_keywords)
         self.app.router.add_post("/api/quasar/test-route", self.handle_quasar_test_route)
         self.app.router.add_delete("/api/devices/{mac}", self.handle_delete_device)
@@ -218,7 +219,7 @@ class WebServer:
         
         # Обновляем имя комнат, версию прошивки и текущую громкость плеера для Станций
         bundled_quasar_info = self.quasar_manager.get_bundled_version_info()
-        bundled_quasar_ver = bundled_quasar_info.get("version", "1.2.4-porfiriy.13")
+        bundled_quasar_ver = bundled_quasar_info.get("version", "1.2.4-porfiriy.14")
 
         for d in devices:
             if not d.get("area_name") and self.ha_api:
@@ -882,6 +883,42 @@ class WebServer:
             logger.error(f"[SERVER DUCKING] Error in handle_station_alice_state: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    async def handle_station_airplay_state(self, request: web.Request) -> web.Response:
+        """
+        Принимает событие состояния AirPlay со Станции (playing / idle).
+        POST /api/station/airplay_state {"state": "playing", "ip": "..."}
+        Если AirPlay начинает воспроизведение, ставит на паузу медиаплеер Squeezelite (Music Assistant).
+        """
+        try:
+            body = await request.json()
+            state = body.get("state", "")
+            ip = body.get("ip") or request.remote or ""
+            opts = self.options_callback() if self.options_callback else {}
+            res = await self.ducking_manager.on_airplay_state(ip, state, opts)
+            return web.json_response(res)
+        except Exception as e:
+            logger.error(f"[MUTUAL PLAYBACK] Error in handle_station_airplay_state: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def _on_ha_state_changed(self, entity_id: str, new_state: str, old_state: str):
+        """
+        Слушатель событий смены состояния сущностей в Home Assistant.
+        Когда привязанный к Станции плеер Music Assistant (Squeezelite) начинает играть ('playing'),
+        отключаем активный AirPlay стрим на этой Станции, чтобы музыка не играла в два потока.
+        """
+        if new_state != "playing":
+            return
+
+        opts = self.options_callback() if self.options_callback else {}
+        for dev in self.device_manager.get_devices():
+            if dev.get("device_type") == "yandex_station":
+                player = StationDuckingManager.resolve_station_player(dev, opts)
+                if player and player == entity_id:
+                    ip = dev.get("ip") or dev.get("config", {}).get("ip")
+                    if ip and ip != "---":
+                        logger.info(f"[MUTUAL PLAYBACK] Squeezelite player {player} started playing -> checking/stopping active AirPlay on {ip}")
+                        await self.quasar_manager.stop_station_airplay_if_playing(ip)
+
     async def start(self):
         # Отключаем спам в системный журнал HA от периодического поллинга /api/ww_monitor
         runner = web.AppRunner(self.app, access_log=None)
@@ -900,6 +937,10 @@ class WebServer:
                 logger.info(f"Porfiriy OpenAI API Gateway running on http://0.0.0.0:{openai_port}")
             except Exception as e:
                 logger.error(f"Failed to start OpenAI API site on port {openai_port}: {e}")
+
+        # Подписка на события Home Assistant для взаимного исключения AirPlay и Squeezelite
+        if self.ha_api:
+            asyncio.create_task(self.ha_api.start_state_listener(self._on_ha_state_changed))
 
         # Запуск SSDP сервера обнаружения DLNA медиаплееров
         asyncio.create_task(self.dlna_manager.start_ssdp())

@@ -250,7 +250,7 @@ function renderDevicesGrid() {
         ` : dev.device_type === 'yandex_station' ? (() => {
           checkStationVersionInBackground(dev.mac);
           const currentVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
-          const targetVer = dev.target_firmware || '1.2.4-porfiriy.13';
+          const targetVer = dev.target_firmware || '1.2.4-porfiriy.14';
           const hasUpdate = dev.has_update !== false && (!currentVer || currentVer !== targetVer);
           return `
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -357,7 +357,7 @@ function renderDevicesGrid() {
             </div>
           ` : dev.device_type === 'yandex_station' ? (() => {
             const curVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
-            const tgtVer = dev.target_firmware || '1.2.4-porfiriy.13';
+            const tgtVer = dev.target_firmware || '1.2.4-porfiriy.14';
             const needsUp = dev.has_update !== false && (!curVer || curVer !== tgtVer);
             return `
             <div style="grid-column: 1 / -1; display: flex; align-items: center; gap: 6px;">
@@ -2345,7 +2345,7 @@ window.checkStationVersionInBackground = checkStationVersionInBackground;
 async function updateQuasarComponents(mac) {
   const dev = devices.find(x => x.mac === mac);
   const ip = dev?.ip || dev?.config?.ip || '';
-  const targetVer = dev?.target_firmware || '1.2.4-porfiriy.13';
+  const targetVer = dev?.target_firmware || '1.2.4-porfiriy.14';
   if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition (${targetVer}) по SSH с авто-привязкой IP сервера?`)) {
     return;
   }

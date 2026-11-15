@@ -46,6 +46,13 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.139 (Mutual Exclusive Playback: AirPlay <-> Squeezelite Auto-Pause)
+*   **Взаимное исключение воспроизведения AirPlay и Squeezelite (Music Assistant)**:
+    - **AirPlay ➔ Пауза Squeezelite**: `alice_watcher_service.sh` при начале AirPlay (`alice_airplay_state playing=true` / `RTSP RECORD`) отправляет `POST /api/station/airplay_state`, и `StationDuckingManager` вызывает `media_player.media_pause` на привязанном плеере `mass_player`.
+    - **Squeezelite ➔ Остановка AirPlay**: при старте музыки через Порфирия или Home Assistant (`HomeAssistantAPI.start_state_listener` по WebSocket) вызывается `QuasarManager.stop_station_airplay_if_playing`. В `alice_watcher_service.sh` встроен локальный сторож одновременной активности (`pcmC0D0p` + `station-pcm`).
+    - В `station_airplay_service.sh` ускорен перезапуск через `usleep` с 3.6 сек до 0.3 сек.
+    - Дистрибутив Станции `v1.2.4-porfiriy.14`, версии в `config.yaml`, `CHANGELOG.md` и `index.html` синхронизированы до `0.0.139`.
+
 ### Версия 0.0.138 (Fix ALSA asound.conf Syntax Error & SSH Stream Pipe Guard)
 *   **Устранение сбоя прямого ALSA вывода голоса `BrokenPipeError: Channel not open for sending`**:
     - В `/etc/asound.conf` исправлена ошибка с экранированными кавычками `\"`, приводившая к поломке ALSA конфигурации (`Unexpected char ... audio open error: Invalid argument`) и аварийному выходу `aplay`.
