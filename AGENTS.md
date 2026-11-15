@@ -46,6 +46,14 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.142 (Direct Hardware Master Volume Binding for Squeezelite)
+*   **Привязка ползунка плеера Squeezelite к аппаратному усилителю ALSA Master**:
+    - Устранено цифровое затухание (software digital attenuation) в Squeezelite.
+    - В `squeezelite_service.sh` добавлены параметры `-O default -V Master`, связывающие Slimproto-команды громкости плеера (`audg`) с аппаратным микшером усилителя колонки (`Master`).
+    - При перемещении ползунка громкости в плеере Home Assistant или Music Assistant напрямую меняется истинный мастер-звук усилителя SY6045S, предотвращая сжатие динамического диапазона и рассинхронизацию с AirPlay и голосом.
+    - В `QuasarManager.ensure_server_host_synced` обеспечено автопрописывание `SQUEEZELITE_VOLUME_CONTROL="Master"` и `SQUEEZELITE_MIXER_DEVICE="default"` в `squeezelite.env`.
+*   Дистрибутив Станции `v1.2.4-porfiriy.16`, версии в `config.yaml`, `CHANGELOG.md` и `index.html` (кэш-бастеры) синхронизированы до `0.0.142`.
+
 ### Версия 0.0.141 (Fix DeviceManager.get_devices & Station SSH Volume Retry)
 *   **Устранение сбоя слушателя состояния Home Assistant (`AttributeError: 'DeviceManager' object has no attribute 'get_devices'`)**:
     - В `DeviceManager` добавлен метод-псевдоним `get_devices()`, возвращающий `self.get_all_devices()`.

@@ -18,6 +18,8 @@ output="${SQUEEZELITE_OUTPUT:-$def_output}"
 name="${SQUEEZELITE_NAME:-Яндекс Станция}"
 buffers="${SQUEEZELITE_BUFFERS:-2048:3445}"
 close_timeout="${SQUEEZELITE_CLOSE_TIMEOUT:-2}"
+mixer_dev="${SQUEEZELITE_MIXER_DEVICE:-default}"
+volume_ctl="${SQUEEZELITE_VOLUME_CONTROL:-Master}"
 
 running() {
     test -s "$pidfile" || return 1
@@ -67,8 +69,13 @@ start() {
         amixer set 'Music' 100% >/dev/null 2>&1 || true
     fi
 
-    # Start squeezelite
-    nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
+    # Start squeezelite with hardware Master volume binding if configured
+    vol_args=""
+    if [ -n "$volume_ctl" ]; then
+        vol_args="-O $mixer_dev -V $volume_ctl"
+    fi
+
+    nohup "$binary" -s "$server" -o "$output" $vol_args -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
     echo $! > "$pidfile"
 
     sleep 1
@@ -79,7 +86,7 @@ start() {
 
     # Retry once after 2 seconds if first attempt failed (e.g. sound card busy during boot)
     sleep 2
-    nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
+    nohup "$binary" -s "$server" -o "$output" $vol_args -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
     echo $! > "$pidfile"
 
     sleep 1

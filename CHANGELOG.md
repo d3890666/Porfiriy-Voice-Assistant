@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.142
+- **Прямая привязка аппаратного микшера ALSA Master к ползунку плеера Squeezelite**:
+  - Устранено цифровое перемножение (software digital attenuation) в Squeezelite при регулировке громкости через интерфейс Home Assistant / Music Assistant.
+  - В `squeezelite_service.sh` добавлены параметры `-O default -V Master`, связывающие Slimproto-команды громкости плеера (`audg`) с аппаратным микшером усилителя колонки (`Master`).
+  - Теперь при перемещении ползунка громкости в плеере Home Assistant или Music Assistant меняется истинный общий звук усилителя, сохраняя динамический диапазон треков и обеспечивая полную синхронность со всеми источниками звука на Станции.
+  - В `QuasarManager.ensure_server_host_synced` обеспечено автоматическое прописывание `SQUEEZELITE_VOLUME_CONTROL="Master"` и `SQUEEZELITE_MIXER_DEVICE="default"` в `squeezelite.env`.
+- **Единый дистрибутив Станции `v1.2.4-porfiriy.16`** и синхронизация версий в `config.yaml`, `CHANGELOG.md` и `index.html` (кэш-бастеры) до `0.0.142`.
+
 ## 0.0.141
 - **Устранение сбоя слушателя состояния Home Assistant (`AttributeError: 'DeviceManager' object has no attribute 'get_devices'`)**:
   - В `DeviceManager` добавлен метод-псевдоним `get_devices()`, ссылающийся на `get_all_devices()`.
