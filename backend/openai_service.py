@@ -37,6 +37,11 @@ except ImportError:
     asyncssh = None
     HAS_ASYNCSSH = False
 
+try:
+    import audioop
+except ImportError:
+    audioop = None
+
 def sanitize_text_for_speech(text: str) -> str:
     """Очищает текст ответа от Markdown, эмодзи и спецсимволов для чистого проговаривания Алисой."""
     if not text:
@@ -707,6 +712,9 @@ class OpenAIService:
                     logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
                     first_chunk = False
                 try:
+                    # Нормализация громкости голоса Порфирия (+5.1 dB / x1.8) для баланса с Alice TTS и музыкой
+                    if audioop:
+                        chunk = audioop.mul(chunk, 2, 1.8)
                     ssh_proc.stdin.write(chunk)
                     await ssh_proc.stdin.drain()
                 except Exception as stream_err:

@@ -72,7 +72,10 @@ class QuasarManager:
                 if target is None or target == last_applied:
                     break
 
+                vendor_step = max(1, min(10, int(round(target / 10.0))))
                 cmd = (
+                    f"echo '{vendor_step}' > /data/quasar/data/last_vendor_volume 2>/dev/null || true; "
+                    f"echo '{vendor_step}' > /bkupgrade/data/quasar/data/last_vendor_volume 2>/dev/null || true; "
                     f"if [ -x {SET_VOLUME_PATH} ]; then "
                     f"sh {SET_VOLUME_PATH} {target}; "
                     f"else "

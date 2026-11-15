@@ -71,6 +71,23 @@ run_watcher() {
     aplay -D music_duck -f S16_LE -c 2 -r 48000 -d 1 /dev/zero >/dev/null 2>&1 || true
     unduck_music
 
+    cancel_watchdog() {
+        if [ -n "$watchdog_pid" ]; then
+            kill "$watchdog_pid" 2>/dev/null || true
+            watchdog_pid=""
+        fi
+    }
+
+    start_watchdog() {
+        cancel_watchdog
+        (
+            sleep 25
+            echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Safety watchdog (25s timeout) fired -> restoring music" >> "$logfile"
+            amixer set 'Music' 100% >/dev/null 2>&1 || true
+        ) &
+        watchdog_pid=$!
+    }
+
     # Фоновый сторож взаимного исключения: если Squeezelite начинает играть при активном AirPlay, останавливаем AirPlay
     (
         while true; do
@@ -105,16 +122,13 @@ run_watcher() {
                     send_state "listening"
                     echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice listening -> ducked music & notified Porfiriy" >> "$logfile"
                 fi
-                # Перезапускаем 8-секундный сторожевой таймер автоматического возврата громкости
-                [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
-                ( sleep 8 && amixer set 'Music' 100% >/dev/null 2>&1 ) &
-                watchdog_pid=$!
+                # Перезапускаем аварийный 25-секундный сторожевой таймер
+                start_watchdog
                 ;;
             *alice_ipc_state*state=0*)
                 if [ "$in_dialog" -eq 1 ]; then
                     in_dialog=0
-                    [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
-                    watchdog_pid=""
+                    cancel_watchdog
                     unduck_music
                     send_state "idle"
                     echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice idle -> restored music & notified Porfiriy" >> "$logfile"

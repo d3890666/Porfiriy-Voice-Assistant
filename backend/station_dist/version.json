@@ -1,8 +1,8 @@
 {
-  "version": "1.2.4-porfiriy.16",
+  "version": "1.2.4-porfiriy.17",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Unified Station distribution: Direct hardware ALSA Master amplifier volume binding for Squeezelite, playback controls via Porfiriy, Squeezelite output to music_duck with instant hardware ducking",
+  "description": "Unified Station distribution: Balanced voice loudness (+5dB boost for Gemini Live), 25s safety ducking watchdog with clean cancellation, vendor volume auto-sync to level 5",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",
