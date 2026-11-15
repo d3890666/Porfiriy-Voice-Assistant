@@ -1,8 +1,8 @@
 {
-  "version": "1.2.4-porfiriy.17",
+  "version": "1.2.4-porfiriy.18",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Unified Station distribution: Balanced voice loudness (+5dB boost for Gemini Live), 25s safety ducking watchdog with clean cancellation, vendor volume auto-sync to level 5",
+  "description": "Unified Station distribution: Fix Squeezelite mmap_commit error on ducking (-a :::0), balanced voice loudness, 25s safety ducking watchdog with clean cancellation, vendor volume auto-sync to level 5",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",

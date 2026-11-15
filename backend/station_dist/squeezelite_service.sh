@@ -75,7 +75,7 @@ start() {
         vol_args="-O $mixer_dev -V $volume_ctl"
     fi
 
-    nohup "$binary" -s "$server" -o "$output" $vol_args -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
+    nohup "$binary" -s "$server" -o "$output" $vol_args -a ":::0" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
     echo $! > "$pidfile"
 
     sleep 1
@@ -86,7 +86,7 @@ start() {
 
     # Retry once after 2 seconds if first attempt failed (e.g. sound card busy during boot)
     sleep 2
-    nohup "$binary" -s "$server" -o "$output" $vol_args -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
+    nohup "$binary" -s "$server" -o "$output" $vol_args -a ":::0" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &
     echo $! > "$pidfile"
 
     sleep 1
