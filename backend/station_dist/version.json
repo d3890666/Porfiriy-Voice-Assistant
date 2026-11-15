@@ -1,8 +1,8 @@
 {
-  "version": "1.2.4-porfiriy.14",
+  "version": "1.2.4-porfiriy.15",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Unified Station distribution: Mutual exclusive playback between AirPlay and Squeezelite (auto pause/stop), fast AirPlay restart, Universal hardware ducking via pcm.music_duck, and Alice state watcher",
+  "description": "Unified Station distribution: Master hardware amplifier volume via Alice/ring, playback controls (pause/stop/play/next) via Porfiriy, Squeezelite output to music_duck with instant -75% hardware ducking",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",

@@ -11,7 +11,7 @@ envfile="$base/squeezelite.env"
 def_server=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "192.168.1.50")
 server="${SQUEEZELITE_SERVER:-$def_server}"
 def_output="default"
-if aplay -L 2>/dev/null | grep -q "music_duck"; then
+if grep -q "pcm.music_duck" /etc/asound.conf 2>/dev/null; then
     def_output="music_duck"
 fi
 output="${SQUEEZELITE_OUTPUT:-$def_output}"

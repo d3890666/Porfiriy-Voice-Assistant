@@ -1,5 +1,16 @@
 # Журнал изменений (Changelog)
 
+## 0.0.140
+- **Аппаратный усилитель ALSA Master как единый хозяин громкости и точное разделение команд**:
+  - **Команды громкости ➔ Нативная Алиса (ALSA Master)**: команды «громче», «тише», «потише», «погромче», «громкость 5», «звук 3» и физическое сенсорное кольцо на колонке теперь маршрутизируются в нативную Алису (`route: "yandex"` в `config.json`). Алиса нативно регулирует аппаратный микшер усилителя SY6045S (`Master`). Поскольку усилитель является общим для всех источников, уровень звука AirPlay (iPhone), Squeezelite (Music Assistant), голоса Алисы и голоса Порфирия масштабируется абсолютно синхронно и предсказуемо.
+  - **Команды воспроизведения ➔ Порфирий (`route: "llm"`)**: слова «пауза», «стоп», «хватит», «продолжи», «плей», «следующий», «переключи», «дальше», «назад» исключены из `yandex_system_controls`. Нативный плеер Алисы больше не отвечает «Сейчас ничего не играет», а Порфирий в `OpenAIService._handle_direct_playback_command` мгновенно управляет как плеером Music Assistant в Home Assistant, так и сессией AirPlay на Станции (`stop_station_airplay_if_playing`).
+- **Восстановление аппаратного дакинга (-75%) для Squeezelite**:
+  - Обнаружен и устранен критический баг в `squeezelite_service.sh` и `squeezelite.env`: устройство `music_duck` не определялось через `aplay -L` (так как ALSA требует наличия `hint.description`), из-за чего Squeezelite запускался с `-o default` в обход микшера `Music` и не приглушался во время речи.
+  - В `squeezelite_service.sh` проверка заменена на прямой поиск в `/etc/asound.conf`, в `asound.conf` добавлен блок `hint`, а в `QuasarManager.ensure_server_host_synced` обеспечено автоматическое назначение `SQUEEZELITE_OUTPUT="music_duck"`.
+- **Исправление синтаксической ошибки в `/system/vendor/quasar/set_volume.sh`**:
+  - Заменена генерация через `printf` со знаком `%` на чистую запись через `cat << 'EOF'`, предотвращающая сбой ALSA (`unterminated quoted string`) при вызове скрипта громкости.
+- **Единый дистрибутив Станции `v1.2.4-porfiriy.15`** и синхронизация версий в `config.yaml`, `CHANGELOG.md`, `index.html` (кэш-бастеры) до `0.0.140`.
+
 ## 0.0.139
 - **Взаимное исключение воспроизведения AirPlay и Squeezelite (Music Assistant)**:
   - **AirPlay ➔ Пауза Squeezelite**: при запуске потока с iPhone (`playing=true` / `RTSP RECORD` в логе `station-airplay`) наблюдатель `alice_watcher_service.sh` мгновенно отправляет событие в аддон (`POST /api/station/airplay_state`), а `StationDuckingManager` через Home Assistant API ставит привязанный плеер Squeezelite (`mass_player`) на паузу (`media_player.media_pause`).

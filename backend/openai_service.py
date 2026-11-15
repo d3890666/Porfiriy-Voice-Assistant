@@ -262,39 +262,72 @@ class OpenAIService:
         return dev
 
     async def _handle_direct_playback_command(self, user_text: str, airplay_player: str, dev: Optional[Dict[str, Any]] = None) -> Optional[str]:
-        """Быстрый перехват команд управления плеером (пауза, стоп, дальше, тише/громче)."""
-        if not airplay_player or not self.ha_api:
+        """Быстрый перехват команд управления плеером (пауза, стоп, дальше, продолжить)."""
+        speaker_ip = ""
+        if dev:
+            speaker_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
+            if speaker_ip == "---":
+                speaker_ip = ""
+
+        if not airplay_player and not speaker_ip:
             return None
             
         text_lower = user_text.lower().strip().rstrip(".!?")
 
         # 1. Пауза
-        if text_lower in ["пауза", "поставь на паузу", "на паузу", "сделай паузу", "паузу", "замри"]:
-            await self.ha_api.call_service("media_player", "media_play_pause", {"entity_id": airplay_player})
+        is_pause = (
+            text_lower in ["пауза", "поставь на паузу", "на паузу", "сделай паузу", "паузу", "замри", "приостанови", "пауза музыка"] or
+            bool(re.search(r'\b(пауз[ауе]|приостанов\w*)\b', text_lower))
+        )
+        if is_pause:
+            if speaker_ip and self.quasar_manager:
+                asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
+            if airplay_player and self.ha_api:
+                await self.ha_api.call_service("media_player", "media_play_pause", {"entity_id": airplay_player})
             return "Ставлю на паузу."
 
         # 2. Стоп
-        if text_lower in ["стоп", "останови музыку", "выключи музыку", "хватит", "замолчи", "останови"]:
-            await self.ha_api.call_service("media_player", "media_stop", {"entity_id": airplay_player})
+        is_stop = (
+            text_lower in ["стоп", "останови музыку", "выключи музыку", "хватит", "замолчи", "останови", "стоп музыка", "выруби музыку"] or
+            bool(re.search(r'^(стоп|останови(\s+музыку)?|выключи\s+музыку|хватит|замолчи|выруби\s+музыку)$', text_lower))
+        )
+        if is_stop:
+            if speaker_ip and self.quasar_manager:
+                asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
+            if airplay_player and self.ha_api:
+                await self.ha_api.call_service("media_player", "media_stop", {"entity_id": airplay_player})
             return "Останавливаю воспроизведение."
 
         # 3. Продолжить
-        if text_lower in ["продолжи", "возобнови", "возобнови музыку", "играй дальше", "сними с паузы", "продолжить", "играй", "музыку", "включи музыку", "запусти музыку", "нажми на play", "нажми play", "нажми плей", "плей"]:
-            if dev and self.quasar_manager:
-                speaker_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
-                if speaker_ip and speaker_ip != "---":
-                    asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
-            await self.ha_api.call_service("media_player", "media_play", {"entity_id": airplay_player})
+        is_resume = (
+            text_lower in ["продолжи", "возобнови", "возобнови музыку", "играй дальше", "сними с паузы", "продолжить", "играй", "музыку", "включи музыку", "запусти музыку", "нажми на play", "нажми play", "нажми плей", "плей"] or
+            bool(re.search(r'^(продолжи|возобнови|сними\s+с\s+паузы|нажми\s+(на\s+)?(play|плей)|играй(\s+дальше)?)$', text_lower))
+        )
+        if is_resume:
+            if speaker_ip and self.quasar_manager:
+                asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
+            if airplay_player and self.ha_api:
+                await self.ha_api.call_service("media_player", "media_play", {"entity_id": airplay_player})
             return "Продолжаю воспроизведение."
 
         # 4. Следующий трек
-        if text_lower in ["следующий трек", "следующую", "следующий", "следующая", "дальше", "дальше трек", "переключи трек", "переключи", "пропусти", "скип"]:
-            await self.ha_api.call_service("media_player", "media_next_track", {"entity_id": airplay_player})
+        is_next = (
+            text_lower in ["следующий трек", "следующую", "следующий", "следующая", "дальше", "дальше трек", "переключи трек", "переключи", "пропусти", "скип", "вперед"] or
+            bool(re.search(r'^(следующ\w*(\s+трек)?|дальше|переключи(\s+трек)?|пропусти|скип|вперед)$', text_lower))
+        )
+        if is_next:
+            if airplay_player and self.ha_api:
+                await self.ha_api.call_service("media_player", "media_next_track", {"entity_id": airplay_player})
             return "Включаю следующий трек."
 
         # 5. Предыдущий трек
-        if text_lower in ["предыдущий трек", "предыдущую", "предыдущий", "назад", "прошлый трек"]:
-            await self.ha_api.call_service("media_player", "media_previous_track", {"entity_id": airplay_player})
+        is_prev = (
+            text_lower in ["предыдущий трек", "предыдущую", "предыдущий", "назад", "прошлый трек"] or
+            bool(re.search(r'^(предыдущ\w*(\s+трек)?|назад|прошлый\s+трек)$', text_lower))
+        )
+        if is_prev:
+            if airplay_player and self.ha_api:
+                await self.ha_api.call_service("media_player", "media_previous_track", {"entity_id": airplay_player})
             return "Возвращаю предыдущий трек."
 
         return None

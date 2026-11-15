@@ -637,9 +637,14 @@ class QuasarManager:
                 "mount -o remount,rw / 2>/dev/null && ("
                 f"rm -f {STATION_DUCKING_INIT_PATH}; "
                 f"sed -i 's/playback.pcm \"soft_volume\"/playback.pcm \"dmix_spk_plug\"/' {ASOUND_CONF_PATH} 2>/dev/null || true; "
-                f"if grep -qE 'station_ducking|volume_sync|porfiriy_set_volume' {SET_VOLUME_PATH} 2>/dev/null; then "
-                f"printf '#!/bin/sh\\ntarget=\"${{1:-50}}\"\\ncase \"$target\" in *[!0-9]*|\"\") target=50 ;; esac\\necho \"$target\" > /tmp/quasar_volume\\namixer set \\x27Master\\x27 \"${{target}}%\" >/dev/null 2>&1 || true\\n' > {SET_VOLUME_PATH} && chmod 755 {SET_VOLUME_PATH}; "
-                "fi; "
+                f"cat << 'EOF' > {SET_VOLUME_PATH}\n"
+                "#!/bin/sh\n"
+                'target="${1:-50}"\n'
+                'case "$target" in *[!0-9]*|"") target=50 ;; esac\n'
+                'echo "$target" > /tmp/quasar_volume\n'
+                "amixer set 'Master' \"${target}%\" >/dev/null 2>&1 || true\n"
+                "EOF\n"
+                f"chmod 755 {SET_VOLUME_PATH}; "
                 "sync; mount -o remount,ro / 2>/dev/null || true)"
             )
             await conn.run(cleanup_cmd, check=False)
@@ -681,6 +686,10 @@ class QuasarManager:
                 "  }\n"
                 "  min_dB -50.0\n"
                 "  max_dB 0.0\n"
+                "  hint {\n"
+                "    show on\n"
+                "    description \"Music with hardware ducking\"\n"
+                "  }\n"
                 "}\n"
                 "EOF\n"
                 "sync; mount -o remount,ro / 2>/dev/null || true); "
@@ -755,9 +764,14 @@ class QuasarManager:
                 f"    else "
                 f"        echo 'SQUEEZELITE_SERVER=\"{porfiriy_host}\"' >> {SQUEEZELITE_DIR}/squeezelite.env; "
                 f"    fi; "
+                f"    if grep -q 'SQUEEZELITE_OUTPUT' {SQUEEZELITE_DIR}/squeezelite.env; then "
+                f"        sed -i 's/^SQUEEZELITE_OUTPUT=.*/SQUEEZELITE_OUTPUT=\"music_duck\"/' {SQUEEZELITE_DIR}/squeezelite.env; "
+                f"    else "
+                f"        echo 'SQUEEZELITE_OUTPUT=\"music_duck\"' >> {SQUEEZELITE_DIR}/squeezelite.env; "
+                f"    fi; "
                 f"else "
                 f"    echo 'SQUEEZELITE_SERVER=\"{porfiriy_host}\"' > {SQUEEZELITE_DIR}/squeezelite.env && "
-                f"    echo 'SQUEEZELITE_OUTPUT=\"default\"' >> {SQUEEZELITE_DIR}/squeezelite.env && "
+                f"    echo 'SQUEEZELITE_OUTPUT=\"music_duck\"' >> {SQUEEZELITE_DIR}/squeezelite.env && "
                 f"    echo 'SQUEEZELITE_NAME=\"Яндекс Станция\"' >> {SQUEEZELITE_DIR}/squeezelite.env; "
                 f"fi"
             )
@@ -866,10 +880,13 @@ class QuasarManager:
             logger.warning(f"[QUASAR] Could not install alice-watcher: {e}")
             return False
 
-    async def _route_volume_to_llm(self, conn) -> None:
+    async def _configure_routing_rules(self, conn) -> None:
         """
-        Убирает слова управления громкостью из yandex_system_controls в config.json,
-        чтобы команды «громкость 4», «потише», «погромче» шли на Порфирий (в Music Assistant).
+        Настраивает правила маршрутизации в /data/opt/quasar-bridge/config.json:
+        - Команды громкости («громче», «тише», «потише», «погромче», «громкость», «звук») отдаются нативной Алисе (route: "yandex"),
+          так как она аппаратно регулирует ALSA Master усилитель Станции, масштабируя AirPlay, Squeezelite и голос синхронно.
+        - Команды воспроизведения («пауза», «стоп», «хватит», «продолжи», «дальше», «назад», «следующий», «предыдущий», «плей», «играй»)
+          удаляются из yandex_system_controls, чтобы уходить в Порфирий (route: "llm"), который управляет Squeezelite и AirPlay.
         """
         try:
             read_res = await conn.run(f"cat {QUASAR_CONFIG_PATH}", check=False)
@@ -881,21 +898,28 @@ class QuasarManager:
             if not sys_rule:
                 return
 
-            vol_stems = ("громк", "тиш", "звук", "прибав", "убав", "volume")
-            match = sys_rule.get("match", {})
-            changed = False
-            if isinstance(match.get("contains_any"), list):
-                filtered = [w for w in match["contains_any"] if not any(vs in str(w).lower() for vs in vol_stems)]
-                if len(filtered) != len(match["contains_any"]):
-                    match["contains_any"] = filtered
-                    changed = True
+            playback_stems = ("пауз", "стоп", "хватит", "продолж", "дальш", "назад", "следующ", "предыдущ", "плей", "играй", "переключ", "скип")
+            target_words = ["громче", "тише", "потише", "погромче", "громкость", "звук", "погода", "погоду"]
 
-            if changed:
+            match = sys_rule.get("match", {})
+            current_words = match.get("contains_any", [])
+            if not isinstance(current_words, list):
+                current_words = []
+
+            # Очищаем от команд воспроизведения (они должны обрабатываться Порфирием)
+            filtered = [w for w in current_words if not any(ps in str(w).lower() for ps in playback_stems)]
+            # Гарантируем наличие команд регулировки аппаратной громкости и погоды
+            for tw in target_words:
+                if tw not in filtered:
+                    filtered.append(tw)
+
+            if set(filtered) != set(current_words):
+                match["contains_any"] = filtered
                 new_json = json.dumps(cfg, indent=2, ensure_ascii=False).replace("'", "'\\''")
                 await conn.run(f"echo '{new_json}' > {QUASAR_CONFIG_PATH}", check=False)
-                logger.info("[QUASAR] Routed voice volume keywords from yandex_system_controls to Porfiriy (LLM)")
+                logger.info("[QUASAR] Configured routing rules: volume -> yandex (ALSA Master), playback -> Porfiriy (LLM)")
         except Exception as e:
-            logger.warning(f"[QUASAR] Could not update volume routing in config.json: {e}")
+            logger.warning(f"[QUASAR] Could not update routing rules in config.json: {e}")
 
     async def update_station(self, ip: str, port: int = DEFAULT_SSH_PORT, server_ip: Optional[str] = None, openai_port: int = 8000) -> Dict[str, Any]:
         """
@@ -905,7 +929,7 @@ class QuasarManager:
         - Загружает обновленный бинарник из station_dist/bin/ (если присутствует)
         - Синхронизирует актуальный IP сервера в runtime.env, squeezelite.env и porfiriy_host
         - Обновляет службу и автозапуск Squeezelite, Station AirPlay и Alice Watcher
-        - Переводит голосовые команды громкости на Порфирий (в Music Assistant)
+        - Настраивает маршрутизацию: громкость на Алису (ALSA Master), управление воспроизведением на Порфирий
         - Выполняет валидацию конфигурации -check-config и перезапускает службы
         """
         if not ip or ip == "---":
@@ -943,8 +967,8 @@ class QuasarManager:
                 # 5. Синхронизируем актуальный IP сервера во всех env-файлах колонки
                 synced_host = await self.ensure_server_host_synced(conn, server_ip=server_ip, openai_port=openai_port)
 
-                # 6. Переводим команды громкости с Алисы на Порфирий (Music Assistant)
-                await self._route_volume_to_llm(conn)
+                # 6. Настраиваем разделение маршрутизации: громкость на Алису (ALSA Master), плеер на Порфирий
+                await self._configure_routing_rules(conn)
 
                 # 7. Обновляем и страхуем службу Squeezelite
                 await self.ensure_squeezelite_installed(conn)

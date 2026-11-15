@@ -46,6 +46,17 @@
 *   **Выбор модели**: НИКОГДА не предлагайте пользователю поменять модель Gemini на другую (например, не предлагайте перейти с `gemini-2.5-flash-native-audio-preview` на `gemini-2.0`). Знания ИИ ограничены старыми датами, а пользователь тестирует новейшие экспериментальные модели, которые еще не описаны в документации агента. Проблема всегда должна решаться в рамках текущей модели.
 *   **Прошивка ESP32**: Пользователь шьет плату на **другом компьютере** через веб-интерфейс, используя готовый файл `firmware.bin`. Поэтому агент должен просто сообщать о том, что файл скомпилирован (в папке `.pio/build/.../firmware.bin`), и не пытаться запускать команды типа `pio run -t upload` самостоятельно.
 
+### Версия 0.0.140 (Hardware Master Volume via Alice & Fast Playback Controls via Porfiriy)
+*   **Аппаратный усилитель ALSA Master как единый хозяин громкости**:
+    - **Команды громкости ➔ Алиса (`route: "yandex"`)**: Команды изменения громкости («громче», «тише», «потише», «погромче», «громкость 5», «звук 3») и сенсорное кольцо колонки обрабатываются нативно Алисой. Алиса регулирует аппаратный микшер усилителя SY6045S (`Master`). Поскольку усилитель является общим, уровень звука AirPlay (iPhone), Squeezelite (Music Assistant), Алисы и Порфирия масштабируется абсолютно синхронно и пропорционально.
+    - **Команды воспроизведения ➔ Порфирий (`route: "llm"`)**: Слова «пауза», «стоп», «хватит», «продолжи», «плей», «следующий», «переключи», «дальше», «назад» исключены из `yandex_system_controls`. Внутренний плеер Алисы больше не отвечает «Сейчас ничего не играет», а Порфирий в `OpenAIService._handle_direct_playback_command` мгновенно ставит на паузу или возобновляет воспроизведение и в Music Assistant, и в AirPlay (`stop_station_airplay_if_playing`).
+*   **Восстановление аппаратного авто-дакинга (-75%) для Squeezelite**:
+    - Устранена ошибка определения устройства `music_duck` в `squeezelite_service.sh` (заменена неработающая проверка `aplay -L` на прямой поиск `pcm.music_duck` в `/etc/asound.conf`, добавлен блок `hint` в ALSA-конфигурацию).
+    - В `QuasarManager.ensure_server_host_synced` обеспечено автоматическое назначение `SQUEEZELITE_OUTPUT="music_duck"`.
+*   **Исправление скрипта громкости `/system/vendor/quasar/set_volume.sh`**:
+    - Заменена генерация через `printf` с символом `%` на надежный heredoc `cat << 'EOF'`, предотвращающая сбой ALSA (`unterminated quoted string`).
+*   Дистрибутив Станции `v1.2.4-porfiriy.15`, версии в `config.yaml`, `CHANGELOG.md` и `index.html` (кэш-бастеры) синхронизированы до `0.0.140`.
+
 ### Версия 0.0.139 (Mutual Exclusive Playback: AirPlay <-> Squeezelite Auto-Pause)
 *   **Взаимное исключение воспроизведения AirPlay и Squeezelite (Music Assistant)**:
     - **AirPlay ➔ Пауза Squeezelite**: `alice_watcher_service.sh` при начале AirPlay (`alice_airplay_state playing=true` / `RTSP RECORD`) отправляет `POST /api/station/airplay_state`, и `StationDuckingManager` вызывает `media_player.media_pause` на привязанном плеере `mass_player`.
