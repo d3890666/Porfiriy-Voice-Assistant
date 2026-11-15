@@ -910,7 +910,7 @@ class WebServer:
             return
 
         opts = self.options_callback() if self.options_callback else {}
-        for dev in self.device_manager.get_devices():
+        for dev in self.device_manager.get_all_devices():
             if dev.get("device_type") == "yandex_station":
                 player = StationDuckingManager.resolve_station_player(dev, opts)
                 if player and player == entity_id:

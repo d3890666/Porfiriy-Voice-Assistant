@@ -41,7 +41,7 @@ class StationDuckingManager:
             ip = ip[7:]
         if not ip or not self.device_manager:
             return None
-        for dev in self.device_manager.get_devices():
+        for dev in self.device_manager.get_all_devices():
             dev_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
             if dev_ip and dev_ip == ip:
                 return dev

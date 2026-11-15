@@ -80,13 +80,21 @@ class QuasarManager:
                     f"amixer set 'Master' '{target}%' >/dev/null 2>&1 || true; "
                     f"fi"
                 )
-                try:
-                    async with await self._open_ssh_connection(ip, port, timeout=2.5) as conn:
-                        await conn.run(cmd, check=False)
-                    last_applied = target
-                    logger.info(f"[QUASAR] Synced hardware voice volume to {target}% on station {ip}:{port} (mac={mac})")
-                except Exception as e_ssh:
-                    logger.warning(f"[QUASAR] Error setting hardware volume on station {ip}:{port}: {e_ssh}")
+                success = False
+                for attempt in range(2):
+                    try:
+                        async with await self._open_ssh_connection(ip, port, timeout=3.0) as conn:
+                            await conn.run(cmd, check=False)
+                        last_applied = target
+                        logger.info(f"[QUASAR] Synced hardware voice volume to {target}% on station {ip}:{port} (mac={mac})")
+                        success = True
+                        break
+                    except Exception as e_ssh:
+                        if attempt == 0:
+                            await asyncio.sleep(0.5)
+                        else:
+                            logger.warning(f"[QUASAR] Error setting hardware volume on station {ip}:{port}: {e_ssh}")
+                if not success:
                     break
 
                 # Если пока выполнялась команда, целевой уровень не менялся — завершаем

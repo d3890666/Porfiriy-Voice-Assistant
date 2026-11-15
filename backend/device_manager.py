@@ -425,6 +425,10 @@ class DeviceManager:
             result.append(dev_copy)
         return result
 
+    def get_devices(self) -> List[Dict[str, Any]]:
+        """Возвращает список всех зарегистрированных устройств (псевдоним для get_all_devices)."""
+        return self.get_all_devices()
+
     async def send_command(self, mac: str, command: Dict[str, Any]) -> bool:
         """Отправка JSON-команды на подключенное устройство по WebSocket."""
         clean_mac = mac.strip().lower()
