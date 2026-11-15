@@ -247,18 +247,26 @@ function renderDevicesGrid() {
               ▶ Ответ Gemini
             </button>
           </div>
-        ` : dev.device_type === 'yandex_station' ? `
-          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
-            <div style="display: flex; align-items: center; gap: 8px;">
+        ` : dev.device_type === 'yandex_station' ? (() => {
+          checkStationVersionInBackground(dev.mac);
+          const currentVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
+          const targetVer = dev.target_firmware || '1.2.4-porfiriy.12';
+          const hasUpdate = dev.has_update !== false && (!currentVer || currentVer !== targetVer);
+          return `
+          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
               <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
-              <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge Porfiriy Edition">
-                v1.2.4-porfiriy.11
+              <span id="quasar-ver-badge-${dev.mac}" class="fw-badge ${hasUpdate ? 'fw-update-available' : 'fw-up-to-date'}" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge Porfiriy Edition">
+                <strong>${currentVer ? `v${escapeHtml(currentVer)}` : 'v1.2.3'}</strong>
+                ${hasUpdate ? `<span class="ota-device-badge" title="Доступен новый пакет v${targetVer}">➔ v${targetVer}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
               </span>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH с перепривязкой IP">
-              ⚡ Обновить Quasar
+            <button id="quasar-update-btn-${dev.mac}" class="btn btn-sm ${hasUpdate ? 'quasar-update-btn-needed' : 'btn-secondary'}" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 4px 10px; border-radius: 6px;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH с перепривязкой IP">
+              ${hasUpdate ? `⚡ Обновить (v${targetVer})` : `✓ Quasar v${currentVer || targetVer}`}
             </button>
           </div>
+          `;
+        })() : `
           <!-- Players bar: Squeezelite & AirPlay -->
           <div style="margin: 8px 0 4px 0; display: flex; flex-direction: column; gap: 6px;">
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
@@ -348,7 +356,20 @@ function renderDevicesGrid() {
                 ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая прошивка v${dev.target_firmware}">➔ v${dev.target_firmware}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
               </span>
             </div>
-          ` : ''}
+          ` : dev.device_type === 'yandex_station' ? (() => {
+            const curVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
+            const tgtVer = dev.target_firmware || '1.2.4-porfiriy.12';
+            const needsUp = dev.has_update !== false && (!curVer || curVer !== tgtVer);
+            return `
+            <div style="grid-column: 1 / -1; display: flex; align-items: center; gap: 6px;">
+              <span>Пакет Станции:</span>
+              <span class="fw-badge ${needsUp ? 'fw-update-available' : 'fw-up-to-date'}">
+                <strong>v${escapeHtml(curVer || '1.2.3')}</strong>
+                ${needsUp ? `<span class="ota-device-badge" title="Доступен новый пакет ${tgtVer}">➔ ${tgtVer}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
+              </span>
+            </div>
+            `;
+          })() : ''}
         </div>
 
         ${dev.ota_status && dev.ota_status !== 'error' ? `
@@ -2297,12 +2318,47 @@ async function editDeviceIp(mac) {
 }
 window.editDeviceIp = editDeviceIp;
 
+const quasarVersionChecked = {};
+
+function checkStationVersionInBackground(mac) {
+  if (!mac || quasarVersionChecked[mac]) return;
+  quasarVersionChecked[mac] = true;
+  fetch(`${API_BASE}/api/quasar/version?mac=${encodeURIComponent(mac)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data && data.success) {
+        const d = devices.find(x => x.mac === mac);
+        if (d) {
+          const changed = (d.firmware !== data.installed_version || d.has_update !== data.has_update);
+          d.firmware = data.installed_version;
+          d.target_firmware = data.bundled_version;
+          d.has_update = data.has_update;
+          if (data.squeezelite_running !== undefined) d.squeezelite_running = data.squeezelite_running;
+          if (data.airplay_running !== undefined) d.airplay_running = data.airplay_running;
+          if (changed) renderDevicesGrid();
+        }
+      }
+    })
+    .catch(() => {});
+}
+window.checkStationVersionInBackground = checkStationVersionInBackground;
+
 async function updateQuasarComponents(mac) {
   const dev = devices.find(x => x.mac === mac);
   const ip = dev?.ip || dev?.config?.ip || '';
-  if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition по SSH с авто-привязкой IP сервера?`)) {
+  const targetVer = dev?.target_firmware || '1.2.4-porfiriy.12';
+  if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition (${targetVer}) по SSH с авто-привязкой IP сервера?`)) {
     return;
   }
+
+  const btn = document.getElementById(`quasar-update-btn-${mac}`);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Обновление по SSH...';
+    btn.classList.remove('quasar-update-btn-needed');
+    btn.style.opacity = '0.7';
+  }
+
   showToast('Подключение по SSH и обновление пакета на Станции...');
   try {
     const res = await fetch(`${API_BASE}/api/quasar/update`, {
@@ -2312,17 +2368,36 @@ async function updateQuasarComponents(mac) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Компоненты Quasar успешно обновлены до ${data.version}! Привязан сервер ${data.server_ip || 'auto'}`);
+      showToast(`Пакет Станции успешно обновлен до ${data.version || targetVer}!`);
       if (dev) {
+        dev.firmware = data.version || targetVer;
+        dev.target_firmware = data.version || targetVer;
+        dev.has_update = false;
+        dev.config = dev.config || {};
+        dev.config.quasar_version = data.version || targetVer;
         if (data.squeezelite_running !== undefined) dev.squeezelite_running = data.squeezelite_running;
         if (data.airplay_running !== undefined) dev.airplay_running = data.airplay_running;
       }
+      quasarVersionChecked[mac] = false;
+      renderDevicesGrid();
       fetchDevices();
     } else {
       showToast(`Ошибка обновления: ${data.error || 'сбой'}`, true);
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `⚡ Обновить (v${targetVer})`;
+        btn.classList.add('quasar-update-btn-needed');
+        btn.style.opacity = '1';
+      }
     }
   } catch (err) {
     showToast('Сетевая ошибка при обновлении Quasar', true);
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `⚡ Обновить (v${targetVer})`;
+      btn.classList.add('quasar-update-btn-needed');
+      btn.style.opacity = '1';
+    }
   }
 }
 window.updateQuasarComponents = updateQuasarComponents;

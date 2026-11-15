@@ -1021,4 +1021,19 @@ body {
   border-radius: 4px;
 }
 
+.quasar-update-btn-needed {
+  background: linear-gradient(135deg, #f59e0b, #ef4444) !important;
+  color: #ffffff !important;
+  font-weight: 700 !important;
+  border: 1px solid rgba(245, 158, 11, 0.9) !important;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.5) !important;
+  animation: pulse-glow-amber 1.8s infinite alternate !important;
+  cursor: pointer;
+}
+
+@keyframes pulse-glow-amber {
+  0% { box-shadow: 0 0 6px rgba(245, 158, 11, 0.4); }
+  100% { box-shadow: 0 0 16px rgba(239, 68, 68, 0.85); transform: translateY(-1px); }
+}
+
 

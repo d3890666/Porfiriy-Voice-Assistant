@@ -216,7 +216,10 @@ class WebServer:
             except Exception:
                 pass
         
-        # Обновляем имя комнат и текущую громкость плеера для Станций
+        # Обновляем имя комнат, версию прошивки и текущую громкость плеера для Станций
+        bundled_quasar_info = self.quasar_manager.get_bundled_version_info()
+        bundled_quasar_ver = bundled_quasar_info.get("version", "1.2.4-porfiriy.12")
+
         for d in devices:
             if not d.get("area_name") and self.ha_api:
                 area_name = await self.ha_api.get_device_area_name(d["mac"])
@@ -224,15 +227,21 @@ class WebServer:
                     d["area_name"] = area_name
                     self.device_manager.set_device_area(d["mac"], area_name)
             if d.get("device_type") == "yandex_station":
+                d["target_firmware"] = bundled_quasar_ver
+                cfg = d.setdefault("config", {})
+                installed_ver = d.get("firmware") or cfg.get("quasar_version") or ""
+                d["firmware"] = installed_ver
+                d["has_update"] = bool(not installed_ver or installed_ver != bundled_quasar_ver)
+
                 saved_vol = self.ducking_manager.get_saved_volume(d["mac"])
                 if saved_vol is not None:
-                    d.setdefault("config", {})["speaker_volume"] = saved_vol
+                    cfg["speaker_volume"] = saved_vol
                 else:
                     player = StationDuckingManager.resolve_station_player(d, opts)
                     st = states_by_id.get(player)
                     vol_lvl = st.get("attributes", {}).get("volume_level") if isinstance(st, dict) else None
                     if vol_lvl is not None:
-                        d.setdefault("config", {})["speaker_volume"] = round(float(vol_lvl), 2)
+                        cfg["speaker_volume"] = round(float(vol_lvl), 2)
                     
         return web.json_response({"devices": devices})
 
@@ -761,6 +770,16 @@ class WebServer:
             })
 
         res = await self.quasar_manager.get_version_info(ip, port)
+        if res.get("success") and mac:
+            dev = self.device_manager.get_device(mac)
+            if dev:
+                inst_ver = res.get("installed_version", "")
+                if inst_ver:
+                    dev["firmware"] = inst_ver
+                    dev.setdefault("config", {})["quasar_version"] = inst_ver
+                    dev["target_firmware"] = res.get("bundled_version", "")
+                    dev["has_update"] = res.get("has_update", False)
+                    self.device_manager.save_devices()
         status_code = 200 if res.get("success") else 400
         return web.json_response(res, status=status_code)
 
@@ -781,8 +800,15 @@ class WebServer:
             res = await self.quasar_manager.update_station(ip, port, server_ip=server_ip, openai_port=openai_port)
             if mac and res.get("success"):
                 dev = self.device_manager.get_device(mac)
-                if dev and dev.get("ip") != ip:
-                    dev["ip"] = ip
+                if dev:
+                    if dev.get("ip") != ip:
+                        dev["ip"] = ip
+                    new_ver = res.get("version", "")
+                    if new_ver:
+                        dev["firmware"] = new_ver
+                        dev["target_firmware"] = new_ver
+                        dev.setdefault("config", {})["quasar_version"] = new_ver
+                        dev["has_update"] = False
                     self.device_manager.save_devices()
                     self.device_manager._notify("registered", dev)
 
