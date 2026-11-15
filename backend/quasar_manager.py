@@ -510,6 +510,9 @@ class QuasarManager:
             else:
                 await conn.run(f"chmod 755 {STATION_AIRPLAY_SERVICE_PATH} 2>/dev/null || true", check=False)
 
+            # Направляем вывод Station AirPlay в виртуальный микшер music_duck
+            await conn.run(f"echo 'music_duck' > {STATION_AIRPLAY_DIR}/device", check=False)
+
             # 3. Проверяем наличие неблокирующего автозапуска в /etc/init.d/S98station-airplay
             hook_check = await conn.run(f"grep -q 'Station AirPlay autostart hook' {STATION_AIRPLAY_INIT_PATH} 2>/dev/null && echo 'ok'", check=False)
             if hook_check.exit_status != 0 or hook_check.stdout.strip() != "ok":
@@ -617,6 +620,50 @@ class QuasarManager:
             await conn.run(cleanup_cmd, check=False)
         except Exception as e:
             logger.warning(f"[QUASAR] Legacy volume/ducking cleanup warning: {e}")
+
+    async def ensure_asound_music_duck(self, conn) -> bool:
+        """
+        Настраивает виртуальное ALSA устройство music_duck (type softvol) в /etc/asound.conf.
+        Через него выводят звук Squeezelite и Station AirPlay, что позволяет независимо
+        и аппаратно приглушать любую музыку на время диалога без влияния на голос Алисы/Порфирия.
+        """
+        try:
+            check = await conn.run("grep -q 'pcm.music_duck' /etc/asound.conf 2>/dev/null && echo 'ok'", check=False)
+            if check.exit_status == 0 and check.stdout.strip() == "ok":
+                return True
+
+            logger.info("[QUASAR] Configuring ALSA /etc/asound.conf with pcm.music_duck (softvol)...")
+            asound_block = (
+                "\\n"
+                "ctl.Music {\\n"
+                "  type hw\\n"
+                "  card 0\\n"
+                "}\\n"
+                "\\n"
+                "pcm.music_duck {\\n"
+                "  type softvol\\n"
+                "  slave.pcm \\\"dmix_spk_plug\\\"\\n"
+                "  control {\\n"
+                "    name \\\"Music\\\"\\n"
+                "    card 0\\n"
+                "  }\\n"
+                "  min_dB -50.0\\n"
+                "  max_dB 0.0\\n"
+                "}\\n"
+            )
+            asound_cmd = (
+                "mount -o remount,rw / 2>/dev/null && ("
+                f"grep -q 'pcm.music_duck' /etc/asound.conf || printf '{asound_block}' >> /etc/asound.conf; "
+                "sync; mount -o remount,ro / 2>/dev/null || true); "
+                "aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true; "
+                "amixer set 'Music' 100% >/dev/null 2>&1 || true"
+            )
+            await conn.run(asound_cmd, check=False)
+            logger.info("[QUASAR] ALSA music_duck softvol configured successfully")
+            return True
+        except Exception as e:
+            logger.warning(f"[QUASAR] Could not configure asound.conf music_duck: {e}")
+            return False
 
     @staticmethod
     def _is_routable_lan_ip(host: str) -> bool:
@@ -860,6 +907,9 @@ class QuasarManager:
 
                 # 4. Выпиливаем старый локальный ALSA auto-ducking / volume_sync / soft_volume
                 await self._cleanup_legacy_volume_ducking(conn)
+
+                # 4.5. Настраиваем виртуальный ALSA микшер music_duck для аппаратного дакинга AirPlay и Squeezelite
+                await self.ensure_asound_music_duck(conn)
 
                 # 5. Синхронизируем актуальный IP сервера во всех env-файлах колонки
                 synced_host = await self.ensure_server_host_synced(conn, server_ip=server_ip, openai_port=openai_port)

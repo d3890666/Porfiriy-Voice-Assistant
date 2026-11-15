@@ -76,6 +76,13 @@ class StationDuckingManager:
         if not st or not st.get("active"):
             return
 
+        if st.get("hardware_ducked"):
+            st["active"] = False
+            st["speech_arrived"] = False
+            self._cancel_watchdog(mac)
+            logger.info(f"[SERVER DUCKING] Hardware unduck active on station for {mac} ({reason})")
+            return
+
         player = st.get("player")
         orig_vol = st.get("original_volume")
         st["active"] = False
@@ -114,6 +121,21 @@ class StationDuckingManager:
             existing = self._states.get(mac)
             if existing and existing.get("active"):
                 return {"success": True, "action": "already_ducked", "player": player}
+
+            self._cancel_watchdog(mac)
+
+            # Яндекс Станция выполняет дакинг аппаратно на ALSA music_duck (для AirPlay и Squeezelite с задержкой 0 мс)
+            if dev.get("device_type") == "yandex_station":
+                self._states[mac] = {
+                    "active": True,
+                    "player": player,
+                    "original_volume": None,
+                    "speech_arrived": False,
+                    "watchdog_task": None,
+                    "hardware_ducked": True,
+                }
+                logger.info(f"[SERVER DUCKING] Alice active on {mac}: hardware ducking handled locally on station via music_duck (AirPlay + Squeezelite)")
+                return {"success": True, "action": "station_hardware_ducked", "player": player}
 
             entity_state = await self.ha_api.get_entity_state(player)
             if not isinstance(entity_state, dict) or entity_state.get("state") != "playing":

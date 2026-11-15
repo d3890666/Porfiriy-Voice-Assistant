@@ -39,8 +39,17 @@ case "${1:-status}" in
   wait_network || true
   name=$(cat "$base/name")
   iface=$(cat "$base/interface" 2>/dev/null || echo "")
-  device=$(cat "$base/device" 2>/dev/null || echo "default")
+  def_device="default"
+  if aplay -L 2>/dev/null | grep -q "music_duck"; then
+    def_device="music_duck"
+  fi
+  device=$(cat "$base/device" 2>/dev/null || echo "$def_device")
+  [ "$device" = "default" ] && [ "$def_device" = "music_duck" ] && device="music_duck"
   aplay=$(cat "$base/aplay" 2>/dev/null || echo "")
+  if [ "$device" = "music_duck" ]; then
+    aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true
+    amixer set 'Music' 100% >/dev/null 2>&1 || true
+  fi
   # A failing library/config preflight must fail start before reporting a PID.
   "$binary" -check -name "$name" -interface "$iface" -device "$device" -aplay "$aplay" -data-dir "$base/state"
   nohup "$binary" -name "$name" -interface "$iface" -device "$device" -aplay "$aplay" -data-dir "$base/state" </dev/null >>"$base/receiver.log" 2>&1 &

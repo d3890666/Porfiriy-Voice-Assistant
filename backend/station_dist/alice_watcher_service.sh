@@ -41,26 +41,49 @@ running() {
     return 1
 }
 
+duck_music() {
+    amixer set 'Music' 25% >/dev/null 2>&1 || true
+    echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Ducked Music mixer to 25%" >> "$logfile"
+}
+
+unduck_music() {
+    amixer set 'Music' 100% >/dev/null 2>&1 || true
+    echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Restored Music mixer to 100%" >> "$logfile"
+}
+
 run_watcher() {
     mkdir -p "$(dirname "$airplay_log")"
     touch "$airplay_log"
     echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice state watcher started" >> "$logfile"
     in_dialog=0
+    watchdog_pid=""
+
+    # Гарантируем регистрацию и начальный уровень 100% для виртуального микшера Music
+    aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true
+    unduck_music
 
     tail -n 0 -F "$airplay_log" 2>/dev/null | while IFS= read -r line; do
         case "$line" in
-            *alice_ipc_state*state=1*)
+            *alice_ipc_state*state=1*|*alice_ipc_state*state=2*|*alice_ipc_state*state=3*)
                 if [ "$in_dialog" -eq 0 ]; then
                     in_dialog=1
+                    duck_music
                     send_state "listening"
-                    echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice listening -> notified Porfiriy" >> "$logfile"
+                    echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice listening -> ducked music & notified Porfiriy" >> "$logfile"
                 fi
+                # Перезапускаем 8-секундный сторожевой таймер автоматического возврата громкости
+                [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
+                ( sleep 8 && amixer set 'Music' 100% >/dev/null 2>&1 ) &
+                watchdog_pid=$!
                 ;;
             *alice_ipc_state*state=0*)
                 if [ "$in_dialog" -eq 1 ]; then
                     in_dialog=0
+                    [ -n "$watchdog_pid" ] && kill "$watchdog_pid" 2>/dev/null || true
+                    watchdog_pid=""
+                    unduck_music
                     send_state "idle"
-                    echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice idle -> notified Porfiriy" >> "$logfile"
+                    echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Alice idle -> restored music & notified Porfiriy" >> "$logfile"
                 fi
                 ;;
         esac
@@ -98,9 +121,11 @@ stop() {
             kill -9 "$pid" 2>/dev/null || true
         fi
         rm -f "$pidfile"
+        unduck_music
         echo "Alice Watcher stopped"
     else
         rm -f "$pidfile"
+        unduck_music
         echo "Alice Watcher not running"
     fi
 }

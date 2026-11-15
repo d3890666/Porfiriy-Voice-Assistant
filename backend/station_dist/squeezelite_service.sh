@@ -10,7 +10,11 @@ envfile="$base/squeezelite.env"
 
 def_server=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "192.168.1.50")
 server="${SQUEEZELITE_SERVER:-$def_server}"
-output="${SQUEEZELITE_OUTPUT:-default}"
+def_output="default"
+if aplay -L 2>/dev/null | grep -q "music_duck"; then
+    def_output="music_duck"
+fi
+output="${SQUEEZELITE_OUTPUT:-$def_output}"
 name="${SQUEEZELITE_NAME:-Яндекс Станция}"
 buffers="${SQUEEZELITE_BUFFERS:-2048:3445}"
 close_timeout="${SQUEEZELITE_CLOSE_TIMEOUT:-2}"
@@ -56,6 +60,12 @@ start() {
 
     # Wait for network if starting at boot
     wait_network || true
+
+    # Гарантируем регистрацию softvol Music микшера
+    if [ "$output" = "music_duck" ]; then
+        aplay -D music_duck -d 1 /dev/zero >/dev/null 2>&1 || true
+        amixer set 'Music' 100% >/dev/null 2>&1 || true
+    fi
 
     # Start squeezelite
     nohup "$binary" -s "$server" -o "$output" -n "$name" -C "$close_timeout" -K -b "$buffers" >>"$logfile" 2>&1 &

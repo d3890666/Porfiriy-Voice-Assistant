@@ -1,8 +1,8 @@
 {
-  "version": "1.2.4-porfiriy.11",
+  "version": "1.2.4-porfiriy.12",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
-  "description": "Unified Station distribution: Auto server IP sync across runtime.env, squeezelite.env and porfiriy_host, Native WebSocket audio streaming, Squeezelite, Station AirPlay and Alice state watcher for server-side HA ducking",
+  "description": "Unified Station distribution: Universal ALSA hardware ducking via pcm.music_duck (AirPlay + Squeezelite), Auto server IP sync, Native WebSocket audio streaming, and Alice state watcher",
   "bundled_components": [
     "quasar-bridge",
     "squeezelite",
@@ -23,6 +23,7 @@
     "squeezelite_music_assistant",
     "station_airplay_music_assistant",
     "server_side_ha_ducking",
-    "auto_server_host_sync"
+    "auto_server_host_sync",
+    "universal_hardware_ducking_music_duck"
   ]
 }
