@@ -51,6 +51,9 @@ running() {
 }
 
 duck_music() {
+    if [ -f /data/opt/disable_ducking ] || [ -f /tmp/disable_ducking ]; then
+        return 0
+    fi
     amixer set 'Music' 25% >/dev/null 2>&1 || true
     echo "$(date '+%Y/%m/%d %H:%M:%S') [WATCHER] Ducked Music mixer to 25%" >> "$logfile"
 }

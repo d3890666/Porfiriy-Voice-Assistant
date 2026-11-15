@@ -652,6 +652,16 @@ class QuasarManager:
                 "#!/bin/sh\n"
                 'target="${1:-50}"\n'
                 'case "$target" in *[!0-9]*|"") target=50 ;; esac\n'
+                'if [ "$target" -ge 1 ] && [ "$target" -le 10 ]; then\n'
+                '    step="$target"\n'
+                '    target=$((target * 10))\n'
+                'else\n'
+                '    step=$((target / 10))\n'
+                '    [ "$step" -lt 1 ] && step=1\n'
+                '    [ "$step" -gt 10 ] && step=10\n'
+                'fi\n'
+                'echo "$step" > /data/quasar/data/last_vendor_volume 2>/dev/null || true\n'
+                'echo "$step" > /bkupgrade/data/quasar/data/last_vendor_volume 2>/dev/null || true\n'
                 'echo "$target" > /tmp/quasar_volume\n'
                 "amixer set 'Master' \"${target}%\" >/dev/null 2>&1 || true\n"
                 "EOF\n"
@@ -805,6 +815,31 @@ class QuasarManager:
                 f"fi"
             )
             await conn.run(sq_cmd, check=False)
+
+            # 2.5 Гарантируем умный set_volume.sh (перевод шагов 1..10 в 10%..100% и синхронизация last_vendor_volume)
+            set_vol_cmd = (
+                f"mount -o remount,rw / 2>/dev/null && ("
+                f"cat << 'EOF' > {SET_VOLUME_PATH}\n"
+                "#!/bin/sh\n"
+                'target="${1:-50}"\n'
+                'case "$target" in *[!0-9]*|"") target=50 ;; esac\n'
+                'if [ "$target" -ge 1 ] && [ "$target" -le 10 ]; then\n'
+                '    step="$target"\n'
+                '    target=$((target * 10))\n'
+                'else\n'
+                '    step=$((target / 10))\n'
+                '    [ "$step" -lt 1 ] && step=1\n'
+                '    [ "$step" -gt 10 ] && step=10\n'
+                'fi\n'
+                'echo "$step" > /data/quasar/data/last_vendor_volume 2>/dev/null || true\n'
+                'echo "$step" > /bkupgrade/data/quasar/data/last_vendor_volume 2>/dev/null || true\n'
+                'echo "$target" > /tmp/quasar_volume\n'
+                "amixer set 'Master' \"${target}%\" >/dev/null 2>&1 || true\n"
+                "EOF\n"
+                f"chmod 755 {SET_VOLUME_PATH}; "
+                "sync; mount -o remount,ro / 2>/dev/null || true)"
+            )
+            await conn.run(set_vol_cmd, check=False)
 
             # 3. /data/opt/quasar-bridge/runtime.env
             llm_url = f"http://{porfiriy_host}:{openai_port}/v1"
