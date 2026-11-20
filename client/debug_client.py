@@ -1,7 +1,10 @@
 import asyncio
 import websockets
 import pyaudio
-import webrtcvad
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
 import argparse
 import logging
 import queue
@@ -24,7 +27,7 @@ class DebugClient:
         self.name = name
         self.no_register = no_register
         self.pya = pyaudio.PyAudio()
-        self.vad = webrtcvad.Vad(3) # Aggressiveness level from 0 to 3
+        self.vad = webrtcvad.Vad(3) if webrtcvad else None # Aggressiveness level from 0 to 3
         self.play_queue = queue.Queue()
         self.is_playing = False
         self.start_time = time.time()
@@ -54,7 +57,7 @@ class DebugClient:
         )
         logger.info("Microphone capturing started (16kHz).")
         
-        silence_chunk = b'\x00' * CHUNK
+        silence_chunk = b'\x00' * (CHUNK * 2)  # 16-bit PCM = 2 bytes per sample
         frames_since_speech = 100 # start muted
         
         while True:
@@ -62,8 +65,8 @@ class DebugClient:
                 # Читаем чанк с микрофона
                 data = await asyncio.to_thread(stream.read, CHUNK, exception_on_overflow=False)
                 
-                # Noise gate: сбрасываем счетчик если есть речь
-                if self.vad.is_speech(data, SEND_RATE):
+                # Noise gate: сбрасываем счетчик если есть речь (или всегда шлём, если webrtcvad не установлен)
+                if self.vad is None or self.vad.is_speech(data, SEND_RATE):
                     frames_since_speech = 0
                 else:
                     frames_since_speech += 1

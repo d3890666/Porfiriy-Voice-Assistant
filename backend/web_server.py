@@ -1,12 +1,13 @@
 from __future__ import annotations
 import os
-import re
 import json
 import asyncio
 import logging
 import aiohttp
 from aiohttp import web
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, Callable, List, Tuple
+
+from config import CANONICAL_PROMPTS, get_addon_version
 
 logger = logging.getLogger("web_server")
 
@@ -29,26 +30,6 @@ try:
     from .station_ducking import StationDuckingManager
 except ImportError:
     from station_ducking import StationDuckingManager
-
-def get_addon_version() -> str:
-    """Считывает актуальную версию аддона напрямую из config.yaml (Single Source of Truth)."""
-    candidates = [
-        "/backend/config.yaml",
-        os.path.join(os.path.dirname(__file__), "config.yaml"),
-        os.path.join(os.path.dirname(__file__), "..", "config.yaml"),
-        "/config.yaml"
-    ]
-    for p in candidates:
-        if os.path.exists(p) and os.path.isfile(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    content = f.read()
-                m = re.search(r'version:\s*["\']?([^"\'\s]+)["\']?', content)
-                if m:
-                    return m.group(1).strip()
-            except Exception as e:
-                logger.debug(f"Error reading {p}: {e}")
-    return "0.0.106"
 
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
@@ -219,7 +200,7 @@ class WebServer:
         
         # Обновляем имя комнат, версию прошивки и текущую громкость плеера для Станций
         bundled_quasar_info = self.quasar_manager.get_bundled_version_info()
-        bundled_quasar_ver = bundled_quasar_info.get("version", "1.2.4-porfiriy.14")
+        bundled_quasar_ver = bundled_quasar_info.get("version", "")
 
         for d in devices:
             if not d.get("area_name") and self.ha_api:
@@ -374,7 +355,10 @@ class WebServer:
             "version": get_addon_version(),
             "options": self._safe_options(opts),
             "models": models,
-            "media_players": media_players
+            "media_players": media_players,
+            "addon_version": get_addon_version(),
+            "bundled_quasar_version": self.quasar_manager.get_bundled_version_info().get("version", ""),
+            "canonical_prompts": CANONICAL_PROMPTS,
         })
 
     async def handle_refresh_models(self, request):
@@ -755,37 +739,61 @@ class WebServer:
             logger.error(f"Error testing route: {e}")
             return web.json_response({"success": False, "error": str(e)}, status=400)
 
+    def _sync_quasar_device_metadata(
+        self,
+        mac: str,
+        *,
+        ip: Optional[str] = None,
+        installed_version: str = "",
+        target_version: str = "",
+        has_update: Optional[bool] = None,
+        res: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Обновляет метаданные карточки Яндекс Станции и уведомляет SSE-клиентов."""
+        if not mac:
+            return
+        dev = self.device_manager.get_device(mac)
+        if not dev:
+            return
+        if ip and dev.get("ip") != ip:
+            dev["ip"] = ip
+        if installed_version:
+            dev["firmware"] = installed_version
+            dev.setdefault("config", {})["quasar_version"] = installed_version
+        if target_version:
+            dev["target_firmware"] = target_version
+        if has_update is not None:
+            dev["has_update"] = has_update
+        if res:
+            if "squeezelite_running" in res:
+                dev["squeezelite_running"] = res["squeezelite_running"]
+            if "airplay_running" in res:
+                dev["airplay_running"] = res["airplay_running"]
+        self.device_manager.notify_device_updated("registered", dev)
+
     async def handle_get_quasar_version(self, request: web.Request) -> web.Response:
         """GET /api/quasar/version?mac=...&ip=..."""
         mac = request.query.get("mac", "")
         ip_query = request.query.get("ip", "")
         ip, port = self._resolve_quasar_target(mac, ip_query)
         if not ip or ip == "---":
-            # Если колонка не найдена в сети, отдаем хотя бы инфо о бандле
             bundled = self.quasar_manager.get_bundled_version_info()
             return web.json_response({
                 "success": False,
                 "error": "IP-адрес колонки не найден",
-                "bundled_version": bundled.get("version", "1.2.4-porfiriy.1"),
+                "bundled_version": bundled.get("version", ""),
                 "bundled_info": bundled
             })
 
         res = await self.quasar_manager.get_version_info(ip, port)
         if res.get("success") and mac:
-            dev = self.device_manager.get_device(mac)
-            if dev:
-                inst_ver = res.get("installed_version", "")
-                if inst_ver:
-                    dev["firmware"] = inst_ver
-                    dev.setdefault("config", {})["quasar_version"] = inst_ver
-                    dev["target_firmware"] = res.get("bundled_version", "")
-                    dev["has_update"] = res.get("has_update", False)
-                    if "squeezelite_running" in res:
-                        dev["squeezelite_running"] = res["squeezelite_running"]
-                    if "airplay_running" in res:
-                        dev["airplay_running"] = res["airplay_running"]
-                    self.device_manager._save()
-                    self.device_manager._notify("registered", dev)
+            self._sync_quasar_device_metadata(
+                mac,
+                installed_version=res.get("installed_version", ""),
+                target_version=res.get("bundled_version", ""),
+                has_update=res.get("has_update", False),
+                res=res,
+            )
         status_code = 200 if res.get("success") else 400
         return web.json_response(res, status=status_code)
 
@@ -805,22 +813,15 @@ class WebServer:
 
             res = await self.quasar_manager.update_station(ip, port, server_ip=server_ip, openai_port=openai_port)
             if mac and res.get("success"):
-                dev = self.device_manager.get_device(mac)
-                if dev:
-                    if dev.get("ip") != ip:
-                        dev["ip"] = ip
-                    new_ver = res.get("version", "")
-                    if new_ver:
-                        dev["firmware"] = new_ver
-                        dev["target_firmware"] = new_ver
-                        dev.setdefault("config", {})["quasar_version"] = new_ver
-                        dev["has_update"] = False
-                    if "squeezelite_running" in res:
-                        dev["squeezelite_running"] = res["squeezelite_running"]
-                    if "airplay_running" in res:
-                        dev["airplay_running"] = res["airplay_running"]
-                    self.device_manager._save()
-                    self.device_manager._notify("registered", dev)
+                new_ver = res.get("version", "")
+                self._sync_quasar_device_metadata(
+                    mac,
+                    ip=ip,
+                    installed_version=new_ver,
+                    target_version=new_ver,
+                    has_update=False if new_ver else None,
+                    res=res,
+                )
 
             status_code = 200 if res.get("success") else 400
             return web.json_response(res, status=status_code)
@@ -996,9 +997,7 @@ class WebServer:
             if self.ww_engine_callback:
                 engine = self.ww_engine_callback()
                 if engine:
-                    engine._model = None  # принудительный сброс
-                    engine.model_path = save_path
-                    engine._load_model()
+                    engine.reload_model(save_path)
 
             return web.json_response({"success": True, "path": save_path, "size": size})
         except Exception as e:

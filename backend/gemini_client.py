@@ -1,5 +1,3 @@
-import os
-import asyncio
 import logging
 from typing import List, Dict, Any
 import aiohttp
@@ -12,7 +10,6 @@ DEFAULT_LIVE_MODELS: List[Dict[str, Any]] = [
     {"id": "models/gemini-3.1-flash-live-preview", "name": "Gemini 3.1 Flash Live Preview (Новейшая)", "is_live": True},
     {"id": "models/gemini-2.5-flash-native-audio-preview", "name": "Gemini 2.5 Flash Native Audio Preview", "is_live": True},
     {"id": "models/gemini-2.0-flash-exp", "name": "Gemini 2.0 Flash Experimental", "is_live": True},
-    {"id": "gemini-2.0-flash-exp", "name": "Gemini 2.0 Flash Exp (Короткий ID)", "is_live": True},
 ]
 
 async def fetch_available_gemini_models(api_key: str) -> List[Dict[str, Any]]:
@@ -91,7 +88,7 @@ async def fetch_available_gemini_models(api_key: str) -> List[Dict[str, Any]]:
     return live_models + other_models
 
 class GeminiProxyClient:
-    def __init__(self, api_key: str, system_prompt: str, ha_api, voice_name: str = "Zephyr", model: str = "gemini-2.0-flash-exp", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None):
+    def __init__(self, api_key: str, system_prompt: str, ha_api=None, voice_name: str = "Zephyr", model: str = "models/gemini-3.1-flash-live-preview", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None):
         """
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
@@ -102,7 +99,6 @@ class GeminiProxyClient:
             http_options={"api_version": "v1alpha"},
             api_key=api_key
         )
-        self.ha_api = ha_api
         
         # Если пользователь не указал префикс models/, добавляем его
         self.model = model if model.startswith("models/") else f"models/{model}"

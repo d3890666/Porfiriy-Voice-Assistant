@@ -1,6 +1,4 @@
-import os
 import re
-import json
 import time
 import uuid
 import logging
@@ -8,19 +6,18 @@ import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from aiohttp import web
 
+from audio_utils import scale_pcm16
+from config import DEFAULT_GEMINI_MODEL, get_active_api_key
+from net_utils import extract_client_ip, get_device_ip
+from prompt_builder import build_system_prompt, resolve_target_player
+from tool_executor import ToolExecutor
+
 logger = logging.getLogger("openai_service")
 
 try:
-    from google import genai
     from google.genai import types
 except ImportError:
-    genai = None
     types = None
-
-try:
-    from .device_manager import pcm16_to_wav
-except ImportError:
-    from device_manager import pcm16_to_wav
 
 try:
     from .gemini_client import GeminiProxyClient
@@ -36,11 +33,6 @@ try:
 except ImportError:
     asyncssh = None
     HAS_ASYNCSSH = False
-
-try:
-    import audioop
-except ImportError:
-    audioop = None
 
 def sanitize_text_for_speech(text: str) -> str:
     """Очищает текст ответа от Markdown, эмодзи и спецсимволов для чистого проговаривания Алисой."""
@@ -69,10 +61,9 @@ class OpenAIService:
         self.device_manager = device_manager
         self.ha_api = ha_api
         self.options_callback = options_callback
-        self.default_port = default_port
         self.ducking_manager = ducking_manager
         self.quasar_manager = quasar_manager
-        self._api_key_index = 0
+        self.tool_executor = ToolExecutor(ha_api, quasar_manager=quasar_manager, ducking_manager=ducking_manager)
         self.dialogue_history: Dict[str, Dict[str, Any]] = {}
 
     def _build_dialogue_turns(self, messages: List[Dict[str, Any]], mac: str, timeout_s: float = 60.0) -> Tuple[List[Any], str]:
@@ -168,7 +159,7 @@ class OpenAIService:
     async def handle_get_models(self, request: web.Request) -> web.Response:
         """Возвращает список поддерживаемых моделей в формате OpenAI."""
         opts = self.options_callback() if self.options_callback else {}
-        active_model = opts.get("gemini_model", "models/gemini-3.1-flash-live-preview")
+        active_model = opts.get("gemini_model", DEFAULT_GEMINI_MODEL)
         models_data = [
             {"id": "porfiriy", "object": "model", "created": int(time.time()), "owned_by": "porfiriy"},
             {"id": active_model.replace("models/", ""), "object": "model", "created": int(time.time()), "owned_by": "google"},
@@ -181,13 +172,7 @@ class OpenAIService:
         }, headers=self._cors_headers())
 
     def _get_active_gemini_key(self, keys_str: str) -> str:
-        if not keys_str:
-            return ""
-        keys = [k.strip() for k in keys_str.split(",") if k.strip()]
-        if not keys:
-            return ""
-        self._api_key_index = (self._api_key_index + 1) % len(keys)
-        return keys[self._api_key_index]
+        return get_active_api_key(keys_str)
 
     def _resolve_device(self, request: web.Request, body: Dict[str, Any]) -> Dict[str, Any]:
         """Определяет, какая нода (Яндекс Станция) отправила запрос."""
@@ -409,16 +394,7 @@ class OpenAIService:
     @staticmethod
     def _resolve_target_player(dev: Dict[str, Any], options: Dict[str, Any]) -> str:
         """Возвращает entity_id медиаплеера из карточки устройства или глобальных настроек."""
-        dev_cfg = dev.get("config", {})
-        return (
-            dev_cfg.get("mass_player") or
-            dev_cfg.get("airplay_player") or
-            dev_cfg.get("response_player") or
-            options.get("default_mass_player") or
-            options.get("default_airplay_player") or
-            options.get("default_media_player") or
-            ""
-        ).strip()
+        return resolve_target_player(dev, options)
 
     async def _execute_tool(
         self,
@@ -428,110 +404,19 @@ class OpenAIService:
         options: Dict[str, Any],
         turn_state: Optional[Dict[str, Any]] = None
     ) -> Any:
-        """Выполнение инструмента (HA Service, Music Assistant, State)."""
-        target_default_player = self._resolve_target_player(dev, options)
-
-        try:
-            if name == "call_ha_service":
-                domain = args.get("domain")
-                service = args.get("service")
-                entity_id = args.get("entity_id")
-                service_data = dict(args.get("parameters", {})) if args.get("parameters") else {}
-                if entity_id:
-                    service_data["entity_id"] = entity_id
-                for k in ["position", "temperature", "hvac_mode", "percentage"]:
-                    if k in args and args[k] is not None:
-                        service_data[k] = args[k]
-                if turn_state is not None:
-                    turn_state["tool_executed"] = True
-                    if domain in ("media_player", "music_assistant", "mass"):
-                        turn_state["playback_changed"] = True
-                    if domain == "media_player" and service == "volume_set" and self.ducking_manager:
-                        vol_lvl = service_data.get("volume_level")
-                        if vol_lvl is not None:
-                            self.ducking_manager.set_explicit_volume(dev.get("mac", ""), float(vol_lvl))
-                return await self.ha_api.call_ha_action(domain, service, service_data)
-
-            elif name == "get_ha_state":
-                entity_id = args.get("entity_id")
-                state = await self.ha_api.get_entity_state(entity_id)
-                return state or {"status": "not_found"}
-
-            elif name == "search_music_assistant":
-                query = args.get("name") or args.get("query") or ""
-                artist = args.get("artist")
-                media_type = args.get("media_type")
-                logger.info(f"[OPENAI MUSIC] Searching MA: name='{query}', artist='{artist or ''}', media_type={media_type}")
-                return await self.ha_api.search_music_assistant(name=query, media_type=media_type, artist=artist)
-
-            elif name in ["play_music_assistant", "play_music"]:
-                uri_or_query = args.get("uri") or args.get("query") or args.get("name") or ""
-                media_type = args.get("media_type")
-                radio_mode = bool(args.get("radio_mode", False))
-                target_player = args.get("player") or target_default_player
-                if turn_state is not None:
-                    turn_state["tool_executed"] = True
-                    turn_state["playback_changed"] = True
-                if self.quasar_manager:
-                    speaker_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
-                    if speaker_ip and speaker_ip != "---":
-                        asyncio.create_task(self.quasar_manager.stop_station_airplay_if_playing(speaker_ip))
-                return await self.ha_api.play_music_assistant(
-                    entity_id=target_player,
-                    uri_or_query=uri_or_query,
-                    media_type=media_type,
-                    radio_mode=radio_mode
-                )
-
-        except Exception as e:
-            logger.error(f"[OPENAI TOOL] Error executing {name}: {e}")
-            return {"status": "error", "error": str(e)}
-
-        return {"status": "unknown_tool"}
+        """Выполнение инструмента (HA Service, Music Assistant, State) через единый ToolExecutor."""
+        return await self.tool_executor.execute(
+            name,
+            args,
+            options,
+            dev=dev,
+            turn_state=turn_state,
+            default_player_fallback="",
+        )
 
     async def _build_system_prompt(self, dev: Dict[str, Any], options: Dict[str, Any]) -> str:
         """Сборка системного промпта Порфирия с контекстом устройств и комнаты."""
-        target_player = self._resolve_target_player(dev, options)
-        area_name = dev.get("area_name") or "Не указана"
-
-        persona = options.get("prompt_persona", "")
-        users = options.get("prompt_users", "")
-        smart_home = options.get("prompt_smart_home", "")
-        general = options.get("prompt_general", "")
-
-        entities_prompt = ""
-        if self.ha_api:
-            try:
-                entities_prompt = await self.ha_api.get_entities_prompt()
-            except Exception as e:
-                logger.warning(f"Failed to fetch entities prompt: {e}")
-
-        station_context = (
-            f"\n\n### HARDWARE & SATELLITE CONTEXT:\n"
-            f"- Device Type: Yandex Station 2 (Quasar Bridge integration).\n"
-            f"- Room / Area: {area_name}.\n"
-            f"- Target Music Player: {target_player or 'Not configured'}.\n"
-            f"- Strict Speech Directive: You are talking to a voice synthesizer (Alice TTS). "
-            f"Output strictly clean, spoken Russian without markdown, bullets, asterisks, or emojis. "
-            f"Limit response strictly to 1-2 concise spoken sentences."
-        )
-
-        music_directive = (
-            f"\n\n### MUSIC MANAGEMENT (MUSIC ASSISTANT):\n"
-            f"- Target player: '{target_player}'.\n"
-            f"- Step 1 (Normalize & Search): Strip filler words ('включи', 'поставь', 'сыграй', 'песню', 'трек', 'артиста', 'группу', 'альбом', 'музыку'). "
-            f"Convert Russian inflected cases to canonical nominative form and foreign names to original Latin spelling "
-            f"('Боба Марли' -> 'Bob Marley', 'Куин' -> 'Queen', 'Нирвану' -> 'Nirvana', 'Пинк Флойд' -> 'Pink Floyd'). "
-            f"When user specifies both artist and album/track (e.g. 'альбом Сила ума группы Кирпичи'), put ONLY the title in name ('Сила ума') and put the band in artist ('Кирпичи'). "
-            f"Pick accurate media_type: 'artist' for artist/band, 'album' for album, 'track' for specific song, 'playlist'/'radio' for mood/genre/radio (or omit if unsure). "
-            f"Always call search_music_assistant first. If empty, retry once with a simpler query or without media_type.\n"
-            f"- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless asked). "
-            f"Call play_music_assistant with the exact uri, media_type, player='{target_player}', and radio_mode=true for artist/genre/mood requests.\n"
-            f"- Speech Output: Reply strictly 'Включаю [Artist - Title].' on success, or 'Акустический паттерн не найден.' if nothing matched."
-        )
-
-        parts = [p for p in [persona, users, smart_home, general, entities_prompt, station_context, music_directive] if p.strip()]
-        return "\n\n".join(parts)
+        return await build_system_prompt(options, self.ha_api, dev=dev, mode="station_openai")
 
     async def _consume_live_session(
         self,
@@ -601,7 +486,7 @@ class OpenAIService:
             return "Не настроен API ключ Gemini в аддоне Порфирий."
 
         system_prompt = await self._build_system_prompt(dev, options)
-        model = options.get("gemini_model", "gemini-2.0-flash-exp")
+        model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
         proxy_client = GeminiProxyClient(
             api_key=api_key,
@@ -638,9 +523,7 @@ class OpenAIService:
         напрямую в колонку через SSH pipe в aplay (минуя AirPlay и задержки).
         """
         dev_cfg = dev.get("config", {})
-        speaker_ip = dev.get("ip") or dev_cfg.get("ip") or ""
-        if not speaker_ip or speaker_ip == "---" or speaker_ip.startswith("127."):
-            speaker_ip = self._extract_ip(request)
+        speaker_ip = get_device_ip(dev) or extract_client_ip(request)
         ssh_port = int(dev_cfg.get("ssh_port", 2222))
         
         music_player = self._resolve_target_player(dev, options)
@@ -651,7 +534,7 @@ class OpenAIService:
 
         system_prompt = await self._build_system_prompt(dev, options)
         voice_name = options.get("voice_name", "Charon")
-        model = options.get("gemini_model", "models/gemini-3.8-live")
+        model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
         proxy_client = GeminiProxyClient(
             api_key=api_key,
@@ -714,8 +597,8 @@ class OpenAIService:
                 try:
                     # Чистый PCM звук без искусственного завышения и клиппинга; Master регулятор ALSA управляет общей громкостью
                     vol = float(dev_cfg.get("speaker_volume", 1.0))
-                    if audioop and 0.0 < vol < 0.99:
-                        chunk = audioop.mul(chunk, 2, max(0.1, vol))
+                    if 0.0 < vol < 0.99:
+                        chunk = scale_pcm16(chunk, max(0.1, vol))
                     ssh_proc.stdin.write(chunk)
                     await ssh_proc.stdin.drain()
                 except Exception as stream_err:
@@ -843,14 +726,6 @@ class OpenAIService:
 
         if not user_text:
             return web.json_response(self._make_openai_response("", body.get("model", "porfiriy")), headers=self._cors_headers())
-
-        airplay_player = (
-            dev_cfg.get("airplay_player") or 
-            dev_cfg.get("response_player") or 
-            opts.get("default_airplay_player") or 
-            opts.get("default_media_player") or 
-            ""
-        )
 
         logger.info(f"[OPENAI] Request from {mac} ({dev.get('name')}) [mode: {output_mode}]: '{user_text}'")
         self.device_manager.set_device_state(mac, "thinking")

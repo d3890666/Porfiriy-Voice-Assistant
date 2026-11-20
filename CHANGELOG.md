@@ -1,5 +1,30 @@
 # Журнал изменений (Changelog)
 
+## 0.0.147
+- **Крупный рефакторинг, зачистка мусора и исправление найденных багов (100% сохранение всего функционала)**:
+  - **Зачистка репозитория**:
+    - Удалён случайно закоммиченный `scratch_venv/` (2 441 файл) из git-индекса.
+    - Удалён устаревший прототип `esp32_ww_test/` с захардкоженными путями и дубликатом `model.h`.
+    - Убран дубликат `porfiriy.onnx` из корня репозитория и двойное копирование в `Dockerfile`.
+    - Разгружен `AGENTS.md` (убрано дублирование старой истории из `CHANGELOG.md`).
+  - **Выделено единое ядро бэкенда (устранено 3–5× дублирование)**:
+    - `backend/config.py`: единый источник опций, эталонных промптов `CANONICAL_PROMPTS`, дефолтной модели Gemini, версии аддона и round-robin ротации API-ключей.
+    - `backend/audio_utils.py`: единые PCM/WAV DSP утилиты (`scale_pcm16`, `calculate_pcm_rms`, `rms_to_dbfs`, `filter_pcm16_highpass`, `pcm16_to_wav`, `analyze_pcm16`, earcons).
+    - `backend/net_utils.py`: единые утилиты нормализации MAC/IP и автоопределения базового URL аддона.
+    - `backend/prompt_builder.py` и `backend/tool_executor.py`: единая сборка системного промпта и выполнение инструментов HA / Music Assistant для ESP32, PC Streamer, Яндекс Станции WS и OpenAI Gateway.
+    - Единый синглтон `HomeAssistantAPI` вместо создания нового экземпляра на каждое WebSocket-подключение.
+  - **Исправлены реальные баги в рантайме**:
+    - `phrase_manager.py`: исправлен `AttributeError` в `regenerate()` (`_generate_all`), убран REST `generate_content` (переведено строго на Gemini Live API), кэш не помечается готовым при 0 синтезированных файлов.
+    - `openai_service.py`: исправлен `AttributeError` на несуществующем `_extract_ip(request)`.
+    - `main.py`: добавлен `nonlocal streamer_state, last_session_end_time` в `handle_pc_streamer`, добавлен `await` к `update_device_config`, подключён полный `ToolExecutor` в `handle_yandex_station_streamer`, убран хардкод `http://homeassistant:8099`.
+    - `mqtt_discovery.py`: исправлена сигнатура `_on_disconnect` для `paho-mqtt` v2, убран хардкод модели ESP32 для всех устройств, добавлен корректный `stop()`.
+    - `ha_api.py`: защита `start_state_listener` от `new_state`/`old_state = None`, корректный возврат ошибок в `call_service_ws`.
+    - `dlna_player.py`: добавлен отсутствующий `import re`, SSDP ограничен ESP32-устройствами.
+    - `quasar_manager.py` и `station_dist/*.sh`: убрана тройная перезапись `set_volume.sh` и сброс порта в `runtime.env`, исправлена проверка `pcm.music_duck` в `station_airplay_service.sh`, убран хардкод IP `192.168.1.50` и порта `8000`, добавлен трекинг PID фонового цикла в `alice_watcher_service.sh`.
+    - `backend/static/`: исправлен `ReferenceError` (`renderDevices()` → `renderDevicesGrid()`), устранён дубль `id="chk-ww-mode"`, объединены `controlSqueezelite`/`controlAirplay`, синхронизированы `CANONICAL_PROMPTS` и версии с бэкендом, добавлены недостающие CSS-анимации и `.badge`.
+    - `client/debug_client.py`: исправлен размер чанка тишины (640 байт int16) и опциональный импорт `webrtcvad`.
+- Синхронизация версий в `config.yaml`, `CHANGELOG.md` и `index.html` (кэш-бастеры) до `0.0.147`.
+
 ## 0.0.146
 - **Синхронизация шагов громкости Алисы (1..10 ➔ 10%..100%) и защита от перегрузок**:
   - **Устранение рассогласования шкалы громкости (когда Алиса ставит 5%, а сама орет на 100%)**:

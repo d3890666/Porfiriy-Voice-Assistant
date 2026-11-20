@@ -6,17 +6,15 @@ DLNA Digital Media Renderer (DMR) & Streaming Audio Bridge for Porfiriy Voice As
 """
 
 from __future__ import annotations
-import os
-import sys
-import math
+import re
 import time
 import socket
 import asyncio
 import logging
-import subprocess
-import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 from aiohttp import web
+
+from net_utils import normalize_mac
 
 logger = logging.getLogger("media_player")
 
@@ -646,7 +644,9 @@ class DLNAMediaManager:
                         for mac, dev in self.device_manager.devices.items():
                             if not dev.get("is_online", False):
                                 continue
-                            clean_mac = mac.replace(":", "").replace("-", "").lower()
+                            if dev.get("device_type", "esp32") != "esp32":
+                                continue
+                            clean_mac = normalize_mac(mac)
                             location = f"http://{host_ip}:{self.port}/dmr/{mac}/description.xml"
                             response = (
                                 "HTTP/1.1 200 OK\r\n"

@@ -11,7 +11,6 @@ from typing import Dict, Optional
 logger = logging.getLogger("wakeword_engine")
 
 CHUNK_SAMPLES = 1280
-SAMPLE_RATE = 16000
 DEFAULT_COOLDOWN_S = 3.0
 PREROLL_CHUNKS = 8
 
@@ -29,7 +28,6 @@ class WakeWordEngine:
 
     def _load_model(self):
         try:
-            import numpy as np
             import shutil
             import pathlib
             from openwakeword.model import Model
@@ -233,9 +231,15 @@ class WakeWordEngine:
             except Exception:
                 pass
 
-    def get_last_score(self, device_id: str) -> float:
-        src = self._sources.get(device_id)
-        return src["last_score"] if src else 0.0
+    def reload_model(self, new_model_path: Optional[str] = None) -> bool:
+        """Перезагружает ONNX-модель вейкворда (публичный API)."""
+        if new_model_path:
+            self.model_path = new_model_path
+        self._model = None
+        self._model_name = None
+        self.last_error = None
+        self._load_model()
+        return self.is_ready
 
     def set_threshold(self, new_threshold: float):
         self.threshold = max(0.1, min(1.0, float(new_threshold)))

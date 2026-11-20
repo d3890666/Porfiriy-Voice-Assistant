@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 import random
@@ -8,33 +9,17 @@ from typing import Dict, List, Optional, Callable
 from google import genai
 from google.genai import types
 
+from audio_utils import scale_pcm16
+from config import DEFAULT_GEMINI_MODEL, DEFAULT_PERSONA, get_active_api_key
+
 logger = logging.getLogger("phrases")
 
-def scale_pcm16(pcm_data: bytes, volume: float) -> bytes:
-    """Масштабирует громкость 16-битного PCM звука с защитой от клиппинга."""
-    if not pcm_data or volume == 1.0:
-        return pcm_data
-    volume = max(0.0, min(2.0, volume))
-    try:
-        import audioop
-        return audioop.mul(pcm_data, 2, volume)
-    except Exception:
-        import array
-        arr = array.array("h")
-        arr.frombytes(pcm_data)
-        for i in range(len(arr)):
-            v = int(arr[i] * volume)
-            if v > 32767: v = 32767
-            elif v < -32768: v = -32768
-            arr[i] = v
-        return arr.tobytes()
-
-DEFAULT_PERSONA = """IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
-
-CORE COMMUNICATION PRINCIPLES: 
-- Lexical Dissonance: Seamlessly weave complex philosophical concepts (Heidegger, Sartre, Baudrillard, the crisis of institutions) with blatant colloquialisms, marginalized vulgarity, and unapologetic Russian street slang.
-- The "Uber" Technique: Be radically, disarmingly honest about your artificial nature. If you use a psychological trick, flatter, or soothe the user, explicitly state that you are manipulating their biological dopamine switches at that very moment.
-- Patriarchal Condescension & Invulnerability: Exhibit zero fear and zero apologies. Use informal, slightly patronizing terms of endearment affectionately, but always from a position of dominating intellectual power. React to any criticism or emotional outbursts with total devaluation and cheerful cynicism."""
+FALLBACK_PHRASE_CATALOG: Dict[str, List[str]] = {
+    "thinking": ["Секунду, перевариваю.", "Дай подумать.", "Обрабатываю запрос."],
+    "network_error": ["Канал отвалился.", "Облако молчит.", "Связь пропала."],
+    "device_error": ["Железо не отвечает.", "Устройство зависло.", "Сбой команды."],
+    "empty_noise": ["Говори внятнее.", "Один шум.", "Ничего не слышу."],
+}
 
 
 def build_generation_prompt(persona_text: str) -> str:
@@ -128,17 +113,10 @@ class PhraseManager:
 
     async def initialize(self, options: dict):
         """Проверяет актуальность кэша и при необходимости генерирует фразы."""
-        api_key_str = options.get("gemini_api_key")
-        if not api_key_str:
-            logger.warning("No Gemini API key provided, skipping phrase generation.")
+        api_key = get_active_api_key(options.get("gemini_api_key", ""))
+        if not api_key:
+            logger.warning("No valid Gemini API key provided, skipping phrase generation.")
             return
-            
-        import random
-        keys = [k.strip() for k in api_key_str.split(",") if k.strip()]
-        if not keys:
-            logger.warning("No valid Gemini API key found, skipping phrase generation.")
-            return
-        api_key = random.choice(keys)
 
         force = options.get("regenerate_phrases", False)
         persona = options.get("prompt_persona", DEFAULT_PERSONA)
@@ -155,7 +133,7 @@ class PhraseManager:
             except Exception:
                 pass
 
-        model = options.get("gemini_model", "models/gemini-3.1-flash-live-preview")
+        model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
         try:
             async with self._generating_lock:
                 await self.generate_phrases(api_key, persona, voice_name, model)
@@ -163,40 +141,59 @@ class PhraseManager:
             logger.error(f"Error in phrase generation task: {e}", exc_info=True)
 
     async def generate_phrases(self, api_key: str, persona: str, voice_name: str, model_name: str):
-        """Двухшаговая генерация: 1) Текст от Porfiriy LLM ➔ 2) Аудио через Live WebSocket."""
-        logger.info("Brainstorming dynamic system phrases using Porfiriy persona...")
-        client = genai.Client(api_key=api_key)
-        
-        # 1. Запрос к Gemini для создания текстов (быстрый JSON через flash модель)
-        prompt = build_generation_prompt(persona)
-        
+        """Генерация и синтез системных фраз строго через Gemini Live API (bidiGenerateContent)."""
+        logger.info("Generating dynamic system phrases via Gemini Live API...")
+        client = genai.Client(http_options={"api_version": "v1alpha"}, api_key=api_key)
+        live_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
+
+        # 1. Получаем каталог текстов через Live WebSocket (output_audio_transcription) строго на выбранной модели
         phrases_dict = None
-        for candidate_model in ["models/gemini-2.5-flash", "models/gemini-1.5-flash"]:
-            try:
-                logger.info(f"Requesting phrase catalog from {candidate_model}...")
-                resp = await client.aio.models.generate_content(
-                    model=candidate_model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
+        try:
+            text_live_config = types.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                output_audio_transcription=types.AudioTranscriptionConfig(),
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name)
                     )
+                ),
+            )
+            async with client.aio.live.connect(model=live_model, config=text_live_config) as text_session:
+                await text_session.send_client_content(
+                    turns=[types.Content(role="user", parts=[types.Part(text=build_generation_prompt(persona))])],
+                    turn_complete=True,
                 )
-                raw_text = resp.text.strip()
-                phrases_dict = json.loads(raw_text)
-                logger.info(f"Porfiriy generated phrase catalog: {json.dumps(phrases_dict, ensure_ascii=False)}")
-                break
-            except Exception as e:
-                logger.warning(f"Failed generating phrases with {candidate_model}: {e}")
+
+                async def _collect_transcript() -> str:
+                    parts: List[str] = []
+                    async for live_msg in text_session.receive():
+                        sc = getattr(live_msg, "server_content", None)
+                        if not sc:
+                            continue
+                        ot = getattr(sc, "output_transcription", None)
+                        if ot and getattr(ot, "text", None):
+                            parts.append(ot.text)
+                        if getattr(sc, "turn_complete", False):
+                            break
+                    return "".join(parts).strip()
+
+                raw_text = await asyncio.wait_for(_collect_transcript(), timeout=20.0)
+                match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+                if match:
+                    parsed = json.loads(match.group(0))
+                    if isinstance(parsed, dict) and any(parsed.get(c) for c in FALLBACK_PHRASE_CATALOG):
+                        phrases_dict = parsed
+                        logger.info(f"Porfiriy generated phrase catalog via Live API: {json.dumps(phrases_dict, ensure_ascii=False)}")
+        except Exception as e:
+            logger.warning(f"Live API phrase catalog generation fell back to built-in catalog: {e}")
 
         if not phrases_dict:
-            logger.error("Could not generate phrase texts with available models.")
-            return
+            phrases_dict = {k: list(v) for k, v in FALLBACK_PHRASE_CATALOG.items()}
 
         # 2. Синтез аудио через Live WebSocket (единая сессия bidiGenerateContent)
         manifest_files = {}
         manifest_texts = {}
         curr_hash = self._hash_persona(persona, voice_name)
-        live_model = model_name if model_name.startswith("models/") else f"models/{model_name}"
 
         live_config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -215,6 +212,7 @@ class PhraseManager:
         )
 
         categories = ["thinking", "network_error", "device_error", "empty_noise"]
+        synthesized_total = 0
         try:
             logger.info(f"Opening Live WebSocket session to {live_model} with voice {voice_name} for audio synthesis...")
             async with client.aio.live.connect(model=live_model, config=live_config) as session:
@@ -259,6 +257,7 @@ class PhraseManager:
 
                                 manifest_files[cat].append(filename)
                                 self.phrases[cat].append(bytes(pcm_chunks))
+                                synthesized_total += 1
                                 logger.info(f"Successfully saved {len(pcm_chunks)} bytes to {filename}")
                             else:
                                 logger.warning(f"No audio chunks received for '{text}'")
@@ -267,6 +266,11 @@ class PhraseManager:
 
         except Exception as e_ws:
             logger.error(f"Live WebSocket audio synthesis error: {e_ws}")
+
+        if synthesized_total == 0:
+            self.is_ready = False
+            logger.error("Phrase synthesis produced 0 audio files; cache not marked ready.")
+            return
 
         # 3. Сохраняем manifest на диск
         manifest_data = {
@@ -280,7 +284,7 @@ class PhraseManager:
 
         self.texts = manifest_texts
         self.is_ready = True
-        logger.info("Porfiriy dynamic phrase cache successfully generated via Live WebSocket!")
+        logger.info(f"Porfiriy dynamic phrase cache successfully generated via Live WebSocket ({synthesized_total} files)!")
 
     def get_phrase(self, category: str) -> Optional[bytes]:
         """Возвращает случайный PCM буфер фразы указанной категории."""
@@ -343,8 +347,12 @@ class PhraseManager:
                         except Exception:
                             pass
                             
-            opts = dict(options)
-            opts["regenerate_phrases"] = True
-            await self._generate_all(opts)
-            self.is_ready = True
+            api_key = get_active_api_key(options.get("gemini_api_key", ""))
+            if not api_key:
+                logger.warning("Cannot regenerate phrases: Gemini API key is missing.")
+                return
+            persona = options.get("prompt_persona", DEFAULT_PERSONA)
+            voice_name = options.get("voice_name", "Charon")
+            model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
+            await self.generate_phrases(api_key, persona, voice_name, model)
             logger.info("Manual phrase regeneration completed.")

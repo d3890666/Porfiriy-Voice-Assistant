@@ -14,14 +14,23 @@ resolve_porfiriy_host() {
             [ -f /data/opt/squeezelite/squeezelite.env ] && h=$(grep '^SQUEEZELITE_SERVER=' /data/opt/squeezelite/squeezelite.env 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d '"'\'' \r' | cut -d: -f1)
             ;;
     esac
-    [ -z "$h" ] && h="192.168.1.50"
     printf '%s' "$h"
+}
+
+resolve_porfiriy_port() {
+    p=$(cat /data/opt/porfiriy_port 2>/dev/null | tr -d ' \r\n' || echo "")
+    case "$p" in
+        ""|*[!0-9]*) p="8000" ;;
+    esac
+    printf '%s' "$p"
 }
 
 send_state() {
     st="$1"
     host=$(resolve_porfiriy_host)
-    curl -s -m 1 -X POST "http://${host}:8000/api/station/alice_state" \
+    [ -z "$host" ] && return 0
+    port=$(resolve_porfiriy_port)
+    curl -s -m 1 -X POST "http://${host}:${port}/api/station/alice_state" \
         -H "Content-Type: application/json" \
         -d "{\"state\": \"$st\"}" >/dev/null 2>&1 &
 }
@@ -29,8 +38,10 @@ send_state() {
 send_airplay_state() {
     st="$1"
     host=$(resolve_porfiriy_host)
+    [ -z "$host" ] && return 0
+    port=$(resolve_porfiriy_port)
     my_ip=$(cat /data/opt/porfiriy_my_ip 2>/dev/null || ip route get 1 2>/dev/null | awk '{print $NF;exit}' || echo "")
-    curl -s -m 2 -X POST "http://${host}:8000/api/station/airplay_state" \
+    curl -s -m 2 -X POST "http://${host}:${port}/api/station/airplay_state" \
         -H "Content-Type: application/json" \
         -d "{\"state\": \"$st\", \"ip\": \"$my_ip\"}" >/dev/null 2>&1 &
 }
@@ -107,6 +118,7 @@ run_watcher() {
             fi
         done
     ) &
+    echo $! > "$base/mutex.pid"
 
     tail -n 0 -F "$airplay_log" 2>/dev/null | while IFS= read -r line; do
         case "$line" in
@@ -161,6 +173,11 @@ start() {
 }
 
 stop() {
+    if [ -s "$base/mutex.pid" ]; then
+        mpid=$(cat "$base/mutex.pid" 2>/dev/null || true)
+        [ -n "$mpid" ] && kill "$mpid" 2>/dev/null || true
+        rm -f "$base/mutex.pid"
+    fi
     if running; then
         kill "$pid" 2>/dev/null || true
         i=0

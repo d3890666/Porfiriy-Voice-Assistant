@@ -2,6 +2,9 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional
 
+from net_utils import clean_ip, get_device_ip
+from prompt_builder import resolve_target_player
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,27 +26,14 @@ class StationDuckingManager:
 
     @staticmethod
     def resolve_station_player(dev: Dict[str, Any], options: Optional[Dict[str, Any]] = None) -> str:
-        cfg = dev.get("config", {})
-        opts = options or {}
-        return (
-            cfg.get("mass_player") or
-            cfg.get("airplay_player") or
-            cfg.get("response_player") or
-            opts.get("default_mass_player") or
-            opts.get("default_airplay_player") or
-            opts.get("default_media_player") or
-            ""
-        ).strip()
+        return resolve_target_player(dev, options or {})
 
     def find_station_by_ip(self, client_ip: str) -> Optional[Dict[str, Any]]:
-        ip = (client_ip or "").strip()
-        if ip.startswith("::ffff:"):
-            ip = ip[7:]
+        ip = clean_ip(client_ip)
         if not ip or not self.device_manager:
             return None
         for dev in self.device_manager.get_all_devices():
-            dev_ip = (dev.get("ip") or dev.get("config", {}).get("ip") or "").strip()
-            if dev_ip and dev_ip == ip:
+            if get_device_ip(dev) == ip:
                 return dev
         return None
 

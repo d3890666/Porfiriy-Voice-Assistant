@@ -125,13 +125,13 @@ class HomeAssistantAPI:
             payload["return_response"] = True
             
         result = await self._ws_send_and_receive(payload)
-        
+        if not result.get("success"):
+            error = result.get("error", {})
+            msg = error.get("message", "Unknown WS error") if isinstance(error, dict) else str(error)
+            return {"status": "error", "error": msg}
+
         if return_response:
-            if result.get("success"):
-                return result.get("result") or {"status": "success"}
-            else:
-                error = result.get("error", {})
-                return {"error": error.get("message", "Unknown WS error")}
+            return result.get("result") or {"status": "success"}
         return {"status": "success"}
 
     async def get_services(self, force_refresh: bool = False) -> Dict[str, Any]:
@@ -745,7 +745,7 @@ class HomeAssistantAPI:
             target_set.add(w)
             
             # Добавляем стемминг (корень) для покрытия окончаний в русском языке
-            for ending in ("ами", "ями", "ей", "ов", "ев", "ом", "ем", "ой", "ей", "ам", "ям", "ах", "ях", "ую", "юю", "ые", "ие", "ый", "ий", "ая", "яя", "ое", "ее", "е", "и", "ы", "у", "ю", "а", "я", "о"):
+            for ending in ("ами", "ями", "ей", "ов", "ев", "ом", "ем", "ой", "ам", "ям", "ах", "ях", "ую", "юю", "ые", "ие", "ый", "ий", "ая", "яя", "ое", "ее", "е", "и", "ы", "у", "ю", "а", "я", "о"):
                 if w.endswith(ending) and (len(w) - len(ending)) >= 3:
                     stem = w[:-len(ending)]
                     if stem not in stop_words:
@@ -789,8 +789,8 @@ class HomeAssistantAPI:
                             evt_data = msg.get("event", {}).get("data", {})
                             eid = evt_data.get("entity_id", "")
                             if eid.startswith("media_player."):
-                                new_st = evt_data.get("new_state", {}).get("state", "")
-                                old_st = evt_data.get("old_state", {}).get("state", "")
+                                new_st = (evt_data.get("new_state") or {}).get("state", "")
+                                old_st = (evt_data.get("old_state") or {}).get("state", "")
                                 if new_st and new_st != old_st:
                                     try:
                                         res = on_state_changed(eid, new_st, old_st)

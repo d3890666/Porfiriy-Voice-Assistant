@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.146">
+  <link rel="stylesheet" href="static/style.css?v=0.0.147">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -555,7 +555,7 @@ PING:
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.116</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.147</span></p>
         </div>
       </div>
       
@@ -790,12 +790,12 @@ PING:
                 <!-- Режим скользящего окна -->
                 <div class="form-group-toggle">
                   <label class="toggle-control">
-                    <input type="checkbox" name="apply_wake_word_window_mode" id="chk-ww-mode">
+                    <input type="checkbox" name="apply_wake_word_window_mode" id="chk-ww-win-mode">
                     <span class="toggle-slider"></span>
                     <strong>Режим окна вейкворда</strong>
                   </label>
                   <div class="field-wrapper">
-                    <select name="wake_word_window_mode" onchange="document.getElementById('chk-ww-mode').checked = true;">
+                    <select name="wake_word_window_mode" onchange="document.getElementById('chk-ww-win-mode').checked = true;">
                       <option value="1" selected>⚡ Пиковый (Peak Hold) — слитная речь</option>
                       <option value="0">📊 Скользящее среднее</option>
                       <option value="2">⚖️ Большинство срезов</option>
@@ -1398,7 +1398,7 @@ PING:
         <div style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 8px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
             <span style="font-size: 13px; font-weight: 600; color: #c4b5fd;">📦 Quasar Porfiriy Edition:</span>
-            <span class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;">v1.2.4-porfiriy.11</span>
+            <span id="quasar-modal-version-badge" class="fw-badge fw-up-to-date" style="font-size: 10px; padding: 2px 7px;">v1.2.4-porfiriy.19</span>
             <span id="quasar-modal-host-badge" class="fw-badge" style="font-size: 10px; padding: 2px 7px; background: rgba(52, 211, 153, 0.15); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.3);">🌐 Сервер: auto</span>
           </div>
           <button type="button" class="btn btn-secondary btn-sm" onclick="updateQuasarComponents(currentQuasarMac)" style="font-size: 11px; padding: 4px 10px; border-color: rgba(139, 92, 246, 0.5); color: #c4b5fd;" title="Переустановить или обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH с перепривязкой IP">
@@ -1491,6 +1491,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.146"></script>
+  <script src="static/app.js?v=0.0.147"></script>
 </body>
 </html>

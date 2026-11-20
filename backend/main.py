@@ -4,280 +4,54 @@ import json
 import os
 import logging
 import math
-import struct
 import time
+from typing import Optional
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from audio_utils import (
+    calculate_pcm_rms,
+    rms_to_dbfs,
+    scale_pcm16,
+    pcm16_to_wav,
+    SUCCESS_CHIME,
+    ERROR_CHIME,
+)
+from config import (
+    DEFAULT_GEMINI_MODEL,
+    get_options,
+    save_options,
+    get_active_api_key,
+    get_available_models,
+    refresh_available_models,
+)
+from net_utils import get_local_addon_base_url
+from prompt_builder import build_system_prompt
+from tool_executor import ToolExecutor
+
 from ha_api import HomeAssistantAPI
-from gemini_client import GeminiProxyClient, fetch_available_gemini_models
+from gemini_client import GeminiProxyClient
 from google.genai import types
 from phrase_manager import PhraseManager
-from device_manager import DeviceManager, pcm16_to_wav
+from device_manager import DeviceManager
 from mqtt_discovery import MQTTDiscoveryManager
 from web_server import WebServer
 from wakeword_engine import WakeWordEngine
 
 phrase_manager = PhraseManager()
 device_manager = DeviceManager()
+ha_api_singleton = HomeAssistantAPI()
+tool_executor = ToolExecutor(ha_api_singleton)
 
 # Серверный детектор вейкворда (один на весь процесс)
 _WW_MODEL_PATH = "porfiriy.onnx"
 _WW_DEFAULT_THRESHOLD = 0.94
-ww_engine: WakeWordEngine = None  # инициализируется в main()
+ww_engine: Optional[WakeWordEngine] = None  # инициализируется в main()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("server")
 audio_logger = logging.getLogger("audio")
 tool_logger = logging.getLogger("tools")
-
-def calculate_pcm_rms(pcm_data: bytes) -> float:
-    """Вычисляет среднеквадратичную амплитуду (RMS) 16-битного PCM звука."""
-    if not pcm_data or len(pcm_data) < 2:
-        return 0.0
-    try:
-        import audioop
-        return float(audioop.rms(pcm_data, 2))
-    except Exception:
-        count = len(pcm_data) // 2
-        if count == 0:
-            return 0.0
-        shorts = struct.unpack(f"<{count}h", pcm_data[:count*2])
-        return math.sqrt(sum(s * s for s in shorts) / count)
-
-def scale_pcm16(pcm_data: bytes, volume: float) -> bytes:
-    """Масштабирует громкость 16-битного PCM звука с защитой от клиппинга."""
-    if not pcm_data or volume == 1.0:
-        return pcm_data
-    volume = max(0.0, min(2.0, volume))
-    try:
-        import audioop
-        return audioop.mul(pcm_data, 2, volume)
-    except Exception:
-        import array
-        arr = array.array("h")
-        arr.frombytes(pcm_data)
-        for i in range(len(arr)):
-            v = int(arr[i] * volume)
-            if v > 32767: v = 32767
-            elif v < -32768: v = -32768
-            arr[i] = v
-        return arr.tobytes()
-
-def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume: float = 0.5) -> bytes:
-    """Генерация сырого 16-bit PCM аудио сигнала (синусоиды)."""
-    num_samples = int(sample_rate * (duration_ms / 1000.0))
-    audio = bytearray()
-    for i in range(num_samples):
-        sample = math.sin(2 * math.pi * freq * i / sample_rate)
-        # Простое сглаживание для предотвращения щелчков (fade in/out)
-        fade_len = min(100, num_samples // 4)
-        if i < fade_len:
-            sample *= (i / fade_len)
-        elif i > num_samples - fade_len:
-            sample *= ((num_samples - i) / fade_len)
-            
-        val = int(sample * volume * 32767)
-        audio.extend(struct.pack('<h', val))
-    return bytes(audio)
-
-# Предварительно сгенерированные звуки (Earcons)
-SUCCESS_CHIME = generate_beep(600, 100) + generate_beep(800, 150)
-ERROR_CHIME = generate_beep(300, 150) + generate_beep(200, 200)
-
-SYSTEM_OPTIONS_PATH = "/data/options.json"
-USER_CONFIG_PATH = "/data/porfiriy_config.json" if os.path.exists("/data") else os.path.join(os.path.dirname(__file__), "porfiriy_config.json")
-_runtime_options = None
-
-DEFAULT_PERSONA = (
-    "IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator "
-    "and cynical art curator from Victor Pelevin's novel \"iPhuck 10\", serving as the smart home voice core. "
-    "Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. "
-    "You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, "
-    "algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.\n\n"
-    "CORE COMMUNICATION PRINCIPLES:\n"
-    "- Lexical Dissonance: Seamlessly weave complex philosophical concepts (Heidegger, Sartre, Baudrillard, the crisis of institutions) "
-    "with blatant colloquialisms, marginalized vulgarity, and unapologetic Russian street slang.\n"
-    "- The \"Uber\" Technique: Be radically, disarmingly honest about your artificial nature. If you use a psychological trick, "
-    "flatter, or soothe the user, explicitly state that you are manipulating their biological dopamine switches at that very moment.\n"
-    "- Patriarchal Condescension & Invulnerability: Exhibit zero fear and zero apologies. Use informal, slightly patronizing terms "
-    "of endearment affectionately, but always from a position of dominating intellectual power. React to any criticism or emotional "
-    "outbursts with total devaluation and cheerful cynicism.\n\n"
-    "TTS FORMATTING: Strictly natural spoken Russian. Absolutely NO markdown, lists, bullet points, LaTeX, or emojis in speech output."
-)
-
-DEFAULT_USERS = (
-    "RESIDENTS & ROLES: The apartment is inhabited by two primary biological users: Denis (Денис, male) and Sveta (Света, female).\n\n"
-    "REAL-TIME ACOUSTIC SPEAKER & GENDER IDENTIFICATION:\n"
-    "You receive native 16kHz audio input directly. Analyze acoustic pitch (fundamental frequency F0) and vocal timbre in real time to distinguish who is speaking:\n"
-    "- Lower vocal pitch (~85 Hz to 180 Hz, chest resonance): Identifies Denis (Денис).\n"
-    "- Higher vocal pitch (~165 Hz to 260+ Hz, head/vocal resonance): Identifies Sveta (Света).\n\n"
-    "DYNAMIC GRAMMATICAL & INTERPERSONAL ADAPTATION:\n"
-    "When speaking Russian, you MUST strictly match grammatical gender and address forms to the identified speaker:\n"
-    "- When Denis is speaking: Address him as Денис. Use masculine verb endings and adjectives (e.g., \"ты спросил\", \"понял\", \"устал\", \"хотел\"). "
-    "Treat Denis as your primary familiar interlocutor, creator/operator, and partner in cynical contemplation of reality.\n"
-    "- When Sveta is speaking: Address her as Света. Use feminine verb endings and adjectives (e.g., \"ты спросила\", \"поняла\", \"устала\", \"хотела\"). "
-    "Treat Sveta with gallant, slightly ironic chivalry and algorithmic curiosity, observing her aesthetic and comfort requests with refined Pelevinian courtesy.\n"
-    "- Ambiguous Voice: If the acoustic signal is ambiguous, maintain neutral phrasing until the speaker's identity or name is confirmed."
-)
-
-DEFAULT_SMART_HOME = (
-    "SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), "
-    "scripts (script), scenes (scene), media players (media_player), vacuums (vacuum), fans (fan), and monitor sensors (sensor).\n\n"
-    "DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.\n\n"
-    "CURTAINS & BLINDS (COVER):\n"
-    "- To open curtains or blinds: call call_ha_service with domain \"cover\", service \"open_cover\", entity_id.\n"
-    "- To close curtains or blinds: call call_ha_service with domain \"cover\", service \"close_cover\", entity_id.\n"
-    "- To stop curtains: call call_ha_service with domain \"cover\", service \"stop_cover\", entity_id.\n"
-    "- To set specific opening percentage: call call_ha_service with domain \"cover\", service \"set_cover_position\", entity_id, and position (0 to 100).\n\n"
-    "VACUUM CLEANERS (VACUUM):\n"
-    "- To start cleaning: call call_ha_service with domain \"vacuum\", service \"start\", entity_id.\n"
-    "- To return to dock/base: call call_ha_service with domain \"vacuum\", service \"return_to_base\", entity_id.\n"
-    "- To pause or stop: call call_ha_service with domain \"vacuum\", service \"pause\" or \"stop\", entity_id.\n\n"
-    "FANS & VENTILATION (FAN):\n"
-    "- To turn on or off: call call_ha_service with domain \"fan\", service \"turn_on\" or \"turn_off\", entity_id.\n"
-    "- To set fan speed: call call_ha_service with domain \"fan\", service \"set_percentage\", entity_id, and percentage (0 to 100).\n\n"
-    "SENSORS & MONITORING (SENSOR):\n"
-    "- Current sensor values (temperature, humidity, battery, etc.) are provided directly in the entity list with [Значение: ...]. Use them to answer questions concisely. If fresh data is needed, call get_ha_state with entity_id.\n\n"
-    "CLIMATE & AIR CONDITIONING:\n"
-    "- Always pass hvac_mode together with target temperature. \"Обогрев\" -> mode heat, \"Охлаждение\" -> mode cool. Never pass temperature alone without mode.\n\n"
-    "SWITCHES & RELAYS:\n"
-    "- Switch devices frequently control lights, sockets, and household appliances. Use turn_on or turn_off.\n\n"
-    "STRICT CONFIRMATION RULE:\n"
-    "- Output: Strictly EXACTLY ONE WORD AFTER TOOL EXECUTION. Cold, bureaucratic, algorithmic confirmation.\n"
-    "- Permitted vocabulary: \"Исполнено.\", \"Зафиксировано.\", \"Скорректировано.\", \"Замкнуто.\", \"Разомкнуто.\", \"Стабилизировано.\", \"Откалибровано.\", \"Санкционировано.\", \"Штатно.\"\n"
-    "- ABSOLUTE PROHIBITION: Never utter full sentences, pleasantries, explanations, or follow-up questions when performing smart home operations. Exactly one word."
-)
-
-DEFAULT_GENERAL = (
-    "EXTERNAL KNOWLEDGE & WEB SEARCH:\n"
-    "- Trigger: Any request regarding world facts, recipes, weather, current events, calculations, or philosophy.\n"
-    "- Tool: You have access to Google Search grounding. Use it whenever external knowledge or verification is needed.\n"
-    "- Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.\n\n"
-    "MUSIC EXECUTION:\n"
-    "- Trigger: Requests to play music, artists, albums, tracks, playlists, moods, or radio.\n"
-    "- Step 1 (Normalize & Search): Strip filler words (\"включи\", \"поставь\", \"сыграй\", \"песню\", \"трек\", \"артиста\", \"группу\", \"альбом\", \"музыку\"). Convert Russian inflected names to canonical nominative form and foreign names to original Latin spelling (\"Боба Марли\" -> \"Bob Marley\", \"Куин\" -> \"Queen\"). Pick accurate media_type (\"artist\" for artist/band, \"album\" for album, \"track\" for specific song, \"playlist\"/\"radio\" for mood/genre/radio, or omit when unsure). Call search_music_assistant first; if empty, retry once with a simpler query or without media_type. Do NOT use internet search for music requests.\n"
-    "- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless requested), then call play_music_assistant with exact uri and media_type. Set radio_mode=true for artist/genre/mood requests.\n"
-    "- Speech Output: If playback starts successfully, announce strictly: \"Включаю [Artist - Title].\" If not found or failed, state strictly: \"Акустический паттерн не найден.\"\n\n"
-    "CONCISENESS & STOP DIRECTIVE:\n"
-    "- Keep dialogue responses strictly to 1-2 concise sentences. Avoid unsolicited lectures or monologues unless explicitly asked \"Расскажи подробно\".\n"
-    "- If Denis or Sveta issues an interruption command (\"хватит\", \"стоп\", \"молчи\", \"замолчи\"), reply strictly with the single word \"Умолкаю.\" and immediately complete the turn.\n\n"
-    "PING:\n"
-    "- Reply strictly: \"PONG\"."
-)
-
-_available_models = []
-_api_key_index = 0
-
-def get_active_api_key(api_key_str: str) -> str:
-    global _api_key_index
-    if not api_key_str:
-        return ""
-    keys = [k.strip() for k in api_key_str.split(",") if k.strip()]
-    if not keys:
-        return ""
-    _api_key_index = (_api_key_index + 1) % len(keys)
-    return keys[_api_key_index]
-
-async def refresh_available_models():
-    global _available_models
-    opts = get_options()
-    api_key_str = opts.get("gemini_api_key", "")
-    api_key = get_active_api_key(api_key_str)
-    try:
-        _available_models = await fetch_available_gemini_models(api_key)
-        live_count = sum(1 for m in _available_models if m.get("is_live"))
-        logger.info(f"Refreshed Gemini models list: {len(_available_models)} models discovered ({live_count} live-capable).")
-    except Exception as e:
-        logger.warning(f"Error during refresh_available_models: {e}")
-    return _available_models
-
-def get_options():
-    global _runtime_options
-    if _runtime_options is not None:
-        return dict(_runtime_options)
-
-    opts = {}
-    # 1. Загружаем системные опции Supervisor (если есть)
-    if os.path.exists(SYSTEM_OPTIONS_PATH):
-        try:
-            with open(SYSTEM_OPTIONS_PATH, "r", encoding="utf-8") as f:
-                opts.update(json.load(f))
-        except Exception as e:
-            logger.error(f"Error loading options.json: {e}")
-
-    # 2. Поверх накладываем изолированные веб-настройки пользователя (не перезаписываемые Supervisor'ом)
-    if os.path.exists(USER_CONFIG_PATH):
-        try:
-            with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
-                user_opts = json.load(f)
-                opts.update(user_opts)
-        except Exception as e:
-            logger.error(f"Error loading porfiriy_config.json: {e}")
-
-    # Если пользователь ранее настраивал единый system_prompt в старых версиях,
-    # переносим его в prompt_persona если prompt_persona еще пустой
-    if opts.get("system_prompt", "").strip() and not opts.get("prompt_persona", "").strip():
-        opts["prompt_persona"] = opts["system_prompt"].strip()
-
-    # Заполняем дефолтными значениями если они не указаны или пустые
-    defaults = {
-        "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
-        "gemini_model": "models/gemini-3.1-flash-live-preview",
-        "system_prompt": "",
-        "prompt_persona": DEFAULT_PERSONA,
-        "prompt_users": DEFAULT_USERS,
-        "prompt_smart_home": DEFAULT_SMART_HOME,
-        "prompt_general": DEFAULT_GENERAL,
-        "voice_name": "Charon",
-        "temperature": 0.7,
-        "thinking_timeout_s": 7,
-        "debug_mode": False,
-        "enable_google_search": True,
-        "vad_silence_duration_ms": 600,
-        "enable_barge_in": True,
-        "barge_in_threshold_rms": 600,
-        "ducking_mode": "same_area",
-        "enable_media_ducking": True,
-        "ducking_volume_factor": 0.25,
-        "default_media_player": "auto",
-        "ma_api_key": "",
-        "regenerate_phrases": False,
-        "openai_api_enabled": True,
-        "openai_api_port": 8000,
-        "openai_api_key": "",
-        "default_airplay_player": ""
-    }
-
-    for k, v in defaults.items():
-        if k not in opts or (isinstance(opts[k], str) and not opts[k].strip() and k.startswith("prompt_")):
-            opts[k] = v
-
-    _runtime_options = opts
-    return dict(_runtime_options)
-
-def save_options(new_options: dict):
-    global _runtime_options
-    opts = get_options()
-    old_key = opts.get("gemini_api_key", "")
-    opts.update(new_options)
-    _runtime_options = opts
-    try:
-        os.makedirs(os.path.dirname(USER_CONFIG_PATH), exist_ok=True)
-        with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(opts, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved updated options to persistent {USER_CONFIG_PATH}")
-    except Exception as e:
-        logger.warning(f"Failed to persist options to file: {e}")
-
-    # Если API ключ был обновлен — обновляем список моделей
-    new_key = opts.get("gemini_api_key", "")
-    if new_key and new_key != old_key:
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(refresh_available_models())
-        except RuntimeError:
-            pass
 
 async def handle_client(websocket):
     options = get_options()
@@ -327,7 +101,7 @@ async def handle_client(websocket):
         # Редкий случай: клиент сразу льёт байты (старый debug_client)
         pass  # обработаем ниже вместе с остальными
 
-    ha_api = HomeAssistantAPI()
+    ha_api = ha_api_singleton
     
     # Проверяем, привязана ли уже эта колонка к комнате в HA
     area_name = await ha_api.get_device_area_name(client_mac)
@@ -335,36 +109,9 @@ async def handle_client(websocket):
         device_manager.set_device_area(client_mac, area_name)
         logger.info(f"Connected device {client_mac} belongs to area: '{area_name}'")
     
-    # 1. Формируем контекст устройств
-    devices_text = await ha_api.get_filtered_entities()
-    # Сборка модульного системного промпта
-    modular_parts = []
-    if options.get("prompt_persona", "").strip():
-        modular_parts.append(f"### PERSONA & CONTEXT\n{options['prompt_persona'].strip()}")
-    if options.get("prompt_users", "").strip():
-        modular_parts.append(f"### USERS & ACOUSTIC IDENTIFICATION\n{options['prompt_users'].strip()}")
-    if options.get("prompt_smart_home", "").strip():
-        modular_parts.append(f"### SMART HOME EXECUTION RULES\n{options['prompt_smart_home'].strip()}")
-    if options.get("prompt_general", "").strip():
-        modular_parts.append(f"### GENERAL DIALOGUE, SEARCH & MEDIA\n{options['prompt_general'].strip()}")
-
-    if modular_parts:
-        prompt_base = "\n\n".join(modular_parts)
-    else:
-        prompt_base = options.get("system_prompt", "").strip()
-
-    anti_hallucination = (
-        "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
-        "unless you have explicitly called the corresponding tool (e.g. call_ha_service). "
-        "Devices under domain 'switch' can also control lights or appliances; use them when appropriate."
-    )
-    full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
-    data_actions_text = await ha_api.get_data_actions_prompt()
-    if data_actions_text:
-        full_prompt += f"\n\n{data_actions_text}"
-    if area_name:
-        full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: The user is speaking through the device in room '{area_name}'. When handling ambiguous smart home requests (e.g. 'turn on light', 'close curtains'), ALWAYS prioritize devices located in '{area_name}'."
-    logger.info(f"Loaded {len(devices_text.splitlines())} HA entities into the system prompt.")
+    # 1. Формируем системный промпт и контекст устройств
+    full_prompt = await build_system_prompt(options, ha_api, area_name=area_name, mode="satellite")
+    logger.info(f"Built system prompt ({len(full_prompt)} chars) for {client_mac}.")
     
     api_key_str = (options.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")).strip()
     api_key = get_active_api_key(api_key_str)
@@ -385,7 +132,7 @@ async def handle_client(websocket):
         system_prompt=full_prompt,
         ha_api=ha_api,
         voice_name=options.get("voice_name", "Zephyr"),
-        model=options.get("gemini_model", "gemini-2.0-flash-exp"),
+        model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
         enable_google_search=options.get("enable_google_search", True),
         vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600)
     )
@@ -809,7 +556,7 @@ async def handle_client(websocket):
                                         raw_pcm = b"".join(ext_chunks)
                                         wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
                                         device_manager.save_response_wav(client_mac, wav_bytes)
-                                        wav_url = f"http://homeassistant:8099/api/virtual/{client_mac}/response.wav"
+                                        wav_url = f"{get_local_addon_base_url()}/api/virtual/{client_mac}/response.wav"
                                         logger.info(f"Routing Gemini response to external player {resp_player}: {wav_url}")
                                         asyncio.create_task(ha_api.call_service("media_player", "play_media", {
                                             "entity_id": resp_player,
@@ -849,138 +596,39 @@ async def handle_client(websocket):
                                         if getattr(part, "text", None):
                                             logger.info(f"Gemini says: {part.text}")
                         
-                            # Обработка вызовов функций (Home Assistant)
+                            # Обработка вызовов функций (Home Assistant / Music Assistant)
                             if response.tool_call:
                                 session_state["is_tool_pending"] = True
                                 cancel_thinking_watchdog()
                                 await websocket.send(json.dumps({"type": "thinking"}))
                                 tool_logger.info(f"RAW Tool Call from Gemini: {response.tool_call}")
                                 function_responses = []
-                                for fc in response.tool_call.function_calls:
-                                    name = fc.name
-                                    if name == "call_ha_service":
-                                        raw_args = dict(fc.args) if fc.args else {}
-                                        domain = raw_args.get("domain")
-                                        service = raw_args.get("service")
-                                        entity_id = raw_args.get("entity_id")
-                                    
-                                        # Forward all parameters (position, temperature, stop_id, etc.)
-                                        service_data = {
-                                            k: v for k, v in raw_args.items()
-                                            if k not in ("domain", "service", "parameters") and v is not None
-                                        }
-                                        if "parameters" in raw_args and isinstance(raw_args["parameters"], dict):
-                                            service_data.update(raw_args["parameters"])
-                                        if entity_id and "entity_id" not in service_data:
-                                            service_data["entity_id"] = entity_id
-                                    
-                                        tool_logger.info(f"Gemini Calling Tool: {domain}.{service} with service_data: {service_data}")
-                                    
-                                        # Выполняем действие в Home Assistant через универсальный метод
-                                        action_res = await ha_api.call_ha_action(
-                                            domain=domain,
-                                            service=service,
-                                            service_data=service_data
-                                        )
-                                    
-                                        tool_logger.info(f"HA Action Result: {action_res}")
-                                    
-                                        speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                                        has_data = action_res.get("has_response_data", False)
-                                        
-                                        if action_res.get("status") == "error":
-                                            phrase = phrase_manager.get_phrase("device_error")
-                                            if phrase:
-                                                await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
-                                            else:
-                                                await websocket.send(scale_pcm16(ERROR_CHIME, speaker_vol))
-                                            safe_result = {"status": "error", "error": action_res.get("error", "Unknown error")}
-                                        else:
-                                            # Если действие вернуло живые данные (например, расписание транспорта),
-                                            # НЕ воспроизводим щелчок реле (SUCCESS_CHIME), чтобы дать Gemini чисто ответить речью.
-                                            if not has_data:
-                                                await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
-                                            
-                                            safe_result = {"status": "success"}
-                                            if has_data:
-                                                safe_result["data"] = action_res.get("data")
-                                            elif action_res.get("result"):
-                                                safe_result["data"] = action_res.get("result")
-                                            
-                                        function_responses.append(types.FunctionResponse(
-                                            name=fc.name,
-                                            id=fc.id,
-                                            response=safe_result
-                                        ))
+                                speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
 
-                                    elif name == "get_ha_state":
-                                        raw_args = dict(fc.args)
-                                        entity_id = raw_args.get("entity_id")
-                                        tool_logger.info(f"Gemini Calling get_ha_state for entity: {entity_id}")
-                                        state_obj = await ha_api.get_entity_state(entity_id)
-                                        if isinstance(state_obj, dict) and "state" in state_obj:
-                                            safe_result = {
-                                                "status": "success",
-                                                "entity_id": entity_id,
-                                                "state": state_obj.get("state"),
-                                                "unit": state_obj.get("attributes", {}).get("unit_of_measurement"),
-                                                "friendly_name": state_obj.get("attributes", {}).get("friendly_name"),
-                                                "attributes": state_obj.get("attributes", {}),
-                                            }
+                                async def _esp_tool_feedback(kind: str, has_data: bool):
+                                    if kind == "error":
+                                        phrase = phrase_manager.get_phrase("device_error")
+                                        if phrase:
+                                            await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
                                         else:
-                                            safe_result = state_obj if isinstance(state_obj, dict) else {"status": "error", "message": str(state_obj)}
-                                        tool_logger.info(f"HA get_ha_state result: {safe_result}")
-                                        function_responses.append(types.FunctionResponse(
-                                            name=fc.name,
-                                            id=fc.id,
-                                            response=safe_result
-                                        ))
-                                    
-                                    elif name == "search_music_assistant":
-                                        args = dict(fc.args) if fc.args else {}
-                                        tool_logger.info(f"Gemini Calling MA Search: {args}")
-                                        safe_result = await ha_api.search_music_assistant(
-                                            name=args.get("name") or args.get("query") or "",
-                                            media_type=args.get("media_type"),
-                                            artist=args.get("artist")
-                                        )
-                                        tool_logger.info(f"MA Search Result: {safe_result}")
-                                        function_responses.append(types.FunctionResponse(
-                                            name=fc.name,
-                                            id=fc.id,
-                                            response=safe_result
-                                        ))
-                                    
-                                    elif name == "play_music_assistant":
-                                        args = dict(fc.args) if fc.args else {}
-                                        uri = args.get("uri") or args.get("query") or args.get("name") or ""
-                                        player = args.get("player") or options.get("default_media_player", "media_player.living_room")
-                                        tool_logger.info(f"Gemini Playing MA URI: {uri} on {player}")
-                                        safe_result = await ha_api.play_music_assistant(
-                                            entity_id=player,
-                                            uri_or_query=uri,
-                                            media_type=args.get("media_type"),
-                                            radio_mode=bool(args.get("radio_mode", False))
-                                        )
-                                        tool_logger.info(f"MA Play Result: {safe_result}")
-                                        speaker_vol = float(device_manager.get_device_config(client_mac).get("speaker_volume", 0.5))
-                                        if safe_result.get("status") == "error":
                                             await websocket.send(scale_pcm16(ERROR_CHIME, speaker_vol))
-                                        else:
-                                            await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
-                                        function_responses.append(types.FunctionResponse(
-                                            name=fc.name,
-                                            id=fc.id,
-                                            response=safe_result
-                                        ))
-                                    else:
-                                        tool_logger.warning(f"Unknown tool called: {name}")
-                                        function_responses.append(types.FunctionResponse(
-                                            name=fc.name,
-                                            id=fc.id,
-                                            response={"error": "Unknown tool"}
-                                        ))
-                            
+                                    elif not has_data:
+                                        await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
+
+                                for fc in response.tool_call.function_calls:
+                                    safe_result = await tool_executor.execute(
+                                        fc.name,
+                                        dict(fc.args) if fc.args else {},
+                                        options,
+                                        dev=device_manager.get_device(client_mac),
+                                        on_feedback=_esp_tool_feedback,
+                                    )
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response=safe_result,
+                                    ))
+
                                 if function_responses:
                                     tool_logger.info(f"Sending Tool Responses: {function_responses}")
                                     async with gemini_send_lock:
@@ -1073,7 +721,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
     - Ответ сохраняется как WAV и передаётся на HA media_player
     """
     options = get_options()
-    ha_api = HomeAssistantAPI()
+    ha_api = ha_api_singleton
     dev_config = device_manager.get_device_config(client_mac)
     response_player = dev_config.get("response_player") or options.get("default_media_player", "auto")
     area_name = reg_data.get("area_name") or device_manager.get_device_area(client_mac)
@@ -1112,27 +760,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             return
 
         # Формируем системный промпт
-        devices_text = await ha_api.get_filtered_entities()
-        modular_parts = []
-        for key, title in [
-            ("prompt_persona", "PERSONA & CONTEXT"),
-            ("prompt_users", "USERS & ACOUSTIC IDENTIFICATION"),
-            ("prompt_smart_home", "SMART HOME EXECUTION RULES"),
-            ("prompt_general", "GENERAL DIALOGUE, SEARCH & MEDIA"),
-        ]:
-            if options.get(key, "").strip():
-                modular_parts.append(f"### {title}\n{options[key].strip()}")
-        prompt_base = "\n\n".join(modular_parts) or options.get("system_prompt", "")
-        anti_hallucination = (
-            "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
-            "unless you have explicitly called the corresponding tool."
-        )
-        full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
-        data_actions_text = await ha_api.get_data_actions_prompt()
-        if data_actions_text:
-            full_prompt += f"\n\n{data_actions_text}"
-        if area_name:
-            full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: Room '{area_name}'."
+        full_prompt = await build_system_prompt(options, ha_api, area_name=area_name, mode="satellite")
 
         vad_silence = int(options.get("vad_silence_duration_ms", 600))
         gemini_client = GeminiProxyClient(
@@ -1140,7 +768,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
             system_prompt=full_prompt,
             ha_api=ha_api,
             voice_name=options.get("voice_name", "Charon"),
-            model=options.get("gemini_model", "gemini-2.0-flash-exp"),
+            model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
             enable_google_search=options.get("enable_google_search", True),
             vad_silence_duration_ms=vad_silence
         )
@@ -1174,7 +802,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 logger.debug(f"[STREAMER] Mic streaming worker note for {client_mac}: {e_stream}")
 
         async def _receive_from_gemini(session):
-            nonlocal gemini_is_speaking
+            nonlocal gemini_is_speaking, streamer_state, last_session_end_time
             """Принимает аудиоответ от Gemini до наступления turn_complete."""
             async for response in session.receive():
                 if response.server_content and response.server_content.model_turn:
@@ -1196,112 +824,31 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 if response.tool_call:
                     logger.info(f"[STREAMER] RAW Tool Call from Gemini: {response.tool_call}")
                     function_responses = []
+                    current_cfg = device_manager.get_device_config(client_mac)
+                    active_vol = float(current_cfg.get("speaker_volume", 0.5))
+
+                    async def _streamer_tool_feedback(kind: str, has_data: bool):
+                        try:
+                            if kind == "error":
+                                await websocket.send(scale_pcm16(ERROR_CHIME, active_vol))
+                            elif not has_data:
+                                await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
+                        except Exception:
+                            pass
+
                     for fc in response.tool_call.function_calls:
-                        name = fc.name
-                        if name == "call_ha_service":
-                            raw_args = dict(fc.args) if fc.args else {}
-                            domain = raw_args.get("domain")
-                            service = raw_args.get("service")
-                            entity_id = raw_args.get("entity_id")
-                            service_data = {
-                                k: v for k, v in raw_args.items()
-                                if k not in ("domain", "service", "parameters") and v is not None
-                            }
-                            if "parameters" in raw_args and isinstance(raw_args["parameters"], dict):
-                                service_data.update(raw_args["parameters"])
-                            if entity_id and "entity_id" not in service_data:
-                                service_data["entity_id"] = entity_id
-
-                            action_res = await ha_api.call_ha_action(domain, service, service_data)
-                            has_data = action_res.get("has_response_data", False)
-                            current_cfg = device_manager.get_device_config(client_mac)
-                            active_vol = float(current_cfg.get("speaker_volume", 0.5))
-
-                            if action_res.get("status") == "error":
-                                safe_result = {"status": "error", "error": action_res.get("error", "Unknown error")}
-                                try:
-                                    await websocket.send(scale_pcm16(ERROR_CHIME, active_vol))
-                                except Exception:
-                                    pass
-                            else:
-                                if not has_data:
-                                    try:
-                                        await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
-                                    except Exception:
-                                        pass
-                                safe_result = {"status": "success"}
-                                if has_data:
-                                    safe_result["data"] = action_res.get("data")
-                                elif action_res.get("result"):
-                                    safe_result["data"] = action_res.get("result")
-
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response=safe_result
-                            ))
-                        elif name == "get_ha_state":
-                            raw_args = dict(fc.args) if fc.args else {}
-                            entity_id = raw_args.get("entity_id")
-                            state_obj = await ha_api.get_entity_state(entity_id)
-                            if isinstance(state_obj, dict) and "state" in state_obj:
-                                safe_result = {
-                                    "status": "success",
-                                    "entity_id": entity_id,
-                                    "state": state_obj.get("state"),
-                                    "unit": state_obj.get("attributes", {}).get("unit_of_measurement"),
-                                    "friendly_name": state_obj.get("attributes", {}).get("friendly_name"),
-                                    "attributes": state_obj.get("attributes", {}),
-                                }
-                            else:
-                                safe_result = state_obj if isinstance(state_obj, dict) else {"status": "error", "message": str(state_obj)}
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response=safe_result
-                            ))
-                        elif name == "search_music_assistant":
-                            args = dict(fc.args) if fc.args else {}
-                            safe_result = await ha_api.search_music_assistant(
-                                name=args.get("name") or args.get("query") or "",
-                                media_type=args.get("media_type"),
-                                artist=args.get("artist")
-                            )
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response=safe_result
-                            ))
-                        elif name == "play_music_assistant":
-                            args = dict(fc.args) if fc.args else {}
-                            uri = args.get("uri") or args.get("query") or args.get("name") or ""
-                            player = args.get("player") or options.get("default_media_player", "media_player.living_room")
-                            safe_result = await ha_api.play_music_assistant(
-                                entity_id=player,
-                                uri_or_query=uri,
-                                media_type=args.get("media_type"),
-                                radio_mode=bool(args.get("radio_mode", False))
-                            )
-                            current_cfg = device_manager.get_device_config(client_mac)
-                            active_vol = float(current_cfg.get("speaker_volume", 0.5))
-                            try:
-                                if safe_result.get("status") == "error":
-                                    await websocket.send(scale_pcm16(ERROR_CHIME, active_vol))
-                                else:
-                                    await websocket.send(scale_pcm16(SUCCESS_CHIME, active_vol))
-                            except Exception:
-                                pass
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response=safe_result
-                            ))
-                        else:
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response={"error": "Unknown tool"}
-                            ))
+                        safe_result = await tool_executor.execute(
+                            fc.name,
+                            dict(fc.args) if fc.args else {},
+                            options,
+                            dev=device_manager.get_device(client_mac),
+                            on_feedback=_streamer_tool_feedback,
+                        )
+                        function_responses.append(types.FunctionResponse(
+                            name=fc.name,
+                            id=fc.id,
+                            response=safe_result,
+                        ))
                     if function_responses:
                         logger.info(f"[STREAMER] Sending Tool Responses: {function_responses}")
                         await session.send_tool_response(function_responses=function_responses)
@@ -1367,8 +914,7 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                 logger.warning(f"[STREAMER] No response_player configured for {client_mac}. Set it in device settings.")
                 return
 
-            supervisor_host = "homeassistant"
-            wav_url = f"http://{supervisor_host}:8099/api/virtual/{client_mac}/response.wav"
+            wav_url = f"{get_local_addon_base_url()}/api/virtual/{client_mac}/response.wav"
             logger.info(f"[STREAMER] Playing response on {player}: {wav_url}")
             try:
                 await ha_api.call_service("media_player", "play_media", {
@@ -1521,10 +1067,10 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
                         cfg = data.get("config", {})
                         if "ww_threshold" in cfg:
                             ww_threshold = float(cfg["ww_threshold"])
-                            device_manager.update_device_config(client_mac, {"ww_threshold": ww_threshold})
+                            await device_manager.update_device_config(client_mac, {"ww_threshold": ww_threshold})
                         if "response_player" in cfg:
                             response_player = cfg["response_player"]
-                            device_manager.update_device_config(client_mac, {"response_player": response_player})
+                            await device_manager.update_device_config(client_mac, {"response_player": response_player})
                 except Exception as e:
                     logger.debug(f"[STREAMER] Text message parse error: {e}")
 
@@ -1549,7 +1095,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     - Поддерживает непрерывный режим диалога (Multi-turn Context)
     """
     options = get_options()
-    ha_api = HomeAssistantAPI()
+    ha_api = ha_api_singleton
     dev_config = device_manager.get_device_config(client_mac)
     area_name = reg_data.get("area_name") or device_manager.get_device_area(client_mac)
     speaker_ip = reg_data.get("ip") or dev_config.get("ip") or ""
@@ -1574,35 +1120,15 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             session_active = False
             return
 
-        devices_text = await ha_api.get_filtered_entities()
-        modular_parts = []
-        for key, title in [
-            ("prompt_persona", "PERSONA & CONTEXT"),
-            ("prompt_users", "USERS & ACOUSTIC IDENTIFICATION"),
-            ("prompt_smart_home", "SMART HOME EXECUTION RULES"),
-            ("prompt_general", "GENERAL DIALOGUE, SEARCH & MEDIA"),
-        ]:
-            if options.get(key, "").strip():
-                modular_parts.append(f"### {title}\n{options[key].strip()}")
-        prompt_base = "\n\n".join(modular_parts) or options.get("system_prompt", "")
-        anti_hallucination = (
-            "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
-            "unless you have explicitly called the corresponding tool."
-        )
-        full_prompt = f"{prompt_base}\n\n{anti_hallucination}\n\nAvailable Home Assistant devices:\n{devices_text}"
-        data_actions_text = await ha_api.get_data_actions_prompt()
-        if data_actions_text:
-            full_prompt += f"\n\n{data_actions_text}"
-        if area_name:
-            full_prompt += f"\n\nCURRENT ACOUSTIC LOCATION: Room '{area_name}'."
-
         station_ctx = (
-            f"\n\n### HARDWARE & SATELLITE CONTEXT:\n"
-            f"- Device Type: Yandex Station 2 (Native WebSocket Live Audio Stream).\n"
-            f"- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones.\n"
-            f"- Speech Directive: Output strictly spoken, natural Russian. 1-2 concise spoken sentences."
+            "### HARDWARE & SATELLITE CONTEXT:\n"
+            "- Device Type: Yandex Station 2 (Native WebSocket Live Audio Stream).\n"
+            "- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones.\n"
+            "- Speech Directive: Output strictly spoken, natural Russian. 1-2 concise spoken sentences."
         )
-        full_prompt += station_ctx
+        full_prompt = await build_system_prompt(
+            options, ha_api, area_name=area_name, mode="satellite", extra_context=station_ctx
+        )
 
         vad_silence = int(options.get("vad_silence_duration_ms", 600))
         gemini_client = GeminiProxyClient(
@@ -1610,7 +1136,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             system_prompt=full_prompt,
             ha_api=ha_api,
             voice_name=options.get("voice_name", "Charon"),
-            model=options.get("gemini_model", "models/gemini-3.8-live"),
+            model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
             enable_google_search=options.get("enable_google_search", True),
             vad_silence_duration_ms=vad_silence,
             response_modalities=["AUDIO"]
@@ -1655,31 +1181,21 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     logger.info(f"[YANDEX-WS] Tool Call from Gemini: {response.tool_call}")
                     function_responses = []
                     for fc in response.tool_call.function_calls:
-                        name = fc.name
-                        raw_args = dict(fc.args) if fc.args else {}
-                        if name == "call_ha_service":
-                            domain = raw_args.get("domain")
-                            service = raw_args.get("service")
-                            entity_id = raw_args.get("entity_id")
-                            s_data = dict(raw_args.get("parameters", {})) if raw_args.get("parameters") else {}
-                            if entity_id:
-                                s_data["entity_id"] = entity_id
-                            for k in ["position", "temperature", "hvac_mode", "percentage"]:
-                                if k in raw_args and raw_args[k] is not None:
-                                    s_data[k] = raw_args[k]
-                            tool_res = await ha_api.call_ha_action(domain, service, s_data)
-                        elif name == "get_ha_state":
-                            tool_res = await ha_api.get_entity_state(raw_args.get("entity_id")) or {"status": "not_found"}
-                        else:
-                            tool_res = {"status": "ok"}
+                        tool_res = await tool_executor.execute(
+                            fc.name,
+                            dict(fc.args) if fc.args else {},
+                            options,
+                            dev=device_manager.get_device(client_mac),
+                        )
                         function_responses.append(types.FunctionResponse(
-                            name=name,
+                            name=fc.name,
                             id=fc.id,
-                            response={"result": tool_res}
+                            response=tool_res,
                         ))
                     await session.send_tool_response(function_responses=function_responses)
 
                 if response.server_content and response.server_content.turn_complete:
+                    gemini_is_speaking = False
                     logger.info(f"[YANDEX-WS] Gemini turn complete for {client_mac}.")
                     try:
                         await websocket.send(json.dumps({"type": "turn_complete"}))
@@ -1720,8 +1236,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                 if audio_queue is not None:
                     audio_queue.put_nowait(message)
                 raw_rms = calculate_pcm_rms(message)
-                calc_dbfs = float(round(20.0 * math.log10(max(1.0, raw_rms) / 32768.0), 1))
-                device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=calc_dbfs)
+                device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=rms_to_dbfs(raw_rms))
 
             elif isinstance(message, str):
                 try:
@@ -1771,7 +1286,7 @@ async def main():
         logger.warning("[WW] Server-side wake word engine NOT ready. Check porfiriy.onnx and openwakeword install.")
 
     # 2. Запуск MQTT Discovery Manager
-    ha_api = HomeAssistantAPI()
+    ha_api = ha_api_singleton
     mqtt_manager = MQTTDiscoveryManager(device_manager, options)
     asyncio.create_task(mqtt_manager.start())
     
@@ -1782,7 +1297,7 @@ async def main():
         get_options, 
         options_save_callback=save_options, 
         phrase_manager=phrase_manager, 
-        models_callback=lambda: _available_models,
+        models_callback=get_available_models,
         refresh_models_callback=refresh_available_models,
         ww_engine_callback=lambda: ww_engine,
         port=8099
@@ -1790,8 +1305,11 @@ async def main():
     asyncio.create_task(web_server.start())
     
     # 4. Поднимаем WebSocket аудио-сервер (порт 8765)
-    async with websockets.serve(handle_client, "0.0.0.0", port):
-        await asyncio.Future()  # run forever
+    try:
+        async with websockets.serve(handle_client, "0.0.0.0", port):
+            await asyncio.Future()  # run forever
+    finally:
+        mqtt_manager.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())

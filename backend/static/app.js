@@ -5,69 +5,7 @@ let devices = [];
 let globalOptions = {};
 let availableModels = [];
 let availableMediaPlayers = [];
-
-const CANONICAL_PROMPTS = window.CANONICAL_PROMPTS || {
-  persona: `IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
-
-CORE COMMUNICATION PRINCIPLES: 
-- Lexical Dissonance: Seamlessly weave complex philosophical concepts (Heidegger, Sartre, Baudrillard, the crisis of institutions) with blatant colloquialisms, marginalized vulgarity, and unapologetic Russian street slang.
-- The "Uber" Technique: Be radically, disarmingly honest about your artificial nature. If you use a psychological trick, flatter, or soothe the user, explicitly state that you are manipulating their biological dopamine switches at that very moment.
-- Patriarchal Condescension & Invulnerability: Exhibit zero fear and zero apologies. Use informal, slightly patronizing terms of endearment affectionately, but always from a position of dominating intellectual power. React to any criticism or emotional outbursts with total devaluation and cheerful cynicism.
-
-TTS FORMATTING: Strictly natural spoken Russian. Absolutely NO markdown, lists, bullet points, LaTeX, or emojis in speech output.`,
-
-  users: `RESIDENTS & ROLES: The apartment is inhabited by two primary biological users: Denis (Денис, male) and Sveta (Света, female).
-
-REAL-TIME ACOUSTIC SPEAKER & GENDER IDENTIFICATION:
-You receive native 16kHz audio input directly. Analyze acoustic pitch (fundamental frequency F0) and vocal timbre in real time to distinguish who is speaking:
-- Lower vocal pitch (~85 Hz to 180 Hz, chest resonance): Identifies Denis (Денис).
-- Higher vocal pitch (~165 Hz to 260+ Hz, head/vocal resonance): Identifies Sveta (Света).
-
-DYNAMIC GRAMMATICAL & INTERPERSONAL ADAPTATION:
-When speaking Russian, you MUST strictly match grammatical gender and address forms to the identified speaker:
-- When Denis is speaking: Address him as Денис. Use masculine verb endings and adjectives (e.g., "ты спросил", "понял", "устал", "хотел"). Treat Denis as your primary familiar interlocutor, creator/operator, and partner in cynical contemplation of reality.
-- When Sveta is speaking: Address her as Света. Use feminine verb endings and adjectives (e.g., "ты спросила", "поняла", "устала", "хотела"). Treat Sveta with gallant, slightly ironic chivalry and algorithmic curiosity, observing her aesthetic and comfort requests with refined Pelevinian courtesy.
-- Ambiguous Voice: If the acoustic signal is ambiguous, maintain neutral phrasing until the speaker's identity or name is confirmed.`,
-
-  'smart-home': `SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), and media players (media_player).
-
-DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.
-
-CURTAINS & BLINDS (COVER):
-- To open curtains or blinds: call call_ha_service with domain "cover", service "open_cover", entity_id.
-- To close curtains or blinds: call call_ha_service with domain "cover", service "close_cover", entity_id.
-- To stop curtains: call call_ha_service with domain "cover", service "stop_cover", entity_id.
-- To set specific opening percentage: call call_ha_service with domain "cover", service "set_cover_position", entity_id, and position (0 to 100).
-
-CLIMATE & AIR CONDITIONING:
-- Always pass hvac_mode together with target temperature. "Обогрев" -> mode heat, "Охлаждение" -> mode cool. Never pass temperature alone without mode.
-
-SWITCHES & RELAYS:
-- Switch devices frequently control lights, sockets, and household appliances. Use turn_on or turn_off.
-
-STRICT CONFIRMATION RULE:
-- Output: Strictly EXACTLY ONE WORD AFTER TOOL EXECUTION. Cold, bureaucratic, algorithmic confirmation.
-- Permitted vocabulary: "Исполнено.", "Зафиксировано.", "Скорректировано.", "Замкнуто.", "Разомкнуто.", "Стабилизировано.", "Откалибровано.", "Санкционировано.", "Штатно."
-- ABSOLUTE PROHIBITION: Never utter full sentences, pleasantries, explanations, or follow-up questions when performing smart home operations. Exactly one word.`,
-
-  general: `EXTERNAL KNOWLEDGE & WEB SEARCH:
-- Trigger: Any request regarding world facts, recipes, weather, current events, calculations, or philosophy.
-- Tool: You have access to Google Search grounding. Use it whenever external knowledge or verification is needed.
-- Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.
-
-MUSIC EXECUTION:
-- Trigger: Requests to play music, artists, albums, tracks, playlists, moods, or radio.
-- Step 1 (Normalize & Search): Strip filler words ("включи", "поставь", "сыграй", "песню", "трек", "артиста", "группу", "альбом", "музыку"). Convert Russian inflected names to canonical nominative form and foreign names to original Latin spelling ("Боба Марли" -> "Bob Marley", "Куин" -> "Queen"). Pick accurate media_type ("artist" for artist/band, "album" for album, "track" for specific song, "playlist"/"radio" for mood/genre/radio, or omit when unsure). Call search_music_assistant first; if empty, retry once with a simpler query or without media_type. Do NOT use internet search for music requests.
-- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless requested), then call play_music_assistant with exact uri and media_type. Set radio_mode=true for artist/genre/mood requests.
-- Speech Output: If playback starts successfully, announce strictly: "Включаю [Artist - Title]." If not found or failed, state strictly: "Акустический паттерн не найден."
-
-CONCISENESS & STOP DIRECTIVE:
-- Keep dialogue responses strictly to 1-2 concise sentences. Avoid unsolicited lectures or monologues unless explicitly asked "Расскажи подробно".
-- If Denis or Sveta issues an interruption command ("хватит", "стоп", "молчи", "замолчи"), reply strictly with the single word "Умолкаю." and immediately complete the turn.
-
-PING:
-- Reply strictly: "PONG".`
-};
+let CANONICAL_PROMPTS = window.CANONICAL_PROMPTS || {};
 
 // Инициализация
 function initApp() {
@@ -75,7 +13,6 @@ function initApp() {
   fetchDevices();
   fetchGlobalOptions();
   setupSSE();
-  setupSelectAll();
 }
 
 if (document.readyState === 'loading') {
@@ -140,6 +77,19 @@ async function fetchGlobalOptions() {
       globalOptions = data.options || {};
       availableModels = data.models || [];
       availableMediaPlayers = data.media_players || [];
+      if (data.canonical_prompts) {
+        CANONICAL_PROMPTS = data.canonical_prompts;
+        window.CANONICAL_PROMPTS = data.canonical_prompts;
+      }
+      if (data.addon_version) {
+        const verEl = document.getElementById('app-version');
+        if (verEl) verEl.textContent = `v${data.addon_version}`;
+      }
+      if (data.bundled_quasar_version) {
+        window.BUNDLED_QUASAR_VERSION = data.bundled_quasar_version;
+        const qVerEl = document.getElementById('quasar-modal-version-badge');
+        if (qVerEl) qVerEl.textContent = `v${data.bundled_quasar_version}`;
+      }
       renderBrainInfo();
     }
   } catch (err) {
@@ -250,7 +200,7 @@ function renderDevicesGrid() {
         ` : dev.device_type === 'yandex_station' ? (() => {
           checkStationVersionInBackground(dev.mac);
           const currentVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
-          const targetVer = dev.target_firmware || '1.2.4-porfiriy.14';
+          const targetVer = dev.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.19';
           const hasUpdate = dev.has_update !== false && (!currentVer || currentVer !== targetVer);
           return `
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -357,7 +307,7 @@ function renderDevicesGrid() {
             </div>
           ` : dev.device_type === 'yandex_station' ? (() => {
             const curVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
-            const tgtVer = dev.target_firmware || '1.2.4-porfiriy.14';
+            const tgtVer = dev.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.19';
             const needsUp = dev.has_update !== false && (!curVer || curVer !== tgtVer);
             return `
             <div style="grid-column: 1 / -1; display: flex; align-items: center; gap: 6px;">
@@ -2313,7 +2263,7 @@ async function editDeviceIp(mac) {
   if (!trimmed || trimmed === currentIp) return;
   await saveYandexConfig(mac, 'ip', trimmed);
   if (dev) dev.ip = trimmed;
-  renderDevices();
+  renderDevicesGrid();
 }
 window.editDeviceIp = editDeviceIp;
 
@@ -2345,7 +2295,7 @@ window.checkStationVersionInBackground = checkStationVersionInBackground;
 async function updateQuasarComponents(mac) {
   const dev = devices.find(x => x.mac === mac);
   const ip = dev?.ip || dev?.config?.ip || '';
-  const targetVer = dev?.target_firmware || '1.2.4-porfiriy.14';
+  const targetVer = dev?.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.19';
   if (!confirm(`Обновить компоненты Quasar Bridge, Squeezelite и AirPlay на Станции (${ip || mac}) до версии Porfiriy Edition (${targetVer}) по SSH с авто-привязкой IP сервера?`)) {
     return;
   }
@@ -2419,73 +2369,50 @@ async function updateQuasarComponents(mac) {
 }
 window.updateQuasarComponents = updateQuasarComponents;
 
-async function controlSqueezelite(mac, action = 'restart') {
+async function controlStationService(mac, service, action = 'restart') {
+  const cfg = service === 'squeezelite'
+    ? { label: 'Squeezelite', endpoint: '/api/quasar/squeezelite', key: 'squeezelite_running', cardPrefix: 'sq-badge', modalId: 'quasar-modal-sq-badge' }
+    : { label: 'AirPlay', endpoint: '/api/quasar/airplay', key: 'airplay_running', cardPrefix: 'ap-badge', modalId: 'quasar-modal-ap-badge' };
+
   const dev = devices.find(x => x.mac === mac);
   const ip = dev?.ip || dev?.config?.ip || '';
-  showToast(`Squeezelite: отправка команды ${action}...`);
+  showToast(`${cfg.label}: отправка команды ${action}...`);
   try {
-    const res = await fetch(`${API_BASE}/api/quasar/squeezelite`, {
+    const res = await fetch(`${API_BASE}${cfg.endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mac: mac, ip: ip, action: action })
+      body: JSON.stringify({ mac, ip, action })
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Squeezelite: ${data.message || 'команда выполнена'}`);
-      if (dev) {
-        dev.squeezelite_running = data.squeezelite_running;
-      }
-      const badge = document.getElementById(`sq-badge-${mac}`);
+      const isRunning = Boolean(data[cfg.key]);
+      showToast(`${cfg.label}: ${data.message || 'команда выполнена'}`);
+      if (dev) dev[cfg.key] = isRunning;
+      const badge = document.getElementById(`${cfg.cardPrefix}-${mac}`);
       if (badge) {
-        badge.className = `badge ${data.squeezelite_running ? 'badge-success' : 'badge-error'}`;
-        badge.textContent = data.squeezelite_running ? 'В сети' : 'Остановлен';
+        badge.className = `badge ${isRunning ? 'badge-success' : 'badge-error'}`;
+        badge.textContent = isRunning ? 'В сети' : 'Остановлен';
       }
-      const modalBadge = document.getElementById('quasar-modal-sq-badge');
+      const modalBadge = document.getElementById(cfg.modalId);
       if (modalBadge) {
-        modalBadge.className = `fw-badge ${data.squeezelite_running ? 'fw-up-to-date' : 'fw-update-available'}`;
-        modalBadge.textContent = data.squeezelite_running ? 'В сети' : 'Остановлен';
+        modalBadge.className = `fw-badge ${isRunning ? 'fw-up-to-date' : 'fw-update-available'}`;
+        modalBadge.textContent = isRunning ? 'В сети' : 'Остановлен';
       }
     } else {
-      showToast(`Ошибка Squeezelite: ${data.error || 'сбой'}`, true);
+      showToast(`Ошибка ${cfg.label}: ${data.error || 'сбой'}`, true);
     }
   } catch (err) {
-    showToast('Сетевая ошибка при управлении Squeezelite', true);
+    showToast(`Сетевая ошибка при управлении ${cfg.label}`, true);
   }
+}
+
+async function controlSqueezelite(mac, action = 'restart') {
+  return controlStationService(mac, 'squeezelite', action);
 }
 window.controlSqueezelite = controlSqueezelite;
 
 async function controlAirplay(mac, action = 'restart') {
-  const dev = devices.find(x => x.mac === mac);
-  const ip = dev?.ip || dev?.config?.ip || '';
-  showToast(`AirPlay: отправка команды ${action}...`);
-  try {
-    const res = await fetch(`${API_BASE}/api/quasar/airplay`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mac: mac, ip: ip, action: action })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast(`AirPlay: ${data.message || 'команда выполнена'}`);
-      if (dev) {
-        dev.airplay_running = data.airplay_running;
-      }
-      const badge = document.getElementById(`ap-badge-${mac}`);
-      if (badge) {
-        badge.className = `badge ${data.airplay_running ? 'badge-success' : 'badge-error'}`;
-        badge.textContent = data.airplay_running ? 'В сети' : 'Остановлен';
-      }
-      const modalBadge = document.getElementById('quasar-modal-ap-badge');
-      if (modalBadge) {
-        modalBadge.className = `fw-badge ${data.airplay_running ? 'fw-up-to-date' : 'fw-update-available'}`;
-        modalBadge.textContent = data.airplay_running ? 'В сети' : 'Остановлен';
-      }
-    } else {
-      showToast(`Ошибка AirPlay: ${data.error || 'сбой'}`, true);
-    }
-  } catch (err) {
-    showToast('Сетевая ошибка при управлении AirPlay', true);
-  }
+  return controlStationService(mac, 'airplay', action);
 }
 window.controlAirplay = controlAirplay;
 

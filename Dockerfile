@@ -21,11 +21,10 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements.txt --break-system-packages
 
 # Copy root filesystem & application code
 COPY run.sh /
-COPY config.yaml /backend/config.yaml
 COPY config.yaml /config.yaml
+COPY config.yaml /backend/config.yaml
 COPY backend /backend/
-COPY porfiriy.onnx /backend/porfiriy.onnx
-COPY porfiriy.onnx /porfiriy.onnx
+RUN ln -sf /backend/porfiriy.onnx /porfiriy.onnx
 
 # Ensure openWakeWord has melspectrogram and embedding models pre-installed in library directory
 RUN mkdir -p /usr/local/lib/python3.11/dist-packages/openwakeword/resources/models && \

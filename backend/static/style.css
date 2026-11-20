@@ -528,14 +528,6 @@ body {
   transform: translateY(0);
 }
 
-.brain-details {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
 /* Card Header Flex & Phrase Status Badge */
 .card-header-flex {
   display: flex;
@@ -1035,5 +1027,44 @@ body {
   0% { box-shadow: 0 0 6px rgba(245, 158, 11, 0.4); }
   100% { box-shadow: 0 0 16px rgba(239, 68, 68, 0.85); transform: translateY(-1px); }
 }
+
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(139, 92, 246, 0.35); }
+  50% { border-color: rgba(139, 92, 246, 0.9); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.badge-success {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.badge-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.btn-hover-scale {
+  transition: transform 0.15s ease;
+}
+
+.btn-hover-scale:hover {
+  transform: scale(1.03);
+}
+
 
 

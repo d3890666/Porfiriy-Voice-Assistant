@@ -2,7 +2,7 @@ import os
 import logging
 import json
 import asyncio
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,7 @@ class QuasarManager:
             except Exception as e:
                 logger.error(f"[QUASAR] Failed to read bundled version manifest: {e}")
         return {
-            "version": "1.2.4-porfiriy.11",
+            "version": "1.2.4-porfiriy.19",
             "name": "Quasar Bridge Porfiriy Edition",
             "target": "yandex_station_2"
         }
@@ -319,7 +319,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.11")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.19")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:
@@ -404,8 +404,6 @@ class QuasarManager:
                     service_content = f.read()
 
             if service_content:
-                # Экранируем одинарные кавычки для безопасного echo
-                escaped = service_content.replace("'", "'\\''")
                 await conn.run(f"cat << 'EOF' > {SQUEEZELITE_SERVICE_PATH}\n{service_content}\nEOF\nchmod 755 {SQUEEZELITE_SERVICE_PATH}", check=False)
             else:
                 await conn.run(f"chmod 755 {SQUEEZELITE_SERVICE_PATH} 2>/dev/null || true", check=False)
@@ -636,37 +634,18 @@ class QuasarManager:
 
     async def _cleanup_legacy_volume_ducking(self, conn) -> None:
         """
-        Останавливает и удаляет старый блок auto-ducking / volume_sync / soft_volume со Станции,
-        возвращая штатную маршрутизацию ALSA и чистый set_volume.sh.
+        Останавливает и удаляет устаревший (pre-v0.0.135) сервис S96ducking со Станции.
+        Актуальные asound.conf и set_volume.sh записываются далее в ensure_asound_music_duck / ensure_server_host_synced.
         """
         try:
-            logger.info("[QUASAR] Cleaning up legacy station-ducking, set_volume wrapper and soft_volume...")
+            logger.info("[QUASAR] Cleaning up legacy S96ducking if present...")
             cleanup_cmd = (
                 f"sh {STATION_DUCKING_SERVICE_PATH} stop 2>/dev/null || true; "
                 "killall -9 ducking 2>/dev/null || true; "
-                f"rm -rf {STATION_DUCKING_DIR} /data/opt/porfiriy_host /data/opt/porfiriy_port /tmp/station_ducking_*; "
-                "mount -o remount,rw / 2>/dev/null && ("
-                f"rm -f {STATION_DUCKING_INIT_PATH}; "
-                f"sed -i 's/playback.pcm \"dmix_spk_plug\"/playback.pcm \"soft_volume\"/' {ASOUND_CONF_PATH} 2>/dev/null || true; "
-                f"cat << 'EOF' > {SET_VOLUME_PATH}\n"
-                "#!/bin/sh\n"
-                'target="${1:-50}"\n'
-                'case "$target" in *[!0-9]*|"") target=50 ;; esac\n'
-                'if [ "$target" -ge 1 ] && [ "$target" -le 10 ]; then\n'
-                '    step="$target"\n'
-                '    target=$((target * 10))\n'
-                'else\n'
-                '    step=$((target / 10))\n'
-                '    [ "$step" -lt 1 ] && step=1\n'
-                '    [ "$step" -gt 10 ] && step=10\n'
-                'fi\n'
-                'echo "$step" > /data/quasar/data/last_vendor_volume 2>/dev/null || true\n'
-                'echo "$step" > /bkupgrade/data/quasar/data/last_vendor_volume 2>/dev/null || true\n'
-                'echo "$target" > /tmp/quasar_volume\n'
-                "amixer set 'Master' \"${target}%\" >/dev/null 2>&1 || true\n"
-                "EOF\n"
-                f"chmod 755 {SET_VOLUME_PATH}; "
-                "sync; mount -o remount,ro / 2>/dev/null || true)"
+                f"rm -rf {STATION_DUCKING_DIR} /tmp/station_ducking_*; "
+                f"if [ -f {STATION_DUCKING_INIT_PATH} ]; then "
+                f"mount -o remount,rw / 2>/dev/null && rm -f {STATION_DUCKING_INIT_PATH} && sync && mount -o remount,ro / 2>/dev/null || true; "
+                "fi"
             )
             await conn.run(cleanup_cmd, check=False)
         except Exception as e:
@@ -779,8 +758,8 @@ class QuasarManager:
         try:
             logger.info(f"[QUASAR] Syncing server host IP {porfiriy_host}:{openai_port} to station env files...")
 
-            # 1. /data/opt/porfiriy_host
-            await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
+            # 1. /data/opt/porfiriy_host и /data/opt/porfiriy_port
+            await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host && echo '{openai_port}' > /data/opt/porfiriy_port", check=False)
 
             # 2. /data/opt/squeezelite/squeezelite.env
             sq_cmd = (
@@ -900,18 +879,23 @@ class QuasarManager:
             logger.warning(f"[QUASAR] Error syncing server host IP: {e}")
             return porfiriy_host
 
-    async def ensure_alice_watcher_installed(self, conn) -> bool:
+    async def ensure_alice_watcher_installed(self, conn, sync_host: bool = False) -> bool:
         """
-        Устанавливает легкий наблюдатель состояния Алисы (alice-watcher) и сохраняет реальный LAN IP Porfiriy.
-        Скрипт не трогает ALSA/amixer, а только отправляет POST /api/station/alice_state на сервер.
+        Устанавливает наблюдатель состояния Алисы (alice-watcher):
+        - выполняет аппаратный дакинг ALSA Music (25% / 100%)
+        - отправляет POST /api/station/alice_state и /api/station/airplay_state на сервер Порфирия
+        - обеспечивает взаимную паузу Squeezelite и AirPlay.
         """
         try:
-            porfiriy_host = await self.ensure_server_host_synced(conn)
-            if not porfiriy_host:
-                porfiriy_host = await self._resolve_porfiriy_host(conn)
-                if porfiriy_host:
-                    await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
-                logger.info(f"[QUASAR] Saved Porfiriy host {porfiriy_host} for alice-watcher")
+            if sync_host:
+                await self.ensure_server_host_synced(conn)
+            else:
+                host_check = await conn.run("test -s /data/opt/porfiriy_host && echo 'ok'", check=False)
+                if host_check.exit_status != 0 or host_check.stdout.strip() != "ok":
+                    porfiriy_host = await self._resolve_porfiriy_host(conn)
+                    if porfiriy_host:
+                        await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
+                        logger.info(f"[QUASAR] Saved Porfiriy host {porfiriy_host} for alice-watcher")
 
             await conn.run(f"mkdir -p {ALICE_WATCHER_DIR}", check=False)
 
@@ -1000,7 +984,7 @@ class QuasarManager:
             return {"error": "IP-адрес колонки не указан"}
 
         bundled = self.get_bundled_version_info()
-        bundled_ver = bundled.get("version", "1.2.4-porfiriy.11")
+        bundled_ver = bundled.get("version", "1.2.4-porfiriy.19")
 
         try:
             async with await self._open_ssh_connection(ip, port) as conn:

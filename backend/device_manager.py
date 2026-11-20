@@ -1,13 +1,12 @@
 import os
-import io
-import wave
-import struct
-import math
 import json
 import time
 import asyncio
 import logging
 from typing import Dict, List, Any, Optional, Callable
+
+from audio_utils import filter_pcm16_highpass, pcm16_to_wav, analyze_pcm16
+from net_utils import normalize_mac
 
 logger = logging.getLogger("device_manager")
 
@@ -27,91 +26,6 @@ def is_newer_version(target: str, current: str) -> bool:
         return t_parts > c_parts
     except Exception:
         return False
-
-def filter_pcm16_highpass(pcm_data: bytes, cutoff_hz: float = 85.0, sample_rate: int = 16000) -> bytes:
-    """Удаление сетевого гула 50/100 Гц и постоянного смещения (DC offset) через High-Pass фильтр 2-го порядка."""
-    if not pcm_data:
-        return b""
-    try:
-        import numpy as np
-        from scipy import signal
-        samples = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32)
-        if len(samples) < 8:
-            return pcm_data
-        b, a = signal.butter(2, cutoff_hz, btype='highpass', fs=sample_rate)
-        filtered = signal.lfilter(b, a, samples)
-        clamped = np.clip(np.round(filtered), -32768, 32767).astype(np.int16)
-        return clamped.tobytes()
-    except Exception as e:
-        logger.debug(f"[FILTER] High-pass filter error: {e}")
-        return pcm_data
-
-def pcm16_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
-    """Упаковка сырых 16-битных PCM сэмплов в стандартный RIFF WAV контейнер."""
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm_data)
-    return buf.getvalue()
-
-def analyze_pcm16(pcm_data: bytes, sample_rate: int = 16000) -> Dict[str, Any]:
-    """Расчет акустических метрик (RMS dBFS, Peak, клиппинг)."""
-    if not pcm_data:
-        return {
-            "duration_s": 0.0,
-            "samples_count": 0,
-            "rms_linear": 0.0,
-            "rms_dbfs": -100.0,
-            "peak": 0,
-            "peak_dbfs": -100.0,
-            "clipping_samples": 0,
-            "clipping_percent": 0.0,
-            "quality": "no_audio"
-        }
-    
-    num_samples = len(pcm_data) // 2
-    samples = struct.unpack(f"<{num_samples}h", pcm_data[:num_samples * 2])
-    
-    peak = 0
-    clipping_count = 0
-    sum_sq = 0.0
-    
-    for s in samples:
-        abs_s = abs(s)
-        if abs_s > peak:
-            peak = abs_s
-        if abs_s >= 32600:
-            clipping_count += 1
-        sum_sq += s * s
-        
-    rms = math.sqrt(sum_sq / num_samples) if num_samples > 0 else 0.0
-    rms_dbfs = 20.0 * math.log10(rms / 32768.0) if rms > 0 else -100.0
-    peak_dbfs = 20.0 * math.log10(peak / 32768.0) if peak > 0 else -100.0
-    clip_pct = (clipping_count / num_samples) * 100.0 if num_samples > 0 else 0.0
-    
-    quality = "optimal"
-    if clip_pct > 1.5:
-        quality = "critical_clipping"
-    elif clip_pct > 0.1:
-        quality = "warning_clipping"
-    elif rms_dbfs < -42.0:
-        quality = "too_quiet"
-    elif rms_dbfs > -10.0:
-        quality = "loud"
-        
-    return {
-        "duration_s": round(num_samples / float(sample_rate), 2),
-        "samples_count": num_samples,
-        "rms_linear": round(rms, 1),
-        "rms_dbfs": round(rms_dbfs, 1),
-        "peak": peak,
-        "peak_dbfs": round(peak_dbfs, 1),
-        "clipping_samples": clipping_count,
-        "clipping_percent": round(clip_pct, 2),
-        "quality": quality
-    }
 
 DEFAULT_DEVICE_CONFIG = {
     "mic_gain": 2.0,
@@ -197,6 +111,23 @@ class DeviceManager:
     def save_devices(self):
         """Публичный метод сохранения устройств на диск."""
         self._save()
+
+    def notify_device_updated(self, event_type: str, device_data: Dict[str, Any]):
+        """Публичный метод сохранения и уведомления подписчиков об изменении устройства."""
+        self._save()
+        self._notify(event_type, device_data)
+
+    def _resolve_mac(self, mac: str, require_online: bool = False) -> Optional[str]:
+        """Ищет канонический ключ MAC в self.devices (с учётом форматов без ':' и '-')."""
+        clean_mac = (mac or "").strip().lower()
+        dev = self.devices.get(clean_mac)
+        if dev and (not require_online or dev.get("is_online")):
+            return clean_mac
+        norm_target = normalize_mac(clean_mac)
+        for k, d in self.devices.items():
+            if normalize_mac(k) == norm_target and (not require_online or d.get("is_online")):
+                return k
+        return None
 
     def add_subscriber(self, callback: Callable[[str, Dict[str, Any]], Any]):
         """Подписка на события изменения состояния устройств (для SSE и MQTT)."""
@@ -475,16 +406,9 @@ class DeviceManager:
 
     async def trigger_wake(self, mac: str) -> bool:
         """Принудительный вызов ассистента (эмуляция сработки вейкворда)."""
-        clean_mac = mac.strip().lower()
+        resolved = self._resolve_mac(mac, require_online=True) or self._resolve_mac(mac) or mac.strip().lower()
+        clean_mac = resolved
         dev = self.devices.get(clean_mac)
-        if not dev or not dev.get("is_online"):
-            # Поиск без двоеточий / дефисов
-            clean_mac_norm = clean_mac.replace(":", "").replace("-", "")
-            for k, d in self.devices.items():
-                if k.replace(":", "").replace("-", "") == clean_mac_norm and d.get("is_online"):
-                    clean_mac = k
-                    dev = d
-                    break
 
         handler = self._wake_handlers.get(clean_mac)
         if handler:
@@ -513,18 +437,11 @@ class DeviceManager:
 
     async def update_device_config(self, mac: str, new_config: Dict[str, Any]) -> bool:
         """Обновление конфигурации для одного устройства."""
-        clean_mac = mac.strip().lower()
-        dev = self.devices.get(clean_mac)
-        if not dev:
-            norm_target = clean_mac.replace(":", "").replace("-", "")
-            for k, d in self.devices.items():
-                if k.replace(":", "").replace("-", "") == norm_target:
-                    clean_mac = k
-                    dev = d
-                    break
-        if not dev:
-            logger.warning(f"Cannot update config: device {clean_mac} not found")
+        clean_mac = self._resolve_mac(mac)
+        if not clean_mac:
+            logger.warning(f"Cannot update config: device {mac} not found")
             return False
+        dev = self.devices[clean_mac]
             
         dev.setdefault("config", {})
         dev["config"].update(new_config)

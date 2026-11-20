@@ -5,6 +5,8 @@ import os
 from typing import Dict, Any, Optional
 import paho.mqtt.client as mqtt
 
+from net_utils import normalize_mac
+
 logger = logging.getLogger("mqtt_discovery")
 
 class MQTTDiscoveryManager:
@@ -85,9 +87,16 @@ class MQTTDiscoveryManager:
         else:
             logger.warning(f"MQTT connect failed with result code: {rc}")
 
-    def _on_disconnect(self, client, userdata, rc, properties=None):
+    def _on_disconnect(self, client, userdata, *args):
         self.is_connected = False
         logger.info("Disconnected from MQTT Broker.")
+
+    def _find_target_mac(self, dev_id: str) -> Optional[str]:
+        norm_id = normalize_mac(dev_id)
+        for d in self.device_manager.get_all_devices():
+            if normalize_mac(d["mac"]) == norm_id or d["mac"].lower() == dev_id.lower():
+                return d["mac"]
+        return None
 
     def _on_message(self, client, userdata, msg):
         """Обработка входящих команд управления из Home Assistant."""
@@ -96,110 +105,88 @@ class MQTTDiscoveryManager:
             payload = msg.payload.decode("utf-8").strip()
             logger.info(f"MQTT Command received: {topic} -> {payload}")
             
-            # Топик: porfiriy/<dev_id>/set/<param>
+            # Топик: porfiriy/<dev_id>/set/<param> или porfiriy/<dev_id>/media/<param>
             parts = topic.split("/")
-            if len(parts) >= 4 and parts[0] == "porfiriy" and parts[2] == "set":
-                dev_id = parts[1]
-                param = parts[3]
-                
-                # Ищем устройство по clean_mac / dev_id
-                target_mac = None
-                for d in self.device_manager.get_all_devices():
-                    clean_mac = d["mac"].replace(":", "").replace("-", "").lower()
-                    if clean_mac == dev_id or d["mac"].lower() == dev_id:
-                        target_mac = d["mac"]
-                        break
-                        
-                if not target_mac:
-                    return
-                    
+            if len(parts) < 4 or parts[0] != "porfiriy":
+                return
+
+            dev_id, section, param = parts[1], parts[2], parts[3]
+            target_mac = self._find_target_mac(dev_id)
+            if not target_mac or not self.loop:
+                return
+
+            if section == "set":
                 if param == "volume":
-                    vol = float(payload)
-                    if self.loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.device_manager.update_device_config(target_mac, {"speaker_volume": vol}),
-                            self.loop
-                        )
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.update_device_config(target_mac, {"speaker_volume": float(payload)}),
+                        self.loop,
+                    )
                 elif param == "mic_gain":
-                    gain = int(payload)
-                    if self.loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.device_manager.update_device_config(target_mac, {"mic_gain": gain}),
-                            self.loop
-                        )
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.update_device_config(target_mac, {"mic_gain": int(payload)}),
+                        self.loop,
+                    )
                 elif param == "wake_threshold":
-                    th = float(payload)
-                    if self.loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.device_manager.update_device_config(target_mac, {"wake_word_threshold": th}),
-                            self.loop
-                        )
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.update_device_config(target_mac, {"wake_word_threshold": float(payload)}),
+                        self.loop,
+                    )
                 elif param == "barge_in":
-                    barge_in = payload.upper() == "ON"
-                    if self.loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.device_manager.update_device_config(target_mac, {"enable_barge_in": barge_in}),
-                            self.loop
-                        )
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.update_device_config(target_mac, {"enable_barge_in": payload.upper() == "ON"}),
+                        self.loop,
+                    )
                 elif param == "beep":
-                    if self.loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.device_manager.send_command(target_mac, {"type": "beep"}),
-                            self.loop
-                        )
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.send_command(target_mac, {"type": "beep"}),
+                        self.loop,
+                    )
                 elif param == "reboot":
-                    if self.loop:
-                        asyncio.run_coroutine_threadsafe(
-                            self.device_manager.send_command(target_mac, {"type": "reboot"}),
-                            self.loop
-                        )
-            elif len(parts) >= 4 and parts[0] == "porfiriy" and parts[2] == "media":
-                dev_id = parts[1]
-                param = parts[3]
-                target_mac = None
-                for d in self.device_manager.get_all_devices():
-                    clean_mac = d["mac"].replace(":", "").replace("-", "").lower()
-                    if clean_mac == dev_id or d["mac"].lower() == dev_id:
-                        target_mac = d["mac"]
-                        break
-                if not target_mac:
-                    return
-                if param == "command":
-                    cmd = payload.upper()
-                    if cmd in ("STOP", "PAUSE"):
-                        if self.loop:
-                            asyncio.run_coroutine_threadsafe(
-                                self.device_manager.send_command(target_mac, {"type": "stop"}),
-                                self.loop
-                            )
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.send_command(target_mac, {"type": "reboot"}),
+                        self.loop,
+                    )
+            elif section == "media" and param == "command":
+                if payload.upper() in ("STOP", "PAUSE"):
+                    asyncio.run_coroutine_threadsafe(
+                        self.device_manager.send_command(target_mac, {"type": "stop"}),
+                        self.loop,
+                    )
         except Exception as e:
             logger.error(f"Error handling MQTT message: {e}")
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Реакция на события DeviceManager."""
-        if not self.is_connected or not self.client:
+        if not self.is_connected or not self.client or not self.loop:
             return
-        if event_type == "registered":
-            asyncio.create_task(self.publish_device_discovery(device))
-            asyncio.create_task(self.publish_device_state(device))
-        else:
-            asyncio.create_task(self.publish_device_state(device))
+        try:
+            if event_type == "registered":
+                self.loop.create_task(self.publish_device_discovery(device))
+            self.loop.create_task(self.publish_device_state(device))
+        except RuntimeError:
+            pass
 
     async def publish_device_discovery(self, device: Dict[str, Any]):
         """Публикация конфигураций Home Assistant MQTT Discovery."""
         if not self.is_connected or not self.client:
             return
             
-        clean_mac = device["mac"].replace(":", "").replace("-", "").lower()
+        clean_mac = normalize_mac(device["mac"])
         dev_name = device.get("name") or f"Porfiriy Speaker {clean_mac[-6:]}"
+        dev_type = device.get("device_type", "esp32")
+        model_map = {
+            "esp32": "ESP32-S3 Voice Satellite",
+            "pc_streamer": "Porfiriy PC Streamer",
+            "yandex_station": "Yandex Station (Quasar Bridge)",
+        }
         
         device_dict = {
             "identifiers": [f"porfiriy_{clean_mac}"],
             "name": dev_name,
             "manufacturer": "Porfiriy AI",
-            "model": "ESP32-S3 Voice Satellite",
-            "sw_version": device.get("firmware", "0.0.52"),
-            "configuration_url": f"http://{device.get('ip', '')}" if device.get('ip') else None
+            "model": model_map.get(dev_type, "Porfiriy Voice Satellite"),
+            "sw_version": device.get("firmware") or "unknown",
+            "configuration_url": f"http://{device.get('ip', '')}" if device.get('ip') and device.get('ip') != "---" else None
         }
         
         state_topic = f"porfiriy/{clean_mac}/state"

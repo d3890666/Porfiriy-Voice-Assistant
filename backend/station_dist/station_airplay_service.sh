@@ -40,7 +40,7 @@ case "${1:-status}" in
   name=$(cat "$base/name")
   iface=$(cat "$base/interface" 2>/dev/null || echo "")
   def_device="default"
-  if aplay -L 2>/dev/null | grep -q "music_duck"; then
+  if grep -q "pcm.music_duck" /etc/asound.conf 2>/dev/null; then
     def_device="music_duck"
   fi
   device=$(cat "$base/device" 2>/dev/null || echo "$def_device")

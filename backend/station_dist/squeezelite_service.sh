@@ -8,7 +8,7 @@ envfile="$base/squeezelite.env"
 
 [ -f "$envfile" ] && . "$envfile"
 
-def_server=$(cat /data/opt/porfiriy_host 2>/dev/null || echo "192.168.1.50")
+def_server=$(cat /data/opt/porfiriy_host 2>/dev/null | tr -d ' \r\n' || echo "")
 server="${SQUEEZELITE_SERVER:-$def_server}"
 def_output="default"
 if grep -q "pcm.music_duck" /etc/asound.conf 2>/dev/null; then
