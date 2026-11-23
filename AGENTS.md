@@ -51,6 +51,9 @@
 
 ## Последние ключевые релизы (полная история — в `CHANGELOG.md`)
 
+### Версия 0.0.150 (Non-blocking SSH Audio Queue & Long Response Timeout Fix)
+*   В `backend/openai_service.py` запись PCM в SSH `aplay` вынесена в неблокирующую очередь `asyncio.Queue` + фоновую задачу `_ssh_writer_loop` с динамическим таймаутом доигрывания, `keepalive_interval=5` и отменой активной речи при новом запросе/стопе; таймаут `_consume_live_session` увеличен до 60с. Устранён `TimeoutError` на `ssh_proc.stdin.drain()` при длинных ответах.
+
 ### Версия 0.0.149 (Backend & Frontend Decomposition + HA Connection Pool)
 *   Вынесен `backend/fast_commands.py` из `openai_service.py`; в `ha_api.py` добавлен общий `aiohttp.ClientSession` и `_ws_authenticate`; в `quasar_manager.py` унифицированы установщики и контроллеры сервисов Станции.
 *   Вынесено 443 строки инлайн-CSS и дубль `CANONICAL_PROMPTS` из `index.html` в `style.css` (`index.html` 1496 ➔ 961 строка); в `app.js` убраны дубли переключателей паролей и дропдаунов плееров.

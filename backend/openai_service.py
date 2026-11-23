@@ -66,6 +66,17 @@ class OpenAIService:
         self.quasar_manager = quasar_manager
         self.tool_executor = ToolExecutor(ha_api, quasar_manager=quasar_manager, ducking_manager=ducking_manager)
         self.dialogue_history: Dict[str, Dict[str, Any]] = {}
+        self._active_playback_tasks: Dict[str, asyncio.Task] = {}
+
+    async def _cancel_active_playback(self, mac: str) -> None:
+        """Отменяет предыдущее фоновое воспроизведение SSH aplay на станции при новом запросе."""
+        task = self._active_playback_tasks.pop(mac, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=1.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
 
     def _build_dialogue_turns(self, messages: List[Dict[str, Any]], mac: str, timeout_s: float = 60.0) -> Tuple[List[Any], str]:
         """
@@ -359,7 +370,7 @@ class OpenAIService:
                 if not got_any:
                     break
 
-        await asyncio.wait_for(_loop(), timeout=25.0)
+        await asyncio.wait_for(_loop(), timeout=60.0)
         return text_parts, pcm_chunks
 
     async def _generate_text_response(self, turns: List[Any], user_text: str, dev: Dict[str, Any], options: Dict[str, Any], is_json_mode: bool = False) -> str:
@@ -429,10 +440,15 @@ class OpenAIService:
             response_modalities=["AUDIO"]
         )
 
+        # 0. Прерываем предыдущий длинный ответ на этой колонке, если он ещё доигрывается
+        mac = dev.get("mac", "")
+        if mac:
+            await self._cancel_active_playback(mac)
+
         # 1. Авто-пауза музыки на время ответа ассистента и возврат исходной громкости до дакинга
         music_was_paused = False
         if self.ducking_manager:
-            await self.ducking_manager.on_speech_arrived(dev.get("mac", ""), restore_immediately=True)
+            await self.ducking_manager.on_speech_arrived(mac, restore_immediately=True)
         if music_player and self.ha_api:
             try:
                 state = await self.ha_api.get_entity_state(music_player)
@@ -443,7 +459,7 @@ class OpenAIService:
             except Exception as e:
                 logger.debug(f"[OPENAI LIVE] Could not pause music: {e}")
 
-        # 2. Открытие SSH процесса aplay на колонке
+        # 2. Открытие SSH процесса aplay на колонке с keepalive и неблокирующей очередью записи
         ssh_conn = None
         ssh_proc = None
         if HAS_ASYNCSSH and speaker_ip and speaker_ip != "---":
@@ -455,9 +471,11 @@ class OpenAIService:
                         port=ssh_port,
                         username="root",
                         known_hosts=None,
-                        client_keys=None
+                        client_keys=None,
+                        keepalive_interval=5,
+                        keepalive_count_max=2,
                     ),
-                    timeout=2.0
+                    timeout=2.5
                 )
                 ssh_proc = await ssh_conn.create_process("aplay -t raw -D default -r 24000 -f S16_LE -c 1", encoding=None)
                 logger.info(f"[OPENAI LIVE] Direct SSH aplay stream opened on {speaker_ip}:{ssh_port}")
@@ -466,31 +484,91 @@ class OpenAIService:
                 ssh_conn = None
                 ssh_proc = None
 
-        pcm_chunks = []
-        transcription_parts = []
+        pcm_chunks: List[bytes] = []
+        transcription_parts: List[str] = []
         turn_state = {"playback_changed": False, "tool_executed": False}
         first_chunk = True
+        audio_queue: asyncio.Queue = asyncio.Queue()
+        stream_state = {"failed": False, "total_bytes": 0}
+        vol = float(dev_cfg.get("speaker_volume", 1.0))
 
-        async def _stream_chunk(chunk: bytes):
-            nonlocal first_chunk, ssh_proc
-            if ssh_proc is not None:
-                if first_chunk:
-                    logger.info(f"[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
-                    first_chunk = False
-                try:
-                    # Чистый PCM звук без искусственного завышения и клиппинга; Master регулятор ALSA управляет общей громкостью
-                    vol = float(dev_cfg.get("speaker_volume", 1.0))
-                    if 0.0 < vol < 0.99:
-                        chunk = scale_pcm16(chunk, max(0.1, vol))
-                    ssh_proc.stdin.write(chunk)
-                    await ssh_proc.stdin.drain()
-                except Exception as stream_err:
-                    logger.warning(f"[OPENAI LIVE] Direct stream write failed ({stream_err}), closing SSH aplay pipe")
+        async def _ssh_writer_loop():
+            """Фоновая запись PCM-чанков в SSH stdin aplay без блокировки цикла чтения Gemini Live."""
+            nonlocal ssh_proc, ssh_conn
+            try:
+                while True:
+                    item = await audio_queue.get()
+                    if item is None:
+                        break
+                    if ssh_proc is None:
+                        continue
                     try:
-                        ssh_proc.stdin.close()
+                        chunk_out = scale_pcm16(item, max(0.1, vol)) if (0.0 < vol < 0.99) else item
+                        ssh_proc.stdin.write(chunk_out)
+                        await ssh_proc.stdin.drain()
+                    except Exception as stream_err:
+                        logger.warning(f"[OPENAI LIVE] Direct stream write failed ({stream_err}), closing SSH aplay pipe")
+                        stream_state["failed"] = True
+                        try:
+                            ssh_proc.stdin.close()
+                        except Exception:
+                            pass
+                        ssh_proc = None
+
+                # Все чанки от Gemini отправлены в stdin — закрываем EOF и ждём доигрывания aplay
+                if ssh_proc is not None:
+                    try:
+                        ssh_proc.stdin.write_eof()
+                        audio_dur_s = stream_state["total_bytes"] / 48000.0
+                        wait_timeout = max(15.0, audio_dur_s + 15.0)
+                        await asyncio.wait_for(ssh_proc.wait(), timeout=wait_timeout)
+                        logger.info(
+                            f"[OPENAI LIVE] Direct audio playback finished on {speaker_ip} "
+                            f"({audio_dur_s:.1f}s audio, rc={ssh_proc.returncode})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[OPENAI LIVE] Error finishing aplay stream: {e}")
+            except asyncio.CancelledError:
+                logger.info(f"[OPENAI LIVE] Background playback cancelled for {mac} ({speaker_ip})")
+                if ssh_proc is not None:
+                    try:
+                        ssh_proc.terminate()
                     except Exception:
                         pass
-                    ssh_proc = None
+                raise
+            finally:
+                if ssh_conn is not None:
+                    try:
+                        ssh_conn.close()
+                        await ssh_conn.wait_closed()
+                    except Exception:
+                        pass
+                if mac:
+                    if self._active_playback_tasks.get(mac) is asyncio.current_task():
+                        self._active_playback_tasks.pop(mac, None)
+                    self.device_manager.set_device_state(mac, "idle")
+                # 3. Возобновляем музыку строго после окончания воспроизведения речи
+                if music_was_paused and not turn_state["playback_changed"] and music_player and self.ha_api:
+                    try:
+                        logger.info(f"[OPENAI LIVE] Resuming music playback on {music_player}")
+                        await self.ha_api.call_service("media_player", "media_play", {"entity_id": music_player})
+                    except Exception as e:
+                        logger.debug(f"[OPENAI LIVE] Could not resume music: {e}")
+
+        writer_task: Optional[asyncio.Task] = None
+        if ssh_proc is not None:
+            writer_task = asyncio.create_task(_ssh_writer_loop())
+            if mac:
+                self._active_playback_tasks[mac] = writer_task
+
+        async def _stream_chunk(chunk: bytes):
+            nonlocal first_chunk
+            if writer_task is not None and not stream_state["failed"]:
+                if first_chunk:
+                    logger.info("[OPENAI LIVE] First voice chunk arriving from Gemini Live -> streaming directly to speaker drivers!")
+                    first_chunk = False
+                stream_state["total_bytes"] += len(chunk)
+                audio_queue.put_nowait(chunk)
 
         try:
             async with proxy_client.connect() as session:
@@ -507,38 +585,55 @@ class OpenAIService:
             if pcm_chunks:
                 raw_pcm = b"".join(pcm_chunks)
                 wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=24000)
-                self.device_manager.save_response_wav(dev["mac"], wav_bytes)
+                self.device_manager.save_response_wav(mac, wav_bytes)
 
-            # Завершаем стрим в aplay и ждем доигрывания
-            if ssh_proc is not None:
-                try:
-                    ssh_proc.stdin.write_eof()
-                    await asyncio.wait_for(ssh_proc.wait(), timeout=10.0)
-                    logger.info(f"[OPENAI LIVE] Direct audio playback finished on {speaker_ip}")
-                except Exception as e:
-                    logger.warning(f"[OPENAI LIVE] Error finishing aplay stream: {e}")
+            # Сигнализируем фоновому SSH-писателю о конце потока от Gemini
+            if writer_task is not None:
+                audio_queue.put_nowait(None)
+                if not pcm_chunks or stream_state["failed"]:
+                    # Если звука не было или стрим упал — дожидаемся очистки
+                    try:
+                        await asyncio.wait_for(writer_task, timeout=3.0)
+                    except Exception:
+                        writer_task.cancel()
+                else:
+                    # Для коротких ответов (<2с) можно дождаться быстро; для длинных отпускаем HTTP сразу,
+                    # чтобы quasar-bridge на колонке не словил HTTP timeout, пока aplay доигрывает речь.
+                    try:
+                        await asyncio.wait_for(asyncio.shield(writer_task), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        logger.info(
+                            f"[OPENAI LIVE] Continuing long audio playback ({stream_state['total_bytes'] / 48000.0:.1f}s) "
+                            f"in background on {speaker_ip}"
+                        )
+            else:
+                # SSH не открылся — восстанавливаем музыку и статус сразу
+                if mac:
+                    self.device_manager.set_device_state(mac, "idle")
+                if music_was_paused and not turn_state["playback_changed"] and music_player and self.ha_api:
+                    try:
+                        await self.ha_api.call_service("media_player", "media_play", {"entity_id": music_player})
+                    except Exception:
+                        pass
 
         except Exception as e:
             logger.error(f"[OPENAI LIVE] Error generating/streaming direct audio: {e}", exc_info=True)
-            return False, "", bool(turn_state.get("tool_executed"))
-        finally:
-            if ssh_conn is not None:
+            if writer_task is not None and not writer_task.done():
+                writer_task.cancel()
                 try:
-                    ssh_conn.close()
-                    await ssh_conn.wait_closed()
+                    await asyncio.wait_for(writer_task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    pass
+            elif music_was_paused and not turn_state["playback_changed"] and music_player and self.ha_api:
+                try:
+                    await self.ha_api.call_service("media_player", "media_play", {"entity_id": music_player})
                 except Exception:
                     pass
-
-            # 3. Возобновляем музыку, если она была на паузе и за время ответа не запускался новый трек/пауза
-            if music_was_paused and not turn_state["playback_changed"] and music_player and self.ha_api:
-                try:
-                    logger.info(f"[OPENAI LIVE] Resuming music playback on {music_player}")
-                    await self.ha_api.call_service("media_player", "media_play", {"entity_id": music_player})
-                except Exception as e:
-                    logger.debug(f"[OPENAI LIVE] Could not resume music: {e}")
+            return False, "", bool(turn_state.get("tool_executed"))
 
         reply_text = "".join(transcription_parts).strip()
-        return bool(pcm_chunks and (ssh_proc is not None)), reply_text, bool(turn_state.get("tool_executed"))
+        audio_ok = bool(pcm_chunks and (writer_task is not None) and not stream_state["failed"])
+        return audio_ok, reply_text, bool(turn_state.get("tool_executed"))
 
     async def handle_chat_completions(self, request: web.Request) -> web.Response:
         """Основной обработчик POST /v1/chat/completions."""
@@ -648,6 +743,7 @@ class OpenAIService:
 
             fast_playback_reply = await self._handle_direct_playback_command(user_text, music_player, dev=dev)
             if fast_playback_reply:
+                await self._cancel_active_playback(mac)
                 if self.ducking_manager:
                     await self.ducking_manager.finish_speech(mac)
                 self.device_manager.set_device_state(mac, "idle")
@@ -664,7 +760,8 @@ class OpenAIService:
                 # Прямой нативный голос Порфирия без задержек через SSH прямо в динамик Станции
                 self.device_manager.set_device_state(mac, "speaking")
                 audio_ok, reply_text, tool_executed = await self._stream_live_audio_direct(turns, user_text, dev, opts, request)
-                self.device_manager.set_device_state(mac, "idle")
+                if mac not in self._active_playback_tasks:
+                    self.device_manager.set_device_state(mac, "idle")
                 
                 if audio_ok:
                     self._save_dialogue_turn(mac, user_text, reply_text or "Ответ воспроизведен.")
