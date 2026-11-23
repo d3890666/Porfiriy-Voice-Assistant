@@ -387,225 +387,162 @@ class QuasarManager:
                 "bundled_version": bundled_ver
             }
 
-    async def ensure_squeezelite_installed(self, conn) -> bool:
-        """
-        Гарантирует установку и актуальность службы Squeezelite и скрипта автозапуска в /etc/init.d/S97squeezelite.
-        Устраняет зависания при загрузке (фоновый запуск) и ложное срабатывание на пустой pidfile.
-        """
-        try:
-            # 1. Создаем директорию если не существует
-            await conn.run(f"mkdir -p {SQUEEZELITE_DIR}", check=False)
+    async def _is_process_running(self, conn, pattern: str) -> bool:
+        """Проверяет, запущен ли процесс на Станции по имени."""
+        res = await conn.run(f"ps | grep -v grep | grep {pattern}", check=False)
+        return res.exit_status == 0 and bool(res.stdout.strip())
 
-            # 2. Считываем и заливаем надежный скрипт службы service
-            service_src = os.path.join(STATION_DIST_DIR, "squeezelite_service.sh")
-            service_content = ""
+    async def _install_station_service(
+        self,
+        conn,
+        *,
+        name: str,
+        target_dir: str,
+        service_path: str,
+        init_path: str,
+        service_dist_file: str,
+        init_dist_file: str,
+        hook_marker: str,
+        require_existing_dir: bool = False,
+        post_service_cmd: Optional[str] = None,
+    ) -> bool:
+        """Единый установщик сервисов Станции (squeezelite, station-airplay, alice-watcher)."""
+        try:
+            if require_existing_dir:
+                dir_check = await conn.run(f"test -d {target_dir} && echo 'ok'", check=False)
+                if dir_check.exit_status != 0 or dir_check.stdout.strip() != "ok":
+                    return False
+            else:
+                await conn.run(f"mkdir -p {target_dir}", check=False)
+
+            service_src = os.path.join(STATION_DIST_DIR, service_dist_file)
             if os.path.exists(service_src):
                 with open(service_src, "r", encoding="utf-8") as f:
                     service_content = f.read()
-
-            if service_content:
-                await conn.run(f"cat << 'EOF' > {SQUEEZELITE_SERVICE_PATH}\n{service_content}\nEOF\nchmod 755 {SQUEEZELITE_SERVICE_PATH}", check=False)
+                await conn.run(
+                    f"cat << 'EOF' > {service_path}\n{service_content}\nEOF\nchmod 755 {service_path}",
+                    check=False,
+                )
             else:
-                await conn.run(f"chmod 755 {SQUEEZELITE_SERVICE_PATH} 2>/dev/null || true", check=False)
+                await conn.run(f"chmod 755 {service_path} 2>/dev/null || true", check=False)
 
-            # 3. Проверяем наличие неблокирующего автозапуска в /etc/init.d/S97squeezelite
-            hook_check = await conn.run(f"grep -q 'Porfiriy & Music Assistant' {SQUEEZELITE_INIT_PATH} 2>/dev/null && echo 'ok'", check=False)
+            if post_service_cmd:
+                await conn.run(post_service_cmd, check=False)
+
+            hook_check = await conn.run(f"grep -q '{hook_marker}' {init_path} 2>/dev/null && echo 'ok'", check=False)
             if hook_check.exit_status != 0 or hook_check.stdout.strip() != "ok":
-                init_src = os.path.join(STATION_DIST_DIR, "squeezelite_init.sh")
-                init_content = ""
+                init_src = os.path.join(STATION_DIST_DIR, init_dist_file)
                 if os.path.exists(init_src):
                     with open(init_src, "r", encoding="utf-8") as f:
                         init_content = f.read()
-
-                if not init_content:
-                    init_content = (
-                        "#!/bin/sh\n"
-                        "# Squeezelite autostart hook for Porfiriy & Music Assistant\n"
-                        "case \"${1:-start}\" in\n"
-                        "    start)\n"
-                        "        sh /data/opt/squeezelite/service start >/dev/null 2>&1 &\n"
-                        "        ;;\n"
-                        "    stop)\n"
-                        "        sh /data/opt/squeezelite/service stop\n"
-                        "        ;;\n"
-                        "    restart)\n"
-                        "        sh /data/opt/squeezelite/service restart\n"
-                        "        ;;\n"
-                        "    status)\n"
-                        "        exec sh /data/opt/squeezelite/service status\n"
-                        "        ;;\n"
-                        "    *)\n"
-                        "        exec sh /data/opt/squeezelite/service \"$@\"\n"
-                        "        ;;\n"
-                        "esac\n"
+                    logger.info(f"[QUASAR] Installing non-blocking {name} autostart hook to {init_path}...")
+                    install_cmd = (
+                        "mount -o remount,rw / && "
+                        f"cat << 'EOF' > {init_path}\n{init_content}\nEOF\n"
+                        f"chmod 755 {init_path} && "
+                        "sync && "
+                        "mount -o remount,ro /"
                     )
-
-                logger.info("[QUASAR] Installing non-blocking Squeezelite autostart hook to /etc/init.d/S97squeezelite...")
-                install_cmd = (
-                    "mount -o remount,rw / && "
-                    f"cat << 'EOF' > {SQUEEZELITE_INIT_PATH}\n{init_content}\nEOF\n"
-                    f"chmod 755 {SQUEEZELITE_INIT_PATH} && "
-                    "sync && "
-                    "mount -o remount,ro /"
-                )
-                await conn.run(install_cmd, check=False)
-
+                    await conn.run(install_cmd, check=False)
             return True
         except Exception as e:
-            logger.warning(f"[QUASAR] Could not ensure squeezelite installed: {e}")
+            logger.warning(f"[QUASAR] Could not ensure {name} installed: {e}")
             return False
+
+    async def _control_station_service(
+        self,
+        ip: str,
+        port: int,
+        action: str,
+        *,
+        label: str,
+        service_path: str,
+        proc_pattern: str,
+        running_key: str,
+        ensure_fn,
+    ) -> Dict[str, Any]:
+        """Единый контроллер управления службами Станции (start, stop, restart, status) по SSH."""
+        if not ip or ip == "---":
+            return {"error": "IP-адрес колонки не указан"}
+
+        action = action.strip().lower()
+        if action not in ("start", "stop", "restart", "status"):
+            return {"error": f"Неизвестное действие: {action}"}
+
+        try:
+            async with await self._open_ssh_connection(ip, port) as conn:
+                await ensure_fn(conn)
+
+                res = await conn.run(f"sh {service_path} {action}", check=False)
+                out = res.stdout.strip()
+                err = res.stderr.strip()
+
+                await asyncio.sleep(0.5)
+                is_running = await self._is_process_running(conn, proc_pattern)
+
+                msg = out or err or f"Команда {action} выполнена"
+                logger.info(f"[QUASAR] {label} {action} on {ip}:{port} -> running={is_running} ({msg})")
+
+                return {
+                    "success": True,
+                    "action": action,
+                    running_key: is_running,
+                    "message": msg,
+                    "output": out,
+                }
+        except Exception as e:
+            logger.error(f"[QUASAR] Error executing {label} {action} on {ip}:{port}: {e}")
+            return {"success": False, "error": str(e), running_key: False}
+
+    async def ensure_squeezelite_installed(self, conn) -> bool:
+        """Гарантирует установку и актуальность службы Squeezelite и скрипта автозапуска."""
+        return await self._install_station_service(
+            conn,
+            name="Squeezelite",
+            target_dir=SQUEEZELITE_DIR,
+            service_path=SQUEEZELITE_SERVICE_PATH,
+            init_path=SQUEEZELITE_INIT_PATH,
+            service_dist_file="squeezelite_service.sh",
+            init_dist_file="squeezelite_init.sh",
+            hook_marker="Porfiriy & Music Assistant",
+        )
 
     async def control_squeezelite(self, ip: str, port: int = DEFAULT_SSH_PORT, action: str = "restart") -> Dict[str, Any]:
-        """
-        Управляет службой Squeezelite (start, stop, restart, status) на Станции по SSH.
-        Перед выполнением команды автоматически гарантирует целостность службы и автозапуска.
-        """
-        if not ip or ip == "---":
-            return {"error": "IP-адрес колонки не указан"}
-
-        action = action.strip().lower()
-        if action not in ["start", "stop", "restart", "status"]:
-            return {"error": f"Неизвестное действие: {action}"}
-
-        try:
-            async with await self._open_ssh_connection(ip, port) as conn:
-                # 1. Проверяем и обновляем скрипты службы при необходимости
-                await self.ensure_squeezelite_installed(conn)
-
-                # 2. Выполняем команду управления
-                cmd = f"sh {SQUEEZELITE_SERVICE_PATH} {action}"
-                res = await conn.run(cmd, check=False)
-                out = res.stdout.strip()
-                err = res.stderr.strip()
-
-                # 3. Проверяем итоговый статус процесса
-                await asyncio.sleep(0.5)
-                sq_check = await conn.run("ps | grep -v grep | grep squeezelite", check=False)
-                sq_running = (sq_check.exit_status == 0 and bool(sq_check.stdout.strip()))
-
-                msg = out or err or f"Команда {action} выполнена"
-                logger.info(f"[QUASAR] Squeezelite {action} on {ip}:{port} -> running={sq_running} ({msg})")
-
-                return {
-                    "success": True,
-                    "action": action,
-                    "squeezelite_running": sq_running,
-                    "message": msg,
-                    "output": out
-                }
-        except Exception as e:
-            logger.error(f"[QUASAR] Error executing Squeezelite {action} on {ip}:{port}: {e}")
-            return {"success": False, "error": str(e), "squeezelite_running": False}
+        """Управляет службой Squeezelite (start, stop, restart, status) на Станции по SSH."""
+        return await self._control_station_service(
+            ip, port, action,
+            label="Squeezelite",
+            service_path=SQUEEZELITE_SERVICE_PATH,
+            proc_pattern="squeezelite",
+            running_key="squeezelite_running",
+            ensure_fn=self.ensure_squeezelite_installed,
+        )
 
     async def ensure_station_airplay_installed(self, conn) -> bool:
-        """
-        Гарантирует установку и актуальность службы Station AirPlay и скрипта автозапуска в /etc/init.d/S98station-airplay.
-        """
-        try:
-            # 1. Проверяем наличие каталога
-            dir_check = await conn.run(f"test -d {STATION_AIRPLAY_DIR} && echo 'ok'", check=False)
-            if dir_check.exit_status != 0 or dir_check.stdout.strip() != "ok":
-                return False
-
-            # 2. Считываем и заливаем надежный скрипт службы service
-            service_src = os.path.join(STATION_DIST_DIR, "station_airplay_service.sh")
-            service_content = ""
-            if os.path.exists(service_src):
-                with open(service_src, "r", encoding="utf-8") as f:
-                    service_content = f.read()
-
-            if service_content:
-                await conn.run(f"cat << 'EOF' > {STATION_AIRPLAY_SERVICE_PATH}\n{service_content}\nEOF\nchmod 755 {STATION_AIRPLAY_SERVICE_PATH}", check=False)
-            else:
-                await conn.run(f"chmod 755 {STATION_AIRPLAY_SERVICE_PATH} 2>/dev/null || true", check=False)
-
-            # Направляем вывод Station AirPlay в виртуальный микшер music_duck
-            await conn.run(f"echo 'music_duck' > {STATION_AIRPLAY_DIR}/device", check=False)
-
-            # 3. Проверяем наличие неблокирующего автозапуска в /etc/init.d/S98station-airplay
-            hook_check = await conn.run(f"grep -q 'Station AirPlay autostart hook' {STATION_AIRPLAY_INIT_PATH} 2>/dev/null && echo 'ok'", check=False)
-            if hook_check.exit_status != 0 or hook_check.stdout.strip() != "ok":
-                init_src = os.path.join(STATION_DIST_DIR, "station_airplay_init.sh")
-                init_content = ""
-                if os.path.exists(init_src):
-                    with open(init_src, "r", encoding="utf-8") as f:
-                        init_content = f.read()
-
-                if not init_content:
-                    init_content = (
-                        "#!/bin/sh\n"
-                        "# Station AirPlay autostart hook for Porfiriy & Music Assistant\n"
-                        "case \"${1:-start}\" in\n"
-                        "    start)\n"
-                        "        sh /data/opt/station-airplay/service start >/dev/null 2>&1 &\n"
-                        "        ;;\n"
-                        "    stop)\n"
-                        "        sh /data/opt/station-airplay/service stop\n"
-                        "        ;;\n"
-                        "    restart)\n"
-                        "        sh /data/opt/station-airplay/service restart\n"
-                        "        ;;\n"
-                        "    status)\n"
-                        "        exec sh /data/opt/station-airplay/service status\n"
-                        "        ;;\n"
-                        "    *)\n"
-                        "        exec sh /data/opt/station-airplay/service \"$@\"\n"
-                        "        ;;\n"
-                        "esac\n"
-                    )
-
-                logger.info("[QUASAR] Installing non-blocking AirPlay autostart hook to /etc/init.d/S98station-airplay...")
-                install_cmd = (
-                    "mount -o remount,rw / && "
-                    f"cat << 'EOF' > {STATION_AIRPLAY_INIT_PATH}\n{init_content}\nEOF\n"
-                    f"chmod 755 {STATION_AIRPLAY_INIT_PATH} && "
-                    "sync && "
-                    "mount -o remount,ro /"
-                )
-                await conn.run(install_cmd, check=False)
-
-            return True
-        except Exception as e:
-            logger.warning(f"[QUASAR] Could not ensure station airplay installed: {e}")
-            return False
+        """Гарантирует установку и актуальность службы Station AirPlay и скрипта автозапуска."""
+        return await self._install_station_service(
+            conn,
+            name="AirPlay",
+            target_dir=STATION_AIRPLAY_DIR,
+            service_path=STATION_AIRPLAY_SERVICE_PATH,
+            init_path=STATION_AIRPLAY_INIT_PATH,
+            service_dist_file="station_airplay_service.sh",
+            init_dist_file="station_airplay_init.sh",
+            hook_marker="Station AirPlay autostart hook",
+            require_existing_dir=True,
+            post_service_cmd=f"echo 'music_duck' > {STATION_AIRPLAY_DIR}/device",
+        )
 
     async def control_station_airplay(self, ip: str, port: int = DEFAULT_SSH_PORT, action: str = "restart") -> Dict[str, Any]:
-        """
-        Управляет службой Station AirPlay (start, stop, restart, status) на Станции по SSH.
-        """
-        if not ip or ip == "---":
-            return {"error": "IP-адрес колонки не указан"}
-
-        action = action.strip().lower()
-        if action not in ["start", "stop", "restart", "status"]:
-            return {"error": f"Неизвестное действие: {action}"}
-
-        try:
-            async with await self._open_ssh_connection(ip, port) as conn:
-                await self.ensure_station_airplay_installed(conn)
-
-                cmd = f"sh {STATION_AIRPLAY_SERVICE_PATH} {action}"
-                res = await conn.run(cmd, check=False)
-                out = res.stdout.strip()
-                err = res.stderr.strip()
-
-                await asyncio.sleep(0.5)
-                ap_check = await conn.run("ps | grep -v grep | grep station-airplay", check=False)
-                ap_running = (ap_check.exit_status == 0 and bool(ap_check.stdout.strip()))
-
-                msg = out or err or f"Команда {action} выполнена"
-                logger.info(f"[QUASAR] AirPlay {action} on {ip}:{port} -> running={ap_running} ({msg})")
-
-                return {
-                    "success": True,
-                    "action": action,
-                    "airplay_running": ap_running,
-                    "message": msg,
-                    "output": out
-                }
-        except Exception as e:
-            logger.error(f"[QUASAR] Error executing AirPlay {action} on {ip}:{port}: {e}")
-            return {"success": False, "error": str(e), "airplay_running": False}
+        """Управляет службой Station AirPlay (start, stop, restart, status) на Станции по SSH."""
+        return await self._control_station_service(
+            ip, port, action,
+            label="AirPlay",
+            service_path=STATION_AIRPLAY_SERVICE_PATH,
+            proc_pattern="station-airplay",
+            running_key="airplay_running",
+            ensure_fn=self.ensure_station_airplay_installed,
+        )
 
     async def stop_station_airplay_if_playing(self, ip: str, port: int = DEFAULT_SSH_PORT) -> bool:
         """
@@ -897,33 +834,16 @@ class QuasarManager:
                         await conn.run(f"echo '{porfiriy_host}' > /data/opt/porfiriy_host", check=False)
                         logger.info(f"[QUASAR] Saved Porfiriy host {porfiriy_host} for alice-watcher")
 
-            await conn.run(f"mkdir -p {ALICE_WATCHER_DIR}", check=False)
-
-            service_src = os.path.join(STATION_DIST_DIR, "alice_watcher_service.sh")
-            if os.path.exists(service_src):
-                with open(service_src, "r", encoding="utf-8") as f:
-                    service_content = f.read()
-                await conn.run(
-                    f"cat << 'EOF' > {ALICE_WATCHER_SERVICE_PATH}\n{service_content}\nEOF\nchmod 755 {ALICE_WATCHER_SERVICE_PATH}",
-                    check=False
-                )
-
-            hook_check = await conn.run(f"grep -q 'Alice Watcher autostart hook' {ALICE_WATCHER_INIT_PATH} 2>/dev/null && echo 'ok'", check=False)
-            if hook_check.exit_status != 0 or hook_check.stdout.strip() != "ok":
-                init_src = os.path.join(STATION_DIST_DIR, "alice_watcher_init.sh")
-                if os.path.exists(init_src):
-                    with open(init_src, "r", encoding="utf-8") as f:
-                        init_content = f.read()
-                    install_cmd = (
-                        "mount -o remount,rw / && "
-                        f"cat << 'EOF' > {ALICE_WATCHER_INIT_PATH}\n{init_content}\nEOF\n"
-                        f"chmod 755 {ALICE_WATCHER_INIT_PATH} && "
-                        "sync && "
-                        "mount -o remount,ro /"
-                    )
-                    await conn.run(install_cmd, check=False)
-
-            return True
+            return await self._install_station_service(
+                conn,
+                name="Alice Watcher",
+                target_dir=ALICE_WATCHER_DIR,
+                service_path=ALICE_WATCHER_SERVICE_PATH,
+                init_path=ALICE_WATCHER_INIT_PATH,
+                service_dist_file="alice_watcher_service.sh",
+                init_dist_file="alice_watcher_init.sh",
+                hook_marker="Alice Watcher autostart hook",
+            )
         except Exception as e:
             logger.warning(f"[QUASAR] Could not install alice-watcher: {e}")
             return False

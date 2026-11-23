@@ -51,6 +51,10 @@
 
 ## Последние ключевые релизы (полная история — в `CHANGELOG.md`)
 
+### Версия 0.0.149 (Backend & Frontend Decomposition + HA Connection Pool)
+*   Вынесен `backend/fast_commands.py` из `openai_service.py`; в `ha_api.py` добавлен общий `aiohttp.ClientSession` и `_ws_authenticate`; в `quasar_manager.py` унифицированы установщики и контроллеры сервисов Станции.
+*   Вынесено 443 строки инлайн-CSS и дубль `CANONICAL_PROMPTS` из `index.html` в `style.css` (`index.html` 1496 ➔ 961 строка); в `app.js` убраны дубли переключателей паролей и дропдаунов плееров.
+
 ### Версия 0.0.147 (Refactoring, Bugfixes & Repo Hygiene)
 *   Убран из git `scratch_venv/` (2 441 файл), удалён `esp32_ww_test/`, убран дубликат `porfiriy.onnx`, разгружен `AGENTS.md`.
 *   Выделено единое ядро бэкенда: `config.py`, `audio_utils.py`, `net_utils.py`, `prompt_builder.py`, `tool_executor.py`, синглтон `HomeAssistantAPI`.

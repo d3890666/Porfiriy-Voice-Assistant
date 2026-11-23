@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import aiohttp
 import websockets
@@ -38,29 +39,43 @@ class HomeAssistantAPI:
         self._ma_config_entry_id = None
         self._services_cache = None
         self._services_cache_time = 0.0
+        self._http_session: Optional[aiohttp.ClientSession] = None
+
+    def _get_session(self) -> aiohttp.ClientSession:
+        """Возвращает переиспользуемый aiohttp.ClientSession для REST-вызовов HA."""
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession(headers=self.headers)
+        return self._http_session
+
+    async def _ws_authenticate(self, ws) -> Dict[str, Any]:
+        """Единый handshake аутентификации для Home Assistant WebSocket API."""
+        await ws.recv()  # auth_required
+        token = self.supervisor_token if self.supervisor_token else getattr(self, "fallback_token", None)
+        await ws.send(json.dumps({"type": "auth", "access_token": token}))
+        return json.loads(await ws.recv())
 
     async def get_states(self) -> List[Dict[str, Any]]:
         """Получить все текущие состояния (сущности) из HA."""
-        async with aiohttp.ClientSession(headers=self.headers) as session:
-            try:
-                async with session.get(f"{self.base_url}/states") as response:
-                    response.raise_for_status()
-                    return await response.json()
-            except Exception as e:
-                logger.error(f"Error fetching HA states: {e}")
-                return []
+        session = self._get_session()
+        try:
+            async with session.get(f"{self.base_url}/states") as response:
+                response.raise_for_status()
+                return await response.json()
+        except Exception as e:
+            logger.error(f"Error fetching HA states: {e}")
+            return []
 
     async def get_entity_state(self, entity_id: str) -> Dict[str, Any]:
         """Получить текущее состояние конкретной сущности (state + attributes)."""
-        async with aiohttp.ClientSession(headers=self.headers) as session:
-            try:
-                async with session.get(f"{self.base_url}/states/{entity_id}") as response:
-                    if response.status == 200:
-                        return await response.json()
-                    return {"error": f"Entity {entity_id} not found (status {response.status})"}
-            except Exception as e:
-                logger.error(f"Error fetching state for {entity_id}: {e}")
-                return {"error": str(e)}
+        session = self._get_session()
+        try:
+            async with session.get(f"{self.base_url}/states/{entity_id}") as response:
+                if response.status == 200:
+                    return await response.json()
+                return {"error": f"Entity {entity_id} not found (status {response.status})"}
+        except Exception as e:
+            logger.error(f"Error fetching state for {entity_id}: {e}")
+            return {"error": str(e)}
 
     async def get_playing_media_players(self) -> List[Dict[str, Any]]:
         """Получить все медиаплееры, которые сейчас воспроизводят звук/музыку."""
@@ -99,17 +114,17 @@ class HomeAssistantAPI:
         url = f"{self.base_url}/services/{domain}/{service}"
         payload = service_data or {}
         
-        async with aiohttp.ClientSession(headers=self.headers) as session:
-            try:
-                async with session.post(url, json=payload) as response:
-                    if not response.ok:
-                        text = await response.text()
-                        logger.error(f"HA service error {response.status}: {text}")
-                        return {"error": f"Home Assistant API Error {response.status}: {text}"}
-                    return await response.json()
-            except Exception as e:
-                logger.error(f"Error calling HA service {domain}.{service}: {e}")
-                return {"error": f"Network or internal error: {str(e)}"}
+        session = self._get_session()
+        try:
+            async with session.post(url, json=payload) as response:
+                if not response.ok:
+                    text = await response.text()
+                    logger.error(f"HA service error {response.status}: {text}")
+                    return {"error": f"Home Assistant API Error {response.status}: {text}"}
+                return await response.json()
+        except Exception as e:
+            logger.error(f"Error calling HA service {domain}.{service}: {e}")
+            return {"error": f"Network or internal error: {str(e)}"}
 
     async def call_service_ws(self, domain: str, service: str, service_data: Dict[str, Any] = None, return_response: bool = False) -> Any:
         """
@@ -435,11 +450,7 @@ class HomeAssistantAPI:
     async def _ws_send_and_receive(self, payload: dict, timeout: float = 8.0) -> dict:
         async def _exchange():
             async with websockets.connect(self.ws_url, max_size=16*1024*1024, open_timeout=timeout) as ws:
-                await ws.recv()  # auth_required
-
-                token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
-                await ws.send(json.dumps({"type": "auth", "access_token": token}))
-                await ws.recv()  # auth_ok
+                await self._ws_authenticate(ws)
 
                 if "id" not in payload:
                     payload["id"] = 2
@@ -465,11 +476,7 @@ class HomeAssistantAPI:
         """Получает метаданные (синонимы, комнаты) для сущностей, доступных Assist."""
         try:
             async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
-                await ws.recv() # auth required
-                
-                token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
-                await ws.send(json.dumps({"type": "auth", "access_token": token}))
-                await ws.recv() # auth ok
+                await self._ws_authenticate(ws)
                 
                 # Запрашиваем устройства
                 await ws.send(json.dumps({"id": 1, "type": "config/entity_registry/list"}))
@@ -724,7 +731,6 @@ class HomeAssistantAPI:
 
     def _add_phrase_keywords(self, target_set: set, phrase: str):
         """Парсит фразу на ключевые слова и корни для добавления в словарь."""
-        import re
         # Убираем спецсимволы
         cleaned = re.sub(r"[^\w\s-]", " ", phrase, flags=re.UNICODE).lower().strip()
         words = [w.strip() for w in cleaned.split() if w.strip()]
@@ -761,10 +767,7 @@ class HomeAssistantAPI:
         while True:
             try:
                 async with websockets.connect(self.ws_url, max_size=16*1024*1024) as ws:
-                    await ws.recv()  # auth_required
-                    token = self.supervisor_token if self.supervisor_token else getattr(self, 'fallback_token', None)
-                    await ws.send(json.dumps({"type": "auth", "access_token": token}))
-                    auth_resp = json.loads(await ws.recv())
+                    auth_resp = await self._ws_authenticate(ws)
                     if auth_resp.get("type") != "auth_ok":
                         logger.warning(f"[HA WS] Auth failed: {auth_resp}")
                         await asyncio.sleep(10)

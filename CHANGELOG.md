@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.149
+- **Второй этап рефакторинга (декомпозиция и оптимизация бэкенда и фронтенда)**:
+  - **`backend/fast_commands.py`**: вынесены быстрые голосовые перехватчики управления воспроизведением и громкостью из `openai_service.py` (сокращён на ~120 строк).
+  - **`backend/ha_api.py`**: добавлен переиспользуемый `aiohttp.ClientSession` (пул соединений вместо создания новой сессии на каждый REST-запрос) и единый helper `_ws_authenticate(ws)` вместо 3 копий WS-авторизации.
+  - **`backend/quasar_manager.py`**: объединены 3 дублирующихся установщика служб (`squeezelite`, `station-airplay`, `alice-watcher`) и 2 контроллера (`control_squeezelite`, `control_station_airplay`) в единые `_install_station_service` / `_control_station_service` / `_is_process_running` (минус ~100 строк копипасты).
+  - **Фронтенд (`backend/static/`)**: вынесено 443 строки инлайн-CSS из `index.html` в `style.css`, удалён дублирующийся инлайн-блок `CANONICAL_PROMPTS`/`restoreDefaultPrompt` (`index.html` сократился с 1496 до 961 строки); в `app.js` объединены дубли переключения видимости паролей и заполнения списков плееров, удалён мёртвый `setupSelectAll`.
+- Синхронизация версий в `config.yaml`, `CHANGELOG.md` и `index.html` (кэш-бастеры) до `0.0.149`.
+
 ## 0.0.148
 - **Хотфикс пропущенных импортов после рефакторинга `0.0.147`**:
   - `backend/openai_service.py`: восстановлен импорт `pcm16_to_wav` из `audio_utils` (исправляет `NameError` при сохранении ответа в `_stream_live_audio_direct`).

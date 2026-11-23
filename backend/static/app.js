@@ -947,10 +947,6 @@ async function triggerDeviceOta(mac) {
   }
 }
 
-function setupSelectAll() {
-  // logic handled in renderBulkTargets
-}
-
 function toggleSelectAll(checked) {
   document.querySelectorAll('.bulk-dev-checkbox').forEach(cb => {
     cb.checked = checked;
@@ -1437,22 +1433,9 @@ function updatePromptCharCounters() {
   update('cfg-prompt-general', 'count-general');
 }
 
-function toggleKeyVisibility() {
-  const input = document.getElementById('cfg-api-key');
-  const btn = document.getElementById('btn-toggle-key');
-  if (!input) return;
-  if (input.type === 'password') {
-    input.type = 'text';
-    btn.textContent = '🔒';
-  } else {
-    input.type = 'password';
-    btn.textContent = '👁️';
-  }
-}
-
-function toggleMaKeyVisibility() {
-  const input = document.getElementById('cfg-ma-key');
-  const btn = document.getElementById('btn-toggle-ma-key');
+function togglePasswordField(inputId, btnId) {
+  const input = document.getElementById(inputId);
+  const btn = btnId ? document.getElementById(btnId) : null;
   if (!input) return;
   if (input.type === 'password') {
     input.type = 'text';
@@ -1463,6 +1446,14 @@ function toggleMaKeyVisibility() {
   }
 }
 
+function toggleKeyVisibility() {
+  togglePasswordField('cfg-api-key', 'btn-toggle-key');
+}
+
+function toggleMaKeyVisibility() {
+  togglePasswordField('cfg-ma-key', 'btn-toggle-ma-key');
+}
+
 function updateDuckingFactorDisplay(val) {
   const num = parseFloat(val) || 0.25;
   const elVal = document.getElementById('val-ducking-factor');
@@ -1471,12 +1462,12 @@ function updateDuckingFactorDisplay(val) {
   if (elPct) elPct.innerText = Math.round(num * 100) + '%';
 }
 
-function populateMediaPlayersDropdown(selectedPlayer) {
-  const select = document.getElementById('cfg-default-media-player');
+function populatePlayerSelect(selectId, selectedPlayer, defaultVal, defaultLabel) {
+  const select = document.getElementById(selectId);
   if (!select) return;
 
-  const currentVal = selectedPlayer || select.value || 'auto';
-  let html = '<option value="auto">🔄 Автоматически (все играющие плееры)</option>';
+  const currentVal = selectedPlayer || select.value || defaultVal;
+  let html = `<option value="${escapeHtml(defaultVal)}">${defaultLabel}</option>`;
 
   if (availableMediaPlayers && availableMediaPlayers.length > 0) {
     html += '<optgroup label="Медиаплееры Home Assistant">';
@@ -1487,7 +1478,7 @@ function populateMediaPlayersDropdown(selectedPlayer) {
     html += '</optgroup>';
   }
 
-  if (currentVal && currentVal !== 'auto' && !availableMediaPlayers.some(p => p.entity_id === currentVal)) {
+  if (currentVal && currentVal !== defaultVal && !availableMediaPlayers.some(p => p.entity_id === currentVal)) {
     html += `<optgroup label="Текущий сохраненный плеер">`;
     html += `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (Сохранен)</option>`;
     html += `</optgroup>`;
@@ -1495,6 +1486,15 @@ function populateMediaPlayersDropdown(selectedPlayer) {
 
   select.innerHTML = html;
   select.value = currentVal;
+}
+
+function populateMediaPlayersDropdown(selectedPlayer) {
+  populatePlayerSelect(
+    'cfg-default-media-player',
+    selectedPlayer,
+    'auto',
+    '🔄 Автоматически (все играющие плееры)'
+  );
 
   const bulkSelect = document.getElementById('bulk-response-player');
   if (bulkSelect) {
@@ -1509,29 +1509,12 @@ function populateMediaPlayersDropdown(selectedPlayer) {
 }
 
 function populateAirplayPlayersDropdown(selectedPlayer) {
-  const select = document.getElementById('cfg-default-airplay-player');
-  if (!select) return;
-
-  const currentVal = selectedPlayer || select.value || '';
-  let html = '<option value="">— Выберите плеер из Home Assistant —</option>';
-
-  if (availableMediaPlayers && availableMediaPlayers.length > 0) {
-    html += '<optgroup label="Медиаплееры Home Assistant">';
-    availableMediaPlayers.forEach(p => {
-      const isSel = (p.entity_id === currentVal) ? 'selected' : '';
-      html += `<option value="${escapeHtml(p.entity_id)}" ${isSel}>${escapeHtml(p.name)} (${escapeHtml(p.entity_id)})</option>`;
-    });
-    html += '</optgroup>';
-  }
-
-  if (currentVal && !availableMediaPlayers.some(p => p.entity_id === currentVal)) {
-    html += `<optgroup label="Текущий сохраненный плеер">`;
-    html += `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (Сохранен)</option>`;
-    html += `</optgroup>`;
-  }
-
-  select.innerHTML = html;
-  select.value = currentVal;
+  populatePlayerSelect(
+    'cfg-default-airplay-player',
+    selectedPlayer,
+    '',
+    '— Выберите плеер из Home Assistant —'
+  );
 }
 
 async function refreshMediaPlayersList() {
@@ -2241,10 +2224,7 @@ async function submitAddYandexStation() {
 window.submitAddYandexStation = submitAddYandexStation;
 
 function toggleOpenAiKeyVisibility() {
-  const inp = document.getElementById('cfg-openai-api-key');
-  if (inp) {
-    inp.type = inp.type === 'password' ? 'text' : 'password';
-  }
+  togglePasswordField('cfg-openai-api-key');
 }
 window.toggleOpenAiKeyVisibility = toggleOpenAiKeyVisibility;
 
