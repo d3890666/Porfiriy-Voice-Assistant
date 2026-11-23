@@ -6,7 +6,7 @@ import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from aiohttp import web
 
-from audio_utils import scale_pcm16
+from audio_utils import pcm16_to_wav, scale_pcm16
 from config import DEFAULT_GEMINI_MODEL, get_active_api_key
 from net_utils import extract_client_ip, get_device_ip
 from prompt_builder import build_system_prompt, resolve_target_player
