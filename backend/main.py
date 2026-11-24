@@ -1247,7 +1247,34 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
         async def _receive_from_gemini(session):
             nonlocal gemini_is_speaking, gemini_responded
+            rx_count = 0
             async for response in session.receive():
+                rx_count += 1
+                if rx_count <= 8 or not (response.server_content and response.server_content.model_turn):
+                    sc_dbg = response.server_content
+                    sc_flags = []
+                    if sc_dbg:
+                        if getattr(sc_dbg, "model_turn", None):
+                            p_kinds = [
+                                ("audio" if getattr(p, "inline_data", None) else ("thought" if getattr(p, "thought", False) else ("text" if getattr(p, "text", None) else "other")))
+                                for p in (sc_dbg.model_turn.parts or [])
+                            ]
+                            sc_flags.append(f"model_turn({','.join(p_kinds)})")
+                        if getattr(sc_dbg, "turn_complete", False):
+                            sc_flags.append("turn_complete")
+                        if getattr(sc_dbg, "generation_complete", False):
+                            sc_flags.append("generation_complete")
+                        if getattr(sc_dbg, "interrupted", False):
+                            sc_flags.append("interrupted")
+                        if getattr(sc_dbg, "input_transcription", None):
+                            sc_flags.append("in_tr")
+                        if getattr(sc_dbg, "output_transcription", None):
+                            sc_flags.append("out_tr")
+                    logger.info(
+                        f"[YANDEX-WS] RX#{rx_count} from Gemini: "
+                        f"tool={bool(response.tool_call)} sc=[{','.join(sc_flags)}] "
+                        f"go_away={bool(getattr(response, 'go_away', None))}"
+                    )
                 if response.tool_call:
                     gemini_responded = True
                     _cancel_eos_watchdog()

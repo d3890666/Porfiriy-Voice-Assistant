@@ -1,3 +1,4 @@
+import datetime
 import logging
 from typing import Any, Dict, Optional
 
@@ -111,5 +112,8 @@ async def build_system_prompt(
 
     if extra_context and extra_context.strip():
         parts.append(extra_context.strip())
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")
+    parts.append(f"### CURRENT LOCAL DATE & TIME:\n{now_str}")
 
     return "\n\n".join(parts)

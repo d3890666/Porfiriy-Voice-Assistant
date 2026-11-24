@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.164
+- **Текущие дата/время в системном промпте и диагностика событий Gemini Live (`prompt_builder.py`, `main.py`)**:
+  - В `build_system_prompt()` добавлена актуальная локальная дата и время (`CURRENT LOCAL DATE & TIME`), чтобы Порфирий мгновенно отвечал на «сколько сейчас времени?» даже при отключённом Google Search.
+  - В `_receive_from_gemini` (Яндекс Станция 2) добавлено компактное логирование входящих пакетов `RX#` (тип частей `model_turn`, `thought`, `turn_complete`, `go_away`) для отладки голосовых ответов.
+- Синхронизация версий до `0.0.164`.
+
 ## 0.0.163
 - **Детерминированный Manual VAD (`ActivityStart` / `ActivityEnd`) для нативной Яндекс Станции 2 и защита от съедания первых слов (`gemini_client.py`, `main.py`, `porfiriy_stationd.py`)**:
   - Для сессий Станции 2 с локальным Silero VAD v5 включён `AutomaticActivityDetection(disabled=True)` + явные `ActivityStart` / `ActivityEnd`: Gemini Live API больше не гадает о начале/конце речи по тишине (устранены зависания после 1.5с паузы перед командой) и мгновенно отвечает по сигналу Silero VAD.
