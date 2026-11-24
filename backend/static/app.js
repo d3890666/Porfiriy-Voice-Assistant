@@ -206,7 +206,8 @@ function renderDevicesGrid() {
           const targetVer = dev.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.20';
           const hasUpdate = dev.has_update !== false && (!currentVer || currentVer !== targetVer);
           const wwThr = cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.90;
-          const micGain = cfg.mic_gain !== undefined ? cfg.mic_gain : 1.0;
+          const micGain = cfg.mic_gain !== undefined ? cfg.mic_gain : 4.0;
+          const pdmGain = cfg.pdm_gain !== undefined ? cfg.pdm_gain : 40;
           const dcOn = cfg.dc_blocker_enabled !== false;
           const aecOn = cfg.aec_enabled !== false;
           const ledBright = cfg.led_brightness !== undefined ? cfg.led_brightness : 80;
@@ -339,10 +340,19 @@ function renderDevicesGrid() {
               <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${Number(wwThr).toFixed(2)}</span>
             </div>
             <div class="slider-row">
-              <span>🎙️ Усиление:</span>
-              <input type="range" min="0.5" max="4.0" step="0.1" value="${micGain}"
+              <span>🎛️ PDM Gain (АЦП):</span>
+              <input type="range" min="0" max="48" step="1" value="${pdmGain}"
+                oninput="this.nextElementSibling.innerText = this.value + '/48'"
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'pdm_gain', parseInt(this.value, 10))"
+                title="Аппаратный усилитель PDM-микрофонов Станции (0..48)">
+              <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${pdmGain}/48</span>
+            </div>
+            <div class="slider-row">
+              <span>🎙️ Усиление (DSP):</span>
+              <input type="range" min="0.5" max="15.0" step="0.5" value="${micGain}"
                 oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(1) + 'x'"
-                onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))">
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))"
+                title="Программное усиление микрофона с мягким лимитером (0.5x - 15.0x)">
               <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${Number(micGain).toFixed(1)}x</span>
             </div>
             <div style="display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #cbd5e1; padding: 2px 4px;">

@@ -236,6 +236,11 @@ class DSPProcessor:
         if self.mic_gain != 1.0:
             mic_16k = mic_16k * float(self.mic_gain)
 
+        # Мягкий лимитер (soft-knee tanh выше 24000) для защиты от клиппинга при высоком усилении
+        peak = float(np.max(np.abs(mic_16k))) if len(mic_16k) else 0.0
+        if peak > 24000.0:
+            mic_16k = np.tanh(mic_16k / 28000.0) * 30000.0
+
         np.clip(mic_16k, -32767.0, 32767.0, out=mic_16k)
         return mic_16k.astype(np.int16)
 
@@ -465,8 +470,20 @@ async def run_daemon():
                                     if "aec_enabled" in cfg:
                                         dsp.aec_enabled = bool(cfg["aec_enabled"])
                                     if "mic_gain" in cfg:
-                                        dsp.mic_gain = float(cfg["mic_gain"])
+                                        dsp.mic_gain = max(0.2, min(20.0, float(cfg["mic_gain"])))
+                                    if "pdm_gain" in cfg:
+                                        pdm_val = max(0, min(48, int(cfg["pdm_gain"])))
+                                        subprocess.Popen(
+                                            ["amixer", "cset", "numid=42", str(pdm_val)],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        )
                                     led.update_config(cfg)
+                                    print(
+                                        f"[STATIOND] Config applied: thr={state['ww_threshold']:.2f} "
+                                        f"gain={dsp.mic_gain:.1f}x pdm={cfg.get('pdm_gain', '-')} "
+                                        f"dc={dsp.dc_blocker_enabled} aec={dsp.aec_enabled}",
+                                        flush=True,
+                                    )
                                 elif mtype == "dump_mic" or mtype == "start_mic_test":
                                     pcm_all = b"".join(debug_ring)
                                     if pcm_all:
