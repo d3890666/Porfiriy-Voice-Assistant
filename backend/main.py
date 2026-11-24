@@ -89,6 +89,19 @@ async def handle_client(websocket):
     if first_data and first_data.get("type") == "register":
         client_mac = first_data.get("mac", client_mac).lower()
         device_type = first_data.get("device_type", "esp32")
+        if device_type == "yandex_station" and client_mac not in device_manager.devices:
+            reg_ip = (first_data.get("ip") or "").strip()
+            if not reg_ip and websocket.remote_address:
+                reg_ip = str(websocket.remote_address[0])
+            for existing_mac, existing_dev in list(device_manager.devices.items()):
+                if existing_dev.get("device_type") == "yandex_station":
+                    ex_ip = (existing_dev.get("ip") or existing_dev.get("config", {}).get("ip") or "").strip()
+                    if reg_ip and ex_ip == reg_ip:
+                        logger.info(f"[YANDEX-WS] Matched station IP {reg_ip} to existing device '{existing_mac}' (instead of '{client_mac}')")
+                        client_mac = existing_mac
+                        first_data["mac"] = existing_mac
+                        first_data["name"] = existing_dev.get("name", first_data.get("name"))
+                        break
         device_manager.register_device(client_mac, first_data, ws=websocket)
         if device_type == "pc_streamer":
             logger.info(f"[STREAMER] Routing {client_mac} to server-side wake word handler.")

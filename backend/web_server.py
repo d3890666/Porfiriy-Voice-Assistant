@@ -1069,8 +1069,8 @@ class WebServer:
         dev = self.device_manager.get_device(mac)
         if not dev:
             return web.json_response({"success": False, "error": "Device not found"}, status=404)
-        ws = self.device_manager.connections.get(mac)
-        if ws:
+        ws = self.device_manager.active_sockets.get(mac)
+        if ws and not getattr(ws, "closed", False):
             pcm = get_earcon_pcm(category, preset, sample_rate=24000, volume=1.0)
             if pcm:
                 await ws.send(pcm)
@@ -1155,9 +1155,9 @@ class WebServer:
 
     async def handle_station_dump_mic(self, request):
         mac = request.match_info.get("mac", "").strip().lower()
-        ws = self.device_manager.connections.get(mac)
-        if not ws:
-            return web.json_response({"success": False, "error": "Станция не подключена по WebSocket (porfiriy-stationd)"}, status=400)
+        ws = self.device_manager.active_sockets.get(mac)
+        if not ws or getattr(ws, "closed", False):
+            return web.json_response({"success": False, "error": "Станция не подключена по WebSocket (porfiriy-stationd не запущен)"}, status=400)
         try:
             await ws.send(json.dumps({"type": "dump_mic"}))
             return web.json_response({"success": True})

@@ -323,6 +323,9 @@ def pcm16_to_wav_bytes(pcm: bytes, sr: int = 16000) -> bytes:
 
 
 def get_station_mac() -> str:
+    env_mac = os.environ.get("PORFIRIY_MAC", "").strip().lower()
+    if env_mac:
+        return env_mac
     for iface in ("wlan0", "eth0"):
         p = f"/sys/class/net/{iface}/address"
         if os.path.exists(p):

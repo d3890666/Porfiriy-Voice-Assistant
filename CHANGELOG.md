@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.153
+- **Хотфикс `dump_mic` / `play_earcon` и сопоставления карточки Яндекс Станции**:
+  - В `backend/web_server.py` исправлено обращение к словарю активных WebSocket-подключений (`device_manager.active_sockets` вместо несуществующего `.connections`, что вызывало `500 Internal Server Error` при нажатии «Прослушать 3с»).
+  - В `backend/main.py` добавлено автоматическое сопоставление подключаемого `porfiriy-stationd` с существующей карточкой `yandex_station` по IP-адресу (чтобы не создавался дубль карточки при кастомном MAC вроде `denis`).
+  - В `porfiriy_stationd.py` добавлена поддержка `PORFIRIY_MAC`.
+- Синхронизация версий до `0.0.153`.
+
 ## 0.0.152
 - **Хотфикс деплоя `porfiriy-stationd` на Dropbear SSH (`backend/quasar_manager.py`)**:
   - Заменена передача файлов в `deploy_stationd_files` с `start_sftp_client()` (на Dropbear Яндекс Станции 2 отсутствует `sftp-server`, что вызывало `0 bytes read on a total of 4 expected bytes`) на прямой SSH-пайп `cat > ...` с автоматической нормализацией `CRLF -> LF` для `.sh`/`.py` скриптов.
