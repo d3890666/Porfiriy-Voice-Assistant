@@ -421,8 +421,11 @@ class DeviceManager:
                 logger.error(f"[WAKE] Error executing wake handler for {clean_mac}: {e}")
                 return False
 
-        # Fallback: для Яндекс Станций
+        # Fallback: для Яндекс Станций (нативный porfiriy-stationd по WebSocket)
         if dev and dev.get("device_type") == "yandex_station":
+            if clean_mac in self.active_sockets:
+                logger.info(f"[WAKE] Sending 'wake' command over WebSocket to native Yandex Station {clean_mac}")
+                return await self.send_command(clean_mac, {"type": "wake"})
             logger.info(f"[WAKE] Triggering state change for Yandex Station {clean_mac}")
             self.set_device_state(clean_mac, "listening")
             return True
