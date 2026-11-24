@@ -212,6 +212,11 @@ def get_options() -> Dict[str, Any]:
         "openai_api_port": 8000,
         "openai_api_key": "",
         "default_airplay_player": "",
+        "earcon_volume_enabled": True,
+        "earcon_volume_preset": "alice_click",
+        "earcon_smarthome_enabled": True,
+        "earcon_smarthome_preset": "marimba_tudun",
+        "earcon_wake_preset": "soft_chime",
     }
 
     for k, v in defaults.items():

@@ -198,25 +198,50 @@ function renderDevicesGrid() {
             </button>
           </div>
         ` : dev.device_type === 'yandex_station' ? (() => {
-          checkStationVersionInBackground(dev.mac);
+          const aliceDisabled = Boolean(cfg.disable_alice);
+          if (!aliceDisabled) {
+            checkStationVersionInBackground(dev.mac);
+          }
           const currentVer = dev.firmware || (dev.config && dev.config.quasar_version) || '';
-          const targetVer = dev.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.19';
+          const targetVer = dev.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.20';
           const hasUpdate = dev.has_update !== false && (!currentVer || currentVer !== targetVer);
+          const wwThr = cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.90;
+          const micGain = cfg.mic_gain !== undefined ? cfg.mic_gain : 1.0;
+          const dcOn = cfg.dc_blocker_enabled !== false;
+          const aecOn = cfg.aec_enabled !== false;
+          const ledBright = cfg.led_brightness !== undefined ? cfg.led_brightness : 80;
           return `
-          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)); border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div class="virtual-client-banner" style="background: linear-gradient(135deg, ${aliceDisabled ? 'rgba(16, 185, 129, 0.18), rgba(59, 130, 246, 0.14)' : 'rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)'}); border: 1px solid ${aliceDisabled ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.35)'}; border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <span style="font-weight: 700; font-size: 13px; color: #c4b5fd;">🟣 Яндекс Станция 2</span>
-              <span id="quasar-ver-badge-${dev.mac}" class="fw-badge ${hasUpdate ? 'fw-update-available' : 'fw-up-to-date'}" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge Porfiriy Edition">
-                <strong>${currentVer ? `v${escapeHtml(currentVer)}` : 'v1.2.3'}</strong>
-                ${hasUpdate ? `<span class="ota-device-badge" title="Доступен новый пакет v${targetVer}">➔ v${targetVer}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
-              </span>
+              <span style="font-weight: 700; font-size: 13px; color: ${aliceDisabled ? '#34d399' : '#c4b5fd'};">${aliceDisabled ? '🟢 Яндекс Станция 2 (Нативный Порфирий)' : '🟣 Яндекс Станция 2 (Алиса + Quasar)'}</span>
+              ${!aliceDisabled ? `
+                <span id="quasar-ver-badge-${dev.mac}" class="fw-badge ${hasUpdate ? 'fw-update-available' : 'fw-up-to-date'}" style="font-size: 10px; padding: 2px 7px;" title="Версия Quasar Bridge Porfiriy Edition">
+                  <strong>${currentVer ? `v${escapeHtml(currentVer)}` : 'v1.2.3'}</strong>
+                  ${hasUpdate ? `<span class="ota-device-badge" title="Доступен новый пакет v${targetVer}">➔ v${targetVer}</span>` : '<span style="color: var(--accent-green); font-size: 11px;" title="Актуальная версия">✓ актуальная</span>'}
+                </span>
+              ` : ''}
             </div>
-            <button id="quasar-update-btn-${dev.mac}" class="btn btn-sm ${hasUpdate ? 'quasar-update-btn-needed' : 'btn-secondary'}" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 4px 10px; border-radius: 6px;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH с перепривязкой IP">
-              ${hasUpdate ? `⚡ Обновить (v${targetVer})` : `✓ Quasar v${currentVer || targetVer}`}
-            </button>
+            ${!aliceDisabled ? `
+              <button id="quasar-update-btn-${dev.mac}" class="btn btn-sm ${hasUpdate ? 'quasar-update-btn-needed' : 'btn-secondary'}" onclick="updateQuasarComponents('${dev.mac}')" style="font-size: 11px; padding: 4px 10px; border-radius: 6px;" title="Обновить компоненты Quasar Bridge, Squeezelite и AirPlay по SSH с перепривязкой IP">
+                ${hasUpdate ? `⚡ Обновить (v${targetVer})` : `✓ Quasar v${currentVer || targetVer}`}
+              </button>
+            ` : `
+              <button class="btn btn-secondary btn-sm" onclick="controlStationd('${dev.mac}', 'deploy')" style="font-size: 11px; padding: 4px 10px; border-radius: 6px; color: #34d399; border-color: rgba(52, 211, 153, 0.4);" title="Залить скрипт porfiriy-stationd и ONNX модели на Станцию">
+                ⚡ Обновить Stationd
+              </button>
+            `}
           </div>
+
+          <!-- Переключатель режима: Алиса ⇄ Нативный Порфирий -->
+          <div style="margin: 8px 0 4px 0; padding: 8px 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12px; font-weight: 600; color: #e2e8f0; margin: 0;">
+              <input type="checkbox" ${aliceDisabled ? 'checked' : ''} onchange="toggleStationAlice('${dev.mac}', this.checked)">
+              <span>Отключить Алису (локальный openWakeWord на Станции)</span>
+            </label>
+          </div>
+
           <!-- Players bar: Squeezelite & AirPlay -->
-          <div style="margin: 8px 0 4px 0; display: flex; flex-direction: column; gap: 6px;">
+          <div style="margin: 6px 0 4px 0; display: flex; flex-direction: column; gap: 6px;">
             <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px;">
               <div style="display: flex; align-items: center; gap: 6px;">
                 <span style="font-size: 12px; color: #38bdf8; font-weight: 600;">🎵 Squeezelite (MA):</span>
@@ -240,7 +265,9 @@ function renderDevicesGrid() {
               </button>
             </div>
           </div>
-          <!-- Yandex Station Settings -->
+
+          ${!aliceDisabled ? `
+          <!-- Настройки Quasar Bridge (видны только когда Алиса включена) -->
           <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 12px; color: #8b949e; min-width: 90px;">📡 Канал связи:</span>
@@ -284,6 +311,115 @@ function renderDevicesGrid() {
               ▶ Ответ Gemini
             </button>
           </div>
+          ` : `
+          <!-- Нативный режим Порфирия: openWakeWord + отладка + LED (видны только при выключенной Алисе) -->
+          <div style="margin: 10px 0; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.28); border-radius: 8px;">
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="font-size: 12px; color: #34d399; font-weight: 600;">🎙️ openWakeWord (Станция):</span>
+                <span id="stationd-badge-${dev.mac}" class="badge ${dev.online ? 'badge-success' : 'badge-warning'}" style="font-size: 10px; padding: 2px 6px;">
+                  ${dev.online ? 'Подключён' : 'Ожидание'}
+                </span>
+              </div>
+              <div style="display: flex; gap: 4px;">
+                <button class="btn btn-secondary btn-sm" onclick="controlStationd('${dev.mac}', 'restart')" style="font-size: 11px; padding: 2px 8px;">🔄 Рестарт</button>
+                <label class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 2px 8px; cursor: pointer; margin: 0;" title="Загрузить новый porfiriy.onnx на Станцию">
+                  📁 .onnx
+                  <input type="file" accept=".onnx" style="display:none" onchange="uploadStationWwModel('${dev.mac}', this)">
+                </label>
+              </div>
+            </div>
+
+            <!-- Порог openWakeWord и усиление микрофона -->
+            <div class="slider-row">
+              <span>🎯 Порог WW:</span>
+              <input type="range" min="0.30" max="0.99" step="0.01" value="${wwThr}"
+                oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)"
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
+              <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${Number(wwThr).toFixed(2)}</span>
+            </div>
+            <div class="slider-row">
+              <span>🎙️ Усиление:</span>
+              <input type="range" min="0.5" max="4.0" step="0.1" value="${micGain}"
+                oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(1) + 'x'"
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'mic_gain', parseFloat(this.value))">
+              <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${Number(micGain).toFixed(1)}x</span>
+            </div>
+            <div style="display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #cbd5e1; padding: 2px 4px;">
+              <label style="display:flex; align-items:center; gap:5px; cursor:pointer; margin:0;">
+                <input type="checkbox" ${dcOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'dc_blocker_enabled', this.checked)">
+                <span>DC-блокер PDM</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:5px; cursor:pointer; margin:0;">
+                <input type="checkbox" ${aecOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'aec_enabled', this.checked)">
+                <span>AEC (вычитание музыки)</span>
+              </label>
+            </div>
+
+            <!-- Встроенная мини-отладка openWakeWord прямо в карточке -->
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 8px 10px;">
+              <div style="display: flex; justify-content: space-between; font-size: 11px; color: #8b949e; margin-bottom: 4px; font-family: monospace;">
+                <span id="st-ww-val-${dev.mac}">Score: ${(dev.ww_score || 0).toFixed(2)} / Peak: ${(dev.ww_peak || 0).toFixed(2)}</span>
+                <span id="st-ww-meta-${dev.mac}">RMS: ${dev.ww_rms_dbfs !== undefined ? dev.ww_rms_dbfs : -60} dBFS | ${dev.ww_infer_ms || '--'} ms</span>
+              </div>
+              <div style="position: relative; width: 100%; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden;">
+                <div id="st-ww-bar-${dev.mac}" style="width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; height: 100%; background: #34d399; transition: width 0.12s ease;"></div>
+                <div style="position: absolute; top: 0; bottom: 0; left: ${Math.min(100, Math.round(wwThr * 100))}%; width: 2px; background: #f87171;"></div>
+              </div>
+              <div style="margin-top: 8px; display: flex; gap: 6px;">
+                <button class="btn btn-secondary btn-sm" onclick="dumpAndPlayStationMic('${dev.mac}')" style="flex: 1; font-size: 11px; padding: 4px 8px;" title="Получить последние 3 секунды очищенного после DSP/AEC аудио с микрофона">
+                  🎙️ Прослушать 3с (после AEC)
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" style="font-size: 11px; padding: 4px 8px;">
+                  ▶ Ответ
+                </button>
+              </div>
+            </div>
+
+            <!-- Плеер Music Assistant -->
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🎵 Плеер MASS:</span>
+              <select id="yandex-player-${dev.mac}" style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="saveYandexConfig('${dev.mac}', 'mass_player', this.value); saveYandexConfig('${dev.mac}', 'airplay_player', this.value)">
+                <option value="">— Не задан (Music Assistant) —</option>
+                ${availableMediaPlayers.map(p => `<option value="${escapeHtml(p.entity_id)}" ${(cfg.mass_player === p.entity_id || cfg.airplay_player === p.entity_id) ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                ${(cfg.mass_player || cfg.airplay_player) && !availableMediaPlayers.some(p => p.entity_id === (cfg.mass_player || cfg.airplay_player)) ? `<option value="${escapeHtml(cfg.mass_player || cfg.airplay_player)}" selected>${escapeHtml(cfg.mass_player || cfg.airplay_player)}</option>` : ''}
+              </select>
+            </div>
+
+            <!-- Подсветка Станции (LED) для отладки и обратной связи -->
+            <details style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px 10px;">
+              <summary style="cursor: pointer; font-size: 12px; font-weight: 600; color: #93c5fd;">💡 Подсветка Станции (LED-панель)</summary>
+              <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px;">
+                <div class="slider-row">
+                  <span>Яркость:</span>
+                  <input type="range" min="0" max="255" step="5" value="${ledBright}"
+                    oninput="this.nextElementSibling.innerText = this.value"
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'led_brightness', parseInt(this.value, 10))">
+                  <span style="min-width: 34px; font-family: monospace;">${ledBright}</span>
+                </div>
+                ${[
+                  ['idle', 'Ожидание', '#000000', 0],
+                  ['listen', 'Слушает', '#0088ff', 1],
+                  ['think', 'Думает', '#ffaa00', 2],
+                  ['speak', 'Говорит', '#00ff88', 1]
+                ].map(([k, lbl, defCol, defMode]) => {
+                  const mVal = cfg['led_mode_' + k] !== undefined ? cfg['led_mode_' + k] : defMode;
+                  const cVal = cfg['led_color_' + k] || defCol;
+                  return `
+                  <div style="display:flex; align-items:center; gap:6px;">
+                    <span style="min-width:68px; color:#94a3b8;">${lbl}:</span>
+                    <select style="flex:1; background:#0d1117; border:1px solid #30363d; color:#f0f3f6; padding:2px 6px; border-radius:5px; font-size:11px;" onchange="updateSingleDeviceConfig('${dev.mac}', 'led_mode_${k}', parseInt(this.value, 10))">
+                      <option value="0" ${mVal == 0 ? 'selected' : ''}>Выкл</option>
+                      <option value="1" ${mVal == 1 ? 'selected' : ''}>Светится</option>
+                      <option value="2" ${mVal == 2 ? 'selected' : ''}>Дышит</option>
+                    </select>
+                    <input type="color" value="${cVal}" style="width:32px; height:24px; border:none; background:none; cursor:pointer;" onchange="updateSingleDeviceConfig('${dev.mac}', 'led_color_${k}', this.value)">
+                  </div>`;
+                }).join('')}
+              </div>
+            </details>
+          </div>
+          `}
           `;
         })() : `
           <div class="virtual-client-banner">
@@ -1349,6 +1485,15 @@ function populateGlobalSettingsForm() {
   populateMediaPlayersDropdown(globalOptions.default_media_player || 'auto');
   populateAirplayPlayersDropdown(globalOptions.default_airplay_player || '');
 
+  // Настройки звуковых сигналов (Earcons)
+  const earVolChk = document.getElementById('cfg-earcon-volume-enabled');
+  if (earVolChk) earVolChk.checked = globalOptions.earcon_volume_enabled !== false;
+  setVal('cfg-earcon-volume-preset', globalOptions.earcon_volume_preset || 'alice_click');
+  const earShChk = document.getElementById('cfg-earcon-smarthome-enabled');
+  if (earShChk) earShChk.checked = globalOptions.earcon_smarthome_enabled !== false;
+  setVal('cfg-earcon-smarthome-preset', globalOptions.earcon_smarthome_preset || 'marimba_tudun');
+  setVal('cfg-earcon-wake-preset', globalOptions.earcon_wake_preset || 'soft_chime');
+
   // Настройки OpenAI API / Яндекс Станция (Quasar Bridge)
   const opEnabled = globalOptions.openai_api_enabled !== false;
   const opCheckbox = document.getElementById('cfg-openai-api-enabled');
@@ -1592,7 +1737,12 @@ async function saveGlobalSettings(e) {
       ww_server_threshold: parseFloat(document.getElementById('cfg-ww-threshold')?.value || 0.94),
       openai_api_enabled: document.getElementById('cfg-openai-api-enabled')?.checked !== false,
       openai_api_port: parseInt(document.getElementById('cfg-openai-api-port')?.value || 8000),
-      default_airplay_player: document.getElementById('cfg-default-airplay-player')?.value || ''
+      default_airplay_player: document.getElementById('cfg-default-airplay-player')?.value || '',
+      earcon_volume_enabled: document.getElementById('cfg-earcon-volume-enabled')?.checked !== false,
+      earcon_volume_preset: document.getElementById('cfg-earcon-volume-preset')?.value || 'alice_click',
+      earcon_smarthome_enabled: document.getElementById('cfg-earcon-smarthome-enabled')?.checked !== false,
+      earcon_smarthome_preset: document.getElementById('cfg-earcon-smarthome-preset')?.value || 'marimba_tudun',
+      earcon_wake_preset: document.getElementById('cfg-earcon-wake-preset')?.value || 'soft_chime'
     };
 
     const newKey = document.getElementById('cfg-api-key')?.value?.trim();
@@ -1926,6 +2076,19 @@ function setupSSE() {
           if (devIdx >= 0) {
             devices[devIdx].ww_score = score;
             devices[devIdx].ww_peak = peak;
+            devices[devIdx].ww_rms_dbfs = rms;
+            if (info.infer_ms !== undefined) devices[devIdx].ww_infer_ms = info.infer_ms;
+          }
+
+          // Обновляем встроенную мини-отладку в карточке Яндекс Станции (если открыта)
+          const stVal = document.getElementById(`st-ww-val-${mac}`);
+          const stMeta = document.getElementById(`st-ww-meta-${mac}`);
+          const stBar = document.getElementById(`st-ww-bar-${mac}`);
+          if (stVal) stVal.innerText = `Score: ${score.toFixed(2)} / Peak: ${peak.toFixed(2)}`;
+          if (stMeta) stMeta.innerText = `RMS: ${rms.toFixed(1)} dBFS | ${info.infer_ms !== undefined ? info.infer_ms + ' ms' : '--'}`;
+          if (stBar) {
+            stBar.style.width = `${Math.min(100, Math.round(score * 100))}%`;
+            stBar.style.background = score >= threshold ? '#22c55e' : (score >= 0.4 ? '#f59e0b' : '#34d399');
           }
 
           // Обновляем централизованный монитор на вкладке Интеллект
@@ -2604,3 +2767,109 @@ async function submitSaveQuasarConfig() {
   }
 }
 window.submitSaveQuasarConfig = submitSaveQuasarConfig;
+
+// ------------------------------------------------------------------ //
+// Звуковые сигналы (Earcons) и нативный режим Яндекс Станции 2
+// ------------------------------------------------------------------ //
+
+function previewEarcon(category, preset) {
+  if (!preset || preset === 'none') {
+    showToast('Звук выключен (none)');
+    return;
+  }
+  const audio = new Audio(`${API_BASE}/api/earcons/preview/${encodeURIComponent(category)}/${encodeURIComponent(preset)}?t=${Date.now()}`);
+  audio.play().catch(e => showToast(`Ошибка воспроизведения: ${e.message}`, true));
+}
+window.previewEarcon = previewEarcon;
+
+async function toggleStationAlice(mac, disableAlice) {
+  showToast(disableAlice ? 'Отключаю Алису и включаю локальный openWakeWord...' : 'Возвращаю Алису и Quasar Bridge...');
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/toggle_alice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disable_alice: Boolean(disableAlice) })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || (disableAlice ? 'Нативный режим Порфирия включён' : 'Алиса восстановлена'));
+      const dev = devices.find(d => d.mac === mac);
+      if (dev) {
+        dev.config = dev.config || {};
+        dev.config.disable_alice = Boolean(disableAlice);
+        renderDevicesGrid();
+      }
+    } else {
+      showToast(`Ошибка переключения: ${data.error || 'сбой'}`, true);
+      renderDevicesGrid();
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+    renderDevicesGrid();
+  }
+}
+window.toggleStationAlice = toggleStationAlice;
+
+async function controlStationd(mac, action) {
+  showToast(action === 'deploy' ? 'Заливаю porfiriy-stationd и ONNX модели на Станцию...' : `Выполняю ${action} для porfiriy-stationd...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/stationd`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || `porfiriy-stationd: ${data.stationd_running ? 'работает' : 'остановлен'}`);
+    } else {
+      showToast(`Ошибка stationd: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.controlStationd = controlStationd;
+
+async function uploadStationWwModel(mac, inputEl) {
+  const file = inputEl && inputEl.files && inputEl.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('model', file);
+  showToast(`Загружаю ${file.name} на Станцию...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/upload_model`, {
+      method: 'POST',
+      body: fd
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Модель загружена на Станцию (${Math.round((data.size || 0) / 1024)} КБ)`);
+    } else {
+      showToast(`Ошибка загрузки модели: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  } finally {
+    inputEl.value = '';
+  }
+}
+window.uploadStationWwModel = uploadStationWwModel;
+
+async function dumpAndPlayStationMic(mac) {
+  showToast('Запрашиваю 3 сек аудио с микрофона Станции (после AEC)...');
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/dump_mic`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.success) {
+      showToast(`Ошибка: ${data.error || 'Станция не подключена'}`, true);
+      return;
+    }
+    setTimeout(() => {
+      const audio = new Audio(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/mic_test/audio?t=${Date.now()}`);
+      audio.play().catch(e => showToast(`Ошибка воспроизведения дампа: ${e.message}`, true));
+    }, 650);
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.dumpAndPlayStationMic = dumpAndPlayStationMic;

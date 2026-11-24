@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from audio_utils import is_simple_smarthome_action
 from net_utils import get_device_ip
 from prompt_builder import resolve_target_player
 
@@ -77,6 +78,12 @@ class ToolExecutor:
 
                 if on_feedback:
                     await on_feedback("success", has_data)
+
+                if turn_state is not None:
+                    if domain == "media_player" and service in ("volume_set", "volume_up", "volume_down"):
+                        turn_state["volume_changed"] = True
+                    elif not has_data and is_simple_smarthome_action(domain, service):
+                        turn_state["simple_smarthome_executed"] = True
 
                 safe_result: Dict[str, Any] = {"status": "success"}
                 if isinstance(action_res, dict):

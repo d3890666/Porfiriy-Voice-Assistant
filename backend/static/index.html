@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.150">
+  <link rel="stylesheet" href="static/style.css?v=0.0.151">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.150</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.151</span></p>
         </div>
       </div>
       
@@ -544,6 +544,60 @@
 
           </div>
 
+          <!-- Секция 2.5: Звуковые сигналы (Earcons) вместо голоса -->
+          <h3 class="settings-group-title" style="margin-top: 28px;">🔔 Звуковые сигналы (Earcons) вместо голоса</h3>
+          <p class="section-desc">Короткие приятные звуки вместо голосовых подтверждений при изменении громкости и простом управлении умным домом (вкл/выкл).</p>
+
+          <div class="form-grid-2">
+            <!-- Громкость (щелчок) -->
+            <div class="form-field">
+              <label class="checkbox-label" style="margin-bottom: 8px;">
+                <input type="checkbox" id="cfg-earcon-volume-enabled" name="earcon_volume_enabled" checked>
+                <span>Щелчок при изменении громкости (без голоса)</span>
+              </label>
+              <div class="input-with-action">
+                <select id="cfg-earcon-volume-preset" name="earcon_volume_preset">
+                  <option value="alice_click">Мягкий щелчок (как у Алисы)</option>
+                  <option value="wood_tick">Тёплый деревянный тик</option>
+                  <option value="crystal_tap">Чистый кристальный клик</option>
+                  <option value="soft_pop">Деликатный мягкий поп</option>
+                </select>
+                <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('volume', document.getElementById('cfg-earcon-volume-preset').value)" title="Прослушать звук">▶</button>
+              </div>
+            </div>
+
+            <!-- Умный дом («тудун») -->
+            <div class="form-field">
+              <label class="checkbox-label" style="margin-bottom: 8px;">
+                <input type="checkbox" id="cfg-earcon-smarthome-enabled" name="earcon_smarthome_enabled" checked>
+                <span>«Тудун» при простом управлении УД (вкл/выкл без голоса)</span>
+              </label>
+              <div class="input-with-action">
+                <select id="cfg-earcon-smarthome-preset" name="earcon_smarthome_preset">
+                  <option value="marimba_tudun">Мягкий «ту-дун» (маримба)</option>
+                  <option value="warm_chord">Тёплый гармонический аккорд</option>
+                  <option value="short_ding">Короткий чистый дзынь</option>
+                  <option value="cyber_ping">Лёгкий футуристичный пинг</option>
+                </select>
+                <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('smarthome', document.getElementById('cfg-earcon-smarthome-preset').value)" title="Прослушать звук">▶</button>
+              </div>
+            </div>
+
+            <!-- Сигнал активации вейкворда -->
+            <div class="form-field full-width">
+              <label for="cfg-earcon-wake-preset">Сигнал активации вейкворда («Порфирий слушает»)</label>
+              <div class="input-with-action">
+                <select id="cfg-earcon-wake-preset" name="earcon_wake_preset">
+                  <option value="soft_chime">Мягкое «слушаю»</option>
+                  <option value="subtle_bloop">Деликатный короткий отклик</option>
+                  <option value="double_tap">Лёгкий двойной импульс</option>
+                  <option value="none">Без звука (выкл)</option>
+                </select>
+                <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('wake', document.getElementById('cfg-earcon-wake-preset').value)" title="Прослушать звук">▶</button>
+              </div>
+            </div>
+          </div>
+
           <!-- Секция 3: 4 Модульных промпта -->
           <h3 class="settings-group-title" style="margin-top: 32px;">🎭 4 Модульных промпта Порфирия</h3>
           <p class="section-desc">Каждый промпт отвечает за свою грань поведения. Редактируйте прямо здесь с многострочным форматированием.</p>
@@ -956,6 +1010,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.150"></script>
+  <script src="static/app.js?v=0.0.151"></script>
 </body>
 </html>

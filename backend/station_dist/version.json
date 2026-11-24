@@ -1,5 +1,5 @@
 {
-  "version": "1.2.4-porfiriy.19",
+  "version": "1.2.4-porfiriy.20",
   "name": "Quasar Bridge Porfiriy Edition",
   "target": "yandex_station_2",
   "description": "Unified ALSA Master architecture: Master Playback Volume is true root master for all streams (Alice, Porfiriy, Squeezelite, AirPlay); music_duck routes into Master for independent music ducking; remove Gemini Live digital multiplier to eliminate clipping and shouting; safe softvol ducking",

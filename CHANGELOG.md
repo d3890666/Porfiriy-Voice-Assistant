@@ -1,5 +1,19 @@
 # Журнал изменений (Changelog)
 
+## 0.0.151
+- **Нативный режим Порфирия на Яндекс Станции 2 (локальный `openWakeWord` ONNX, LED-панель и тихие звуки Earcons)**:
+  - **Библиотека звуковых сигналов (`backend/audio_utils.py`, `backend/config.py`, `backend/web_server.py`)**:
+    - Добавлены настраиваемые пресеты 24 кГц PCM-звуков: 4 щелчка для громкости (`alice_click`, `wood_tick`, `crystal_tap`, `soft_pop`), 4 «тудуна» для простого умного дома (`marimba_tudun`, `warm_chord`, `short_ding`, `cyber_ping`) и 3 сигнала активации (`soft_chime`, `subtle_bloop`, `double_tap`, `none`).
+    - При изменении громкости и простых командах УД (`light`, `switch`, `cover`, `fan`, `scene`, `script` — вкл/выкл) проигрывается выбранный звук вместо голосового ответа (`tool_executor.py`, `openai_service.py`, `main.py`).
+    - Добавлены эндпоинты предпрослушивания `/api/earcons/preview/{category}/{preset}` и блок выбора звуков с кнопками `▶` в Web UI.
+  - **Локальный демон `porfiriy-stationd` (`backend/station_dist/porfiriy_stationd.py`, `service`/`init` скрипты) и управление в `backend/quasar_manager.py`**:
+    - Захват 16-канального PDM-потока `hw:0,2` (48 кГц ➔ 16 кГц) с DC-блокером, программным NLMS AEC по аппаратному feedback (`ch 8, 9`), локальным `openWakeWord` ONNX (1 поток, ~42 мс/блок), локальным дакингом `Music` и управлением LED-панелью `/dev/fb0` (`89x1 @ 32bpp`).
+    - Добавлены SSH-команды `set_alice_disabled` (безопасный тумблер отключения/возврата `S99quasar` с резервной копией), `deploy_stationd_files`, `control_stationd`, `upload_station_ww_model`.
+  - **Контекстный Web UI карточки Яндекс Станции (`backend/static/app.js`, `index.html`)**:
+    - Тумблер «Отключить Алису (локальный openWakeWord на Станции)»: при включённой Алисе видны настройки Quasar Bridge; при выключенной — Quasar скрывается, а прямо в карточке появляются настройки `openWakeWord` (порог, усиление, DC-блокер, AEC, загрузка `.onnx`), встроенная живая мини-отладка (`score`, `peak`, `RMS dBFS`, `infer_ms`, кнопка «Прослушать 3с после AEC») и блок LED-подсветки.
+- **Документация (`AGENTS.md`)**: зафиксирована подтверждённая SSH-разведкой аппаратная архитектура Яндекс Станции 2.
+- Синхронизация версий до `0.0.151` (`station_dist` `v1.2.4-porfiriy.20`).
+
 ## 0.0.150
 - **Исправление обрыва длинных ответов (`TimeoutError` на `ssh_proc.stdin.drain()`) в `backend/openai_service.py`**:
   - Переведена запись PCM-чанков в SSH `aplay` на неблокирующую очередь `asyncio.Queue` и фоновую задачу `_ssh_writer_loop`: цикл чтения WebSocket Gemini Live больше не тормозится скоростью реального времени воспроизведения `aplay` (48 КБ/с) и не падает по 25-секундному `TimeoutError`.

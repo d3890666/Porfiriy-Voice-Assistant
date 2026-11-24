@@ -8,6 +8,7 @@ import aiohttp
 from aiohttp import web
 from typing import Optional, Dict, Any, Callable, List, Tuple
 
+from audio_utils import get_earcon_pcm, get_earcon_wav, list_earcon_presets
 from config import CANONICAL_PROMPTS, get_addon_version
 
 logger = logging.getLogger("web_server")
@@ -115,6 +116,15 @@ class WebServer:
         self.app.router.add_get("/api/virtual/{mac}/response.wav", self.handle_virtual_response_wav)
         self.app.router.add_post("/api/virtual/upload_model", self.handle_upload_ww_model)
         self.app.router.add_patch("/api/devices/{mac}/streamer_config", self.handle_streamer_config)
+        # Библиотека звуков (Earcons) и нативный режим Яндекс Станции (openWakeWord + LED)
+        self.app.router.add_get("/api/earcons/catalog", self.handle_earcons_catalog)
+        self.app.router.add_get("/api/earcons/preview/{category}/{preset}", self.handle_earcon_preview)
+        self.app.router.add_post("/api/devices/{mac}/play_earcon", self.handle_device_play_earcon)
+        self.app.router.add_get("/api/station/{mac}/native_status", self.handle_station_native_status)
+        self.app.router.add_post("/api/station/{mac}/toggle_alice", self.handle_station_toggle_alice)
+        self.app.router.add_post("/api/station/{mac}/stationd", self.handle_station_control_stationd)
+        self.app.router.add_post("/api/station/{mac}/upload_model", self.handle_station_upload_model)
+        self.app.router.add_post("/api/station/{mac}/dump_mic", self.handle_station_dump_mic)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -1030,4 +1040,127 @@ class WebServer:
 
         success = await self.device_manager.update_device_config(mac, cfg)
         return web.json_response({"success": success})
+
+    # ------------------------------------------------------------------ #
+    # Звуковые сигналы (Earcons) и нативный режим Яндекс Станции 2
+    # ------------------------------------------------------------------ #
+
+    async def handle_earcons_catalog(self, request):
+        return web.json_response({"success": True, "catalog": list_earcon_presets()})
+
+    async def handle_earcon_preview(self, request):
+        category = request.match_info.get("category", "").strip().lower()
+        preset = request.match_info.get("preset", "").strip().lower()
+        wav = get_earcon_wav(category, preset, sample_rate=24000)
+        return web.Response(
+            body=wav,
+            content_type="audio/wav",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    async def handle_device_play_earcon(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        category = str(data.get("category", "smarthome"))
+        preset = str(data.get("preset", "marimba_tudun"))
+        dev = self.device_manager.get_device(mac)
+        if not dev:
+            return web.json_response({"success": False, "error": "Device not found"}, status=404)
+        ws = self.device_manager.connections.get(mac)
+        if ws:
+            pcm = get_earcon_pcm(category, preset, sample_rate=24000, volume=1.0)
+            if pcm:
+                await ws.send(pcm)
+                return web.json_response({"success": True, "via": "ws"})
+        ok = await self.openai_service.play_earcon_ssh(dev, category, preset)
+        return web.json_response({"success": ok, "via": "ssh"})
+
+    def _resolve_station_ssh(self, mac: str):
+        dev = self.device_manager.get_device(mac)
+        if not dev:
+            return None, None, 2222
+        cfg = dev.get("config", {})
+        ip = (dev.get("ip") or cfg.get("ip") or "").strip()
+        port = int(cfg.get("ssh_port", 2222))
+        return dev, ip, port
+
+    async def handle_station_native_status(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        res = await self.quasar_manager.get_native_station_status(ip, port=port)
+        return web.json_response(res)
+
+    async def handle_station_toggle_alice(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        disable_alice = bool(data.get("disable_alice", False))
+        res = await self.quasar_manager.set_alice_disabled(ip, disable_alice, port=port)
+        if res.get("success"):
+            await self.device_manager.update_device_config(mac, {"disable_alice": disable_alice})
+        return web.json_response(res)
+
+    async def handle_station_control_stationd(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        action = str(data.get("action", "status"))
+        if action == "deploy":
+            server_ip = request.host.split(":")[0] if request.host else None
+            res = await self.quasar_manager.deploy_stationd_files(ip, port=port, server_ip=server_ip)
+        else:
+            res = await self.quasar_manager.control_stationd(ip, action, port=port)
+        return web.json_response(res)
+
+    async def handle_station_upload_model(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            if not field or field.name != "model":
+                return web.json_response({"success": False, "error": "Field 'model' not found"}, status=400)
+            filename = field.filename or "porfiriy.onnx"
+            if not filename.endswith(".onnx"):
+                return web.json_response({"success": False, "error": "Only .onnx files allowed"}, status=400)
+            chunks = []
+            while True:
+                chunk = await field.read_chunk(16384)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            model_bytes = b"".join(chunks)
+            res = await self.quasar_manager.upload_station_ww_model(ip, model_bytes, port=port)
+            return web.json_response(res)
+        except Exception as e:
+            logger.error(f"[STATIOND] Upload model error: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_station_dump_mic(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        ws = self.device_manager.connections.get(mac)
+        if not ws:
+            return web.json_response({"success": False, "error": "Станция не подключена по WebSocket (porfiriy-stationd)"}, status=400)
+        try:
+            await ws.send(json.dumps({"type": "dump_mic"}))
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 

@@ -14,6 +14,7 @@ from audio_utils import (
     rms_to_dbfs,
     scale_pcm16,
     pcm16_to_wav,
+    get_earcon_pcm,
     SUCCESS_CHIME,
     ERROR_CHIME,
 )
@@ -1087,43 +1088,75 @@ async def handle_pc_streamer(websocket, client_mac: str, reg_data: dict):
 
 async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: dict):
     """
-    Обрабатывает высокоскоростное WebSocket-подключение Яндекс Станции 2:
-    - Принимает живой 16 kHz PCM аудиопоток напрямую с микрофонов Станции
-    - Потоково передает звук в сессию Gemini Live API (bidiGenerateContent)
-    - Получает нативный аудиоответ 24 kHz от Gemini Live
-    - Стримит ответ обратно через WebSocket или открытый SSH ALSA пайп
-    - Поддерживает непрерывный режим диалога (Multi-turn Context)
+    Обрабатывает нативное WebSocket-подключение Яндекс Станции 2 (`porfiriy-stationd`):
+    - В режиме покоя (`idle`) локальный openWakeWord на Станции слушает микрофон,
+      а по WebSocket приходят только heartbeat и телеметрия (`ww_telemetry`) для мини-отладки в UI.
+    - При локальной сработке вейкворда (`wake_word_detected`) открывается сессия Gemini Live API
+      (`bidiGenerateContent`), принимается pre-roll + живой 16 kHz PCM голос.
+    - Ответ 24 kHz PCM (либо короткий earcon: щелчок громкости / «тудун» умного дома)
+      стримится обратно на Станцию для воспроизведения через ALSA `default` (`Master`).
+    - Синхронизирует состояния (`idle`/`listening`/`thinking`/`speaking`) для LED-панели Станции.
     """
-    options = get_options()
+    import base64
+
     ha_api = ha_api_singleton
     dev_config = device_manager.get_device_config(client_mac)
     area_name = reg_data.get("area_name") or device_manager.get_device_area(client_mac)
     speaker_ip = reg_data.get("ip") or dev_config.get("ip") or ""
-    output_mode = dev_config.get("output_mode", "ssh_stream")
 
-    logger.info(f"[YANDEX-WS] {client_mac} connected for live audio streaming. ip={speaker_ip}, output_mode={output_mode}")
-    device_manager.set_device_state(client_mac, "listening")
+    logger.info(f"[YANDEX-WS] {client_mac} connected (porfiriy-stationd). ip={speaker_ip}")
+    device_manager.set_device_state(client_mac, "idle")
 
     session_active = False
     audio_queue: Optional[asyncio.Queue] = None
     gemini_is_speaking = False
 
+    async def _send_json(payload: dict):
+        try:
+            await websocket.send(json.dumps(payload))
+        except Exception:
+            pass
+
+    # Сразу отправляем Станции актуальный конфиг (openWakeWord + DSP + LED)
+    try:
+        opts_init = get_options()
+        init_cfg = dict(device_manager.get_device_config(client_mac))
+        init_cfg["earcon_wake_preset"] = opts_init.get("earcon_wake_preset", "soft_chime")
+        await _send_json({"type": "set_config", "config": init_cfg})
+    except Exception:
+        pass
+
     async def _run_gemini_session():
         nonlocal session_active, audio_queue, gemini_is_speaking
+        options = get_options()
         session_active = True
+        gemini_is_speaking = False
         device_manager.set_device_state(client_mac, "listening")
+        await _send_json({"type": "state", "state": "listening"})
+
+        # Опциональный мягкий сигнал активации «слушаю»
+        wake_preset = options.get("earcon_wake_preset", "soft_chime")
+        if wake_preset and wake_preset != "none":
+            wake_pcm = get_earcon_pcm("wake", wake_preset, sample_rate=24000, volume=1.0)
+            if wake_pcm:
+                try:
+                    await websocket.send(wake_pcm)
+                except Exception:
+                    pass
 
         api_key_str = (options.get("gemini_api_key") or "").strip()
         api_key = get_active_api_key(api_key_str)
         if not api_key:
             logger.error("[YANDEX-WS] Gemini API key missing, cannot start session.")
             session_active = False
+            device_manager.set_device_state(client_mac, "idle")
+            await _send_json({"type": "state", "state": "idle"})
             return
 
         station_ctx = (
             "### HARDWARE & SATELLITE CONTEXT:\n"
-            "- Device Type: Yandex Station 2 (Native WebSocket Live Audio Stream).\n"
-            "- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones.\n"
+            "- Device Type: Yandex Station 2 (Native Local openWakeWord + WebSocket Live Audio Stream).\n"
+            "- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones (after DC-blocker & AEC).\n"
             "- Speech Directive: Output strictly spoken, natural Russian. 1-2 concise spoken sentences."
         )
         full_prompt = await build_system_prompt(
@@ -1139,11 +1172,18 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
             enable_google_search=options.get("enable_google_search", True),
             vad_silence_duration_ms=vad_silence,
-            response_modalities=["AUDIO"]
+            response_modalities=["AUDIO"],
         )
 
         pcm_response_chunks = []
-        
+        turn_state = {
+            "tool_executed": False,
+            "playback_changed": False,
+            "volume_changed": False,
+            "simple_smarthome_executed": False,
+            "earcon_played": False,
+        }
+
         async def _stream_mic_to_gemini(session):
             try:
                 while session_active:
@@ -1163,22 +1203,10 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         async def _receive_from_gemini(session):
             nonlocal gemini_is_speaking
             async for response in session.receive():
-                if response.server_content and response.server_content.model_turn:
-                    gemini_is_speaking = True
-                    device_manager.set_device_state(client_mac, "speaking")
-                    current_cfg = device_manager.get_device_config(client_mac)
-                    active_vol = float(current_cfg.get("speaker_volume", 0.5))
-                    for part in response.server_content.model_turn.parts:
-                        if part.inline_data and part.inline_data.data:
-                            scaled_chunk = scale_pcm16(part.inline_data.data, active_vol)
-                            pcm_response_chunks.append(scaled_chunk)
-                            try:
-                                await websocket.send(scaled_chunk)
-                            except Exception:
-                                pass
-
                 if response.tool_call:
                     logger.info(f"[YANDEX-WS] Tool Call from Gemini: {response.tool_call}")
+                    device_manager.set_device_state(client_mac, "thinking")
+                    await _send_json({"type": "state", "state": "thinking"})
                     function_responses = []
                     for fc in response.tool_call.function_calls:
                         tool_res = await tool_executor.execute(
@@ -1186,6 +1214,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             dict(fc.args) if fc.args else {},
                             options,
                             dev=device_manager.get_device(client_mac),
+                            turn_state=turn_state,
                         )
                         function_responses.append(types.FunctionResponse(
                             name=fc.name,
@@ -1194,13 +1223,50 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                         ))
                     await session.send_tool_response(function_responses=function_responses)
 
+                    # Тихое подтверждение earcon (щелчок / «тудун») вместо голоса для громкости и простого УД
+                    earcon_cat = None
+                    earcon_preset = None
+                    if turn_state.get("volume_changed") and options.get("earcon_volume_enabled", True):
+                        earcon_cat = "volume"
+                        earcon_preset = options.get("earcon_volume_preset", "alice_click")
+                    elif turn_state.get("simple_smarthome_executed") and options.get("earcon_smarthome_enabled", True):
+                        earcon_cat = "smarthome"
+                        earcon_preset = options.get("earcon_smarthome_preset", "marimba_tudun")
+
+                    if earcon_cat and earcon_preset:
+                        earcon_pcm = get_earcon_pcm(earcon_cat, earcon_preset, sample_rate=24000, volume=1.0)
+                        if earcon_pcm:
+                            gemini_is_speaking = True
+                            turn_state["earcon_played"] = True
+                            pcm_response_chunks.append(earcon_pcm)
+                            try:
+                                await websocket.send(earcon_pcm)
+                            except Exception:
+                                pass
+                            logger.info(f"[YANDEX-WS] Played earcon {earcon_cat}/{earcon_preset} instead of voice reply")
+                            gemini_is_speaking = False
+                            await _send_json({"type": "turn_complete"})
+                            break
+                    continue
+
+                if response.server_content and response.server_content.model_turn:
+                    if not gemini_is_speaking:
+                        gemini_is_speaking = True
+                        device_manager.set_device_state(client_mac, "speaking")
+                        await _send_json({"type": "state", "state": "speaking"})
+                    for part in response.server_content.model_turn.parts:
+                        if part.inline_data and part.inline_data.data:
+                            chunk = part.inline_data.data
+                            pcm_response_chunks.append(chunk)
+                            try:
+                                await websocket.send(chunk)
+                            except Exception:
+                                pass
+
                 if response.server_content and response.server_content.turn_complete:
                     gemini_is_speaking = False
                     logger.info(f"[YANDEX-WS] Gemini turn complete for {client_mac}.")
-                    try:
-                        await websocket.send(json.dumps({"type": "turn_complete"}))
-                    except Exception:
-                        pass
+                    await _send_json({"type": "turn_complete"})
                     break
 
         sender_task = None
@@ -1210,11 +1276,15 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                 await asyncio.wait_for(_receive_from_gemini(session), timeout=45.0)
         except asyncio.TimeoutError:
             logger.info(f"[YANDEX-WS] Session timed out for {client_mac}.")
+            await _send_json({"type": "turn_complete"})
         except Exception as e:
             logger.error(f"[YANDEX-WS] Gemini session error for {client_mac}: {e}")
+            await _send_json({"type": "turn_complete"})
         finally:
             session_active = False
+            gemini_is_speaking = False
             device_manager.set_device_state(client_mac, "idle")
+            await _send_json({"type": "state", "state": "idle"})
             if audio_queue:
                 audio_queue.put_nowait(None)
             if sender_task and not sender_task.done():
@@ -1227,31 +1297,63 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             device_manager.save_response_wav(client_mac, wav_bytes)
 
     try:
-        audio_queue = asyncio.Queue()
-        asyncio.create_task(_run_gemini_session())
-
         async for message in websocket:
             if isinstance(message, bytes):
-                # Входящий 16kHz PCM кусок голоса со Станции
-                if audio_queue is not None:
+                if client_mac and device_manager.is_mic_test_active(client_mac):
+                    device_manager.append_mic_test_chunk(client_mac, message)
+                    if time.time() >= device_manager.get_mic_test_end_time(client_mac):
+                        device_manager.finish_mic_test(client_mac)
+                    continue
+                if session_active and audio_queue is not None:
                     audio_queue.put_nowait(message)
-                raw_rms = calculate_pcm_rms(message)
-                device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=rms_to_dbfs(raw_rms))
 
             elif isinstance(message, str):
                 try:
                     data = json.loads(message)
                     mtype = data.get("type")
-                    if mtype == "end_of_speech":
-                        if audio_queue is not None:
-                            # Вставляем тишину для закрытия хода модели
+                    if mtype == "wake_word_detected":
+                        if not session_active:
+                            logger.info(
+                                f"[YANDEX-WS] Local wake word detected on {client_mac} "
+                                f"(score={data.get('score')}, infer_ms={data.get('infer_ms')})"
+                            )
+                            audio_queue = asyncio.Queue()
+                            asyncio.create_task(_run_gemini_session())
+                    elif mtype == "end_of_speech":
+                        if session_active and audio_queue is not None:
+                            device_manager.set_device_state(client_mac, "thinking")
+                            await _send_json({"type": "state", "state": "thinking"})
                             silence = b"\x00" * 1024
                             for _ in range(24):
                                 audio_queue.put_nowait(silence)
+                    elif mtype == "ww_telemetry":
+                        device_manager.update_ww_score(
+                            client_mac,
+                            score=float(data.get("score", 0.0)),
+                            peak_score=float(data.get("peak", 0.0)),
+                            rms_dbfs=float(data.get("rms_dbfs", -60.0)),
+                            infer_ms=float(data.get("infer_ms", 0.0)) if data.get("infer_ms") is not None else None,
+                        )
+                    elif mtype == "mic_dump_wav":
+                        wav_b64 = data.get("wav_b64", "")
+                        if wav_b64:
+                            raw_wav = base64.b64decode(wav_b64)
+                            device_manager.mic_test_results[client_mac.strip().lower()] = {
+                                "status": "ready",
+                                "wav": raw_wav,
+                                "timestamp": time.time(),
+                                "analysis": {"quality": "station_aec_dump", "duration_s": round(float(data.get("duration_s", 3.0)), 1)},
+                            }
+                            logger.info(f"[YANDEX-WS] Saved 3s AEC mic dump for {client_mac} ({len(raw_wav)} bytes)")
                     elif mtype == "heartbeat":
-                        device_manager.update_heartbeat(client_mac, rssi=-40, uptime=0, state="online")
-                except Exception:
-                    pass
+                        device_manager.update_heartbeat(
+                            client_mac,
+                            rssi=int(data.get("rssi", -40)),
+                            uptime=int(data.get("uptime", 0)),
+                            state=data.get("state", "idle"),
+                        )
+                except Exception as e_msg:
+                    logger.debug(f"[YANDEX-WS] Text message parse note: {e_msg}")
 
     except ConnectionClosed:
         logger.info(f"[YANDEX-WS] {client_mac} disconnected.")

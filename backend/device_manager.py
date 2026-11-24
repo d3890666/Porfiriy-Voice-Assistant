@@ -745,7 +745,7 @@ class DeviceManager:
     # Виртуальные стримеры (pc_streamer): ww_score и ответный WAV
     # ------------------------------------------------------------------ #
 
-    def update_ww_score(self, mac: str, score: float, peak_score: float = 0.0, rms_dbfs: float = -60.0):
+    def update_ww_score(self, mac: str, score: float, peak_score: float = 0.0, rms_dbfs: float = -60.0, infer_ms: Optional[float] = None):
         """Обновляет live-score вейкворда для монитора в Web UI."""
         clean_mac = mac.strip().lower()
         dev = self.devices.get(clean_mac)
@@ -753,6 +753,8 @@ class DeviceManager:
             dev["ww_score"] = float(round(score, 4))
             dev["ww_peak_score"] = float(round(peak_score, 4))
             dev["ww_rms_dbfs"] = float(rms_dbfs)
+            if infer_ms is not None:
+                dev["ww_infer_ms"] = float(round(infer_ms, 1))
             last_score = dev.get("_last_notified_score", -1.0)
             last_rms = dev.get("_last_notified_rms", -99.0)
             now = time.time()
@@ -776,14 +778,17 @@ class DeviceManager:
                 dev["_last_notified_score"] = float(score)
                 dev["_last_notified_rms"] = float(rms_dbfs)
                 dev["_last_ww_notify_time"] = now
-                self._notify("ww_score", {
+                payload = {
                     "mac": clean_mac,
                     "name": str(dev.get("name", clean_mac)),
                     "ww_score": float(dev["ww_score"]),
                     "ww_peak": float(dev["ww_peak_score"]),
                     "rms_dbfs": float(dev["ww_rms_dbfs"]),
                     "threshold": float(dev.get("config", {}).get("ww_threshold", 0.94))
-                })
+                }
+                if dev.get("ww_infer_ms") is not None:
+                    payload["infer_ms"] = float(dev["ww_infer_ms"])
+                self._notify("ww_score", payload)
 
 
     def save_response_wav(self, mac: str, wav_bytes: bytes):

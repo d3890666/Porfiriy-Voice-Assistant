@@ -6,7 +6,7 @@ import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from aiohttp import web
 
-from audio_utils import pcm16_to_wav, scale_pcm16
+from audio_utils import get_earcon_pcm, pcm16_to_wav, scale_pcm16
 from config import DEFAULT_GEMINI_MODEL, get_active_api_key
 from fast_commands import handle_direct_playback_command, handle_direct_volume_command
 from net_utils import extract_client_ip, get_device_ip
@@ -67,6 +67,39 @@ class OpenAIService:
         self.tool_executor = ToolExecutor(ha_api, quasar_manager=quasar_manager, ducking_manager=ducking_manager)
         self.dialogue_history: Dict[str, Dict[str, Any]] = {}
         self._active_playback_tasks: Dict[str, asyncio.Task] = {}
+
+    async def play_earcon_ssh(self, dev: Dict[str, Any], category: str, preset: str) -> bool:
+        """Короткое воспроизведение 24 кГц PCM earcon (щелчок / тудун) на Яндекс Станции через SSH aplay."""
+        if not HAS_ASYNCSSH or not isinstance(dev, dict):
+            return False
+        pcm = get_earcon_pcm(category, preset, sample_rate=24000, volume=1.0)
+        if not pcm:
+            return False
+        cfg = dev.get("config", {})
+        speaker_ip = get_device_ip(dev)
+        if not speaker_ip or speaker_ip == "---":
+            return False
+        ssh_port = int(cfg.get("ssh_port", 2222))
+        try:
+            async with asyncssh.connect(
+                speaker_ip,
+                port=ssh_port,
+                username="root",
+                known_hosts=None,
+                client_keys=None,
+                connect_timeout=3,
+            ) as conn:
+                proc = await conn.create_process(
+                    "aplay -D default -t raw -f S16_LE -c 1 -r 24000 -q",
+                    encoding=None,
+                )
+                proc.stdin.write(pcm)
+                proc.stdin.write_eof()
+                await asyncio.wait_for(proc.wait(), timeout=4.0)
+            return True
+        except Exception as e:
+            logger.debug(f"[EARCON SSH] Playback note ({speaker_ip}): {e}")
+            return False
 
     async def _cancel_active_playback(self, mac: str) -> None:
         """Отменяет предыдущее фоновое воспроизведение SSH aplay на станции при новом запросе."""
@@ -347,6 +380,25 @@ class OpenAIService:
                                 response={"result": tool_res}
                             ))
                         await session.send_tool_response(function_responses=function_responses)
+                        # Тихий режим earcon вместо голоса для громкости и простого умного дома
+                        if on_audio_chunk is not None and turn_state is not None:
+                            earcon_cat = None
+                            earcon_preset = None
+                            if turn_state.get("volume_changed") and options.get("earcon_volume_enabled", True):
+                                earcon_cat = "volume"
+                                earcon_preset = options.get("earcon_volume_preset", "alice_click")
+                            elif turn_state.get("simple_smarthome_executed") and options.get("earcon_smarthome_enabled", True):
+                                earcon_cat = "smarthome"
+                                earcon_preset = options.get("earcon_smarthome_preset", "marimba_tudun")
+                            if earcon_cat and earcon_preset:
+                                earcon_pcm = get_earcon_pcm(earcon_cat, earcon_preset, sample_rate=24000, volume=1.0)
+                                if earcon_pcm:
+                                    pcm_chunks.append(earcon_pcm)
+                                    await on_audio_chunk(earcon_pcm)
+                                    turn_state["earcon_played"] = True
+                                    logger.info(f"[EARCON] Played {earcon_cat}/{earcon_preset} instead of voice reply")
+                                    turn_done = True
+                                    break
                         waiting_for_tool_reply = True
                         continue
 
@@ -738,6 +790,10 @@ class OpenAIService:
 
             music_player = self._resolve_target_player(dev, opts)
             if await self._handle_direct_volume_command(user_text, mac, music_player):
+                if opts.get("earcon_volume_enabled", True):
+                    asyncio.create_task(
+                        self.play_earcon_ssh(dev, "volume", opts.get("earcon_volume_preset", "alice_click"))
+                    )
                 self.device_manager.set_device_state(mac, "idle")
                 return web.json_response(self._make_openai_response("sil <[50]>", body.get("model", "porfiriy")), headers=self._cors_headers())
 

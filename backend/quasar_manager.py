@@ -28,6 +28,10 @@ STATION_DUCKING_INIT_PATH = "/etc/init.d/S96ducking"
 ALICE_WATCHER_DIR = "/data/opt/alice-watcher"
 ALICE_WATCHER_SERVICE_PATH = "/data/opt/alice-watcher/service"
 ALICE_WATCHER_INIT_PATH = "/etc/init.d/S96alice-watcher"
+STATIOND_DIR = "/data/opt/porfiriy-stationd"
+STATIOND_SERVICE_PATH = "/data/opt/porfiriy-stationd/service"
+STATIOND_INIT_PATH = "/etc/init.d/S99porfiriy-stationd"
+DISABLE_ALICE_FLAG = "/data/opt/disable_alice"
 SET_VOLUME_PATH = "/system/vendor/quasar/set_volume.sh"
 ASOUND_CONF_PATH = "/etc/asound.conf"
 STATION_DIST_DIR = os.path.join(os.path.dirname(__file__), "station_dist")
@@ -991,4 +995,157 @@ class QuasarManager:
         except Exception as e:
             logger.error(f"[QUASAR] Error updating station {ip}:{port}: {e}")
             return {"error": str(e)}
+
+    # ------------------------------------------------------------------ #
+    # Нативный режим Порфирия на Яндекс Станции 2 (без Алисы + openWakeWord)
+    # ------------------------------------------------------------------ #
+
+    async def get_native_station_status(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """Возвращает статус Алисы (maind) и локального демона porfiriy-stationd на Станции."""
+        if not HAS_ASYNCSSH:
+            return {"error": "asyncssh не установлен"}
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=4.0) as conn:
+                cmd = (
+                    f"echo \"ALICE_FLAG=$([ -f {DISABLE_ALICE_FLAG} ] && echo 1 || echo 0)\"; "
+                    f"echo \"ALICE_RUN=$(ps | grep -v grep | grep -q 'maind --platformd' && echo 1 || echo 0)\"; "
+                    f"echo \"STATIOND_RT=$([ -x {STATIOND_DIR}/lib64/ld-linux-aarch64.so.1 ] && [ -f {STATIOND_DIR}/porfiriy_stationd.py ] && echo 1 || echo 0)\"; "
+                    f"echo \"STATIOND_RUN=$(ps | grep -v grep | grep -q 'porfiriy_stationd.py' && echo 1 || echo 0)\"; "
+                    f"echo \"MODEL_SIZE=$(wc -c < {STATIOND_DIR}/models/porfiriy.onnx 2>/dev/null || echo 0)\""
+                )
+                res = await conn.run(cmd, check=False)
+                kv = {}
+                for line in (res.stdout or "").splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        kv[k.strip()] = v.strip()
+                return {
+                    "success": True,
+                    "alice_disabled": kv.get("ALICE_FLAG") == "1",
+                    "alice_running": kv.get("ALICE_RUN") == "1",
+                    "stationd_installed": kv.get("STATIOND_RT") == "1",
+                    "stationd_running": kv.get("STATIOND_RUN") == "1",
+                    "model_size": int(kv.get("MODEL_SIZE", "0") or 0),
+                }
+        except Exception as e:
+            logger.warning(f"[STATIOND] Status error ({ip}:{port}): {e}")
+            return {"success": False, "error": str(e)}
+
+    async def set_alice_disabled(self, ip: str, disabled: bool, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """
+        Переключает Яндекс Станцию 2 между режимом Алисы (Quasar) и нативным режимом Порфирия (openWakeWord).
+        При disabled=True: сохраняет резервную копию S99quasar, ставит флаг /data/opt/disable_alice,
+        останавливает quasar_launcher2/maind (killall) и запускает porfiriy-stationd (если установлен).
+        При disabled=False: останавливает porfiriy-stationd, снимает флаг и возвращает S99quasar.
+        """
+        if not HAS_ASYNCSSH:
+            return {"error": "asyncssh не установлен"}
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=6.0) as conn:
+                if disabled:
+                    cmd = (
+                        "mkdir -p /data/opt/backup; "
+                        "[ -f /data/opt/backup/S99quasar.orig ] || cp -f /etc/init.d/S99quasar /data/opt/backup/S99quasar.orig 2>/dev/null || true; "
+                        f"if ! grep -q 'disable_alice' /etc/init.d/S99quasar 2>/dev/null; then "
+                        f"printf '#!/bin/sh\\n[ \"$1\" = \"start\" ] && [ -f {DISABLE_ALICE_FLAG} ] && exit 0\\n[ -x /system/vendor/quasar/onboot.sh ] && /system/vendor/quasar/onboot.sh \"$@\"\\n' > /etc/init.d/S99quasar; "
+                        "chmod +x /etc/init.d/S99quasar; "
+                        "fi; "
+                        f"touch {DISABLE_ALICE_FLAG}; "
+                        "killall quasar_launcher2 maind 2>/dev/null || true; "
+                        "sleep 1; "
+                        f"[ -x {STATIOND_SERVICE_PATH} ] && sh {STATIOND_SERVICE_PATH} restart || true"
+                    )
+                    await conn.run(cmd, check=False)
+                else:
+                    cmd = (
+                        f"[ -x {STATIOND_SERVICE_PATH} ] && sh {STATIOND_SERVICE_PATH} stop || true; "
+                        f"rm -f {DISABLE_ALICE_FLAG}; "
+                        "if [ -f /data/opt/backup/S99quasar.orig ]; then cp -f /data/opt/backup/S99quasar.orig /etc/init.d/S99quasar && chmod +x /etc/init.d/S99quasar; fi; "
+                        "sh /etc/init.d/S99quasar start >/dev/null 2>&1 &"
+                    )
+                    await conn.run(cmd, check=False)
+                    await asyncio.sleep(2.0)
+
+            st = await self.get_native_station_status(ip, port=port)
+            st["message"] = (
+                "Алиса отключена, включён нативный режим Порфирия"
+                if disabled
+                else "Алиса и Quasar Bridge восстановлены"
+            )
+            return st
+        except Exception as e:
+            logger.error(f"[STATIOND] set_alice_disabled({disabled}) error for {ip}:{port}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def deploy_stationd_files(self, ip: str, port: int = DEFAULT_SSH_PORT, server_ip: Optional[str] = None) -> Dict[str, Any]:
+        """Копирует скрипт porfiriy_stationd.py, init/service скрипты и 3 ONNX-модели на Станцию."""
+        if not HAS_ASYNCSSH:
+            return {"error": "asyncssh не установлен"}
+        backend_dir = os.path.dirname(__file__)
+        files_map = [
+            (os.path.join(STATION_DIST_DIR, "porfiriy_stationd.py"), f"{STATIOND_DIR}/porfiriy_stationd.py", True),
+            (os.path.join(STATION_DIST_DIR, "porfiriy_stationd_service.sh"), STATIOND_SERVICE_PATH, True),
+            (os.path.join(STATION_DIST_DIR, "porfiriy_stationd_init.sh"), STATIOND_INIT_PATH, True),
+            (os.path.join(backend_dir, "porfiriy.onnx"), f"{STATIOND_DIR}/models/porfiriy.onnx", False),
+            (os.path.join(backend_dir, "models", "melspectrogram.onnx"), f"{STATIOND_DIR}/models/melspectrogram.onnx", False),
+            (os.path.join(backend_dir, "models", "embedding_model.onnx"), f"{STATIOND_DIR}/models/embedding_model.onnx", False),
+        ]
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=8.0) as conn:
+                await conn.run(f"mkdir -p {STATIOND_DIR}/models", check=False)
+                if server_ip:
+                    await conn.run(f"echo '{server_ip}' > /data/opt/porfiriy_host", check=False)
+                async with conn.start_sftp_client() as sftp:
+                    for src, dst, is_exec in files_map:
+                        if os.path.exists(src):
+                            await sftp.put(src, dst)
+                            if is_exec:
+                                await conn.run(f"chmod +x {dst}", check=False)
+                # Если Алиса уже отключена и рантайм стоит — перезапускаем сервис
+                await conn.run(
+                    f"if [ -f {DISABLE_ALICE_FLAG} ] && [ -x {STATIOND_DIR}/lib64/ld-linux-aarch64.so.1 ]; then sh {STATIOND_SERVICE_PATH} restart; fi",
+                    check=False,
+                )
+            st = await self.get_native_station_status(ip, port=port)
+            st["message"] = "Файлы porfiriy-stationd и модели ONNX обновлены на Станции"
+            return st
+        except Exception as e:
+            logger.error(f"[STATIOND] deploy_stationd_files error ({ip}:{port}): {e}")
+            return {"success": False, "error": str(e)}
+
+    async def control_stationd(self, ip: str, action: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """Управляет службой porfiriy-stationd (start/stop/restart/status)."""
+        if action not in ("start", "stop", "restart", "status"):
+            return {"success": False, "error": f"Unknown action: {action}"}
+        if not HAS_ASYNCSSH:
+            return {"error": "asyncssh не установлен"}
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=6.0) as conn:
+                res = await conn.run(f"sh {STATIOND_SERVICE_PATH} {action}", check=False)
+                out = (res.stdout or res.stderr or "").strip()
+            st = await self.get_native_station_status(ip, port=port)
+            st["output"] = out
+            return st
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def upload_station_ww_model(self, ip: str, model_bytes: bytes, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """Загружает новый .onnx файл вейкворда напрямую на Яндекс Станцию 2 и перезапускает porfiriy-stationd."""
+        if not HAS_ASYNCSSH:
+            return {"error": "asyncssh не установлен"}
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=10.0) as conn:
+                await conn.run(f"mkdir -p {STATIOND_DIR}/models", check=False)
+                proc = await conn.create_process(f"cat > {STATIOND_DIR}/models/porfiriy.onnx", encoding=None)
+                proc.stdin.write(model_bytes)
+                proc.stdin.write_eof()
+                await asyncio.wait_for(proc.wait(), timeout=15.0)
+                await conn.run(
+                    f"if [ -f {DISABLE_ALICE_FLAG} ] && [ -x {STATIOND_SERVICE_PATH} ]; then sh {STATIOND_SERVICE_PATH} restart; fi",
+                    check=False,
+                )
+            return {"success": True, "size": len(model_bytes), "message": "Модель porfiriy.onnx загружена на Станцию"}
+        except Exception as e:
+            logger.error(f"[STATIOND] upload_station_ww_model error ({ip}:{port}): {e}")
+            return {"success": False, "error": str(e)}
 
