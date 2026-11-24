@@ -95,8 +95,9 @@ class GeminiProxyClient:
         if not api_key:
             raise ValueError("Gemini API key is not configured! Please open Porfiriy Web UI ('Мозг & Личность') and enter your API key.")
             
+        api_ver = "v1beta" if manual_vad else "v1alpha"
         self.client = genai.Client(
-            http_options={"api_version": "v1alpha"},
+            http_options={"api_version": api_ver},
             api_key=api_key
         )
         
@@ -112,7 +113,19 @@ class GeminiProxyClient:
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
+        tool_extra = {}
+        if self.manual_vad and "gemini-3.8" in (self.model or "").lower():
+            if hasattr(types, "Behavior") and hasattr(types.Behavior, "BLOCKING"):
+                tool_extra["behavior"] = types.Behavior.BLOCKING
+            else:
+                tool_extra["behavior"] = "BLOCKING"
+
         def _make_decl(**kwargs):
+            if tool_extra:
+                try:
+                    return types.FunctionDeclaration(**kwargs, **tool_extra)
+                except Exception:
+                    pass
             return types.FunctionDeclaration(**kwargs)
 
         ha_tool = _make_decl(
@@ -199,11 +212,20 @@ class GeminiProxyClient:
             
         realtime_input_config = None
         if self.manual_vad:
-            realtime_input_config = types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=True
+            try:
+                realtime_input_config = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=True
+                    ),
+                    activity_handling="NO_INTERRUPTION",
+                    turn_coverage="TURN_INCLUDES_ONLY_ACTIVITY",
                 )
-            )
+            except Exception:
+                realtime_input_config = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=True
+                    )
+                )
         elif self.vad_silence_duration_ms:
             realtime_input_config = types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
