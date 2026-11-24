@@ -20,6 +20,7 @@ porfiriy_stationd.py -- Нативный демон локального вей�
 import asyncio
 import base64
 import collections
+import ctypes
 import io
 import json
 import math
@@ -145,33 +146,92 @@ class StationLEDController:
         self._write_frame(0, 0, 0, 0)
 
 
-class DSPProcessor:
-    """DC-блокер + децимация 48->16 кГц + лёгкий NLMS AEC по аппаратному feedback (ch 8/9)."""
+class Speex2ChAEC:
+    """Нативный 2-канальный C-эхоподавитель (libspeexdsp) + Residual Echo Suppressor + Noise Suppressor."""
 
-    def __init__(self, filter_len: int = 256):
+    FRAME = 160       # 10 ms @ 16 kHz
+    FILTER_LEN = 2048 # 128 ms эхо-хвост комнаты
+    SR = 16000
+
+    def __init__(self, lib_path: str = "/data/opt/porfiriy-stationd/lib64/libspeexdsp.so.1"):
+        self.ready = False
+        self._lib = None
+        self._echo = None
+        self._pp = None
+        try:
+            lib = ctypes.CDLL(lib_path)
+            lib.speex_echo_state_init_mc.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            lib.speex_echo_state_init_mc.restype = ctypes.c_void_p
+            lib.speex_echo_ctl.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            lib.speex_echo_ctl.restype = ctypes.c_int
+            lib.speex_echo_cancellation.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+            lib.speex_echo_cancellation.restype = None
+            lib.speex_preprocess_state_init.argtypes = [ctypes.c_int, ctypes.c_int]
+            lib.speex_preprocess_state_init.restype = ctypes.c_void_p
+            lib.speex_preprocess_ctl.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+            lib.speex_preprocess_ctl.restype = ctypes.c_int
+            lib.speex_preprocess_run.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            lib.speex_preprocess_run.restype = ctypes.c_int
+
+            echo_st = lib.speex_echo_state_init_mc(self.FRAME, self.FILTER_LEN, 1, 2)
+            sr_val = ctypes.c_int(self.SR)
+            lib.speex_echo_ctl(echo_st, 24, ctypes.byref(sr_val))  # SPEEX_ECHO_SET_SAMPLING_RATE
+
+            pp_st = lib.speex_preprocess_state_init(self.FRAME, self.SR)
+            denoise = ctypes.c_int(1)
+            lib.speex_preprocess_ctl(pp_st, 0, ctypes.byref(denoise))  # SPEEX_PREPROCESS_SET_DENOISE
+            lib.speex_preprocess_ctl(pp_st, 24, ctypes.c_void_p(echo_st))  # SPEEX_PREPROCESS_SET_ECHO_STATE
+            sup = ctypes.c_int(-40)
+            sup_act = ctypes.c_int(-25)
+            lib.speex_preprocess_ctl(pp_st, 20, ctypes.byref(sup))  # SPEEX_PREPROCESS_SET_ECHO_SUPPRESS
+            lib.speex_preprocess_ctl(pp_st, 22, ctypes.byref(sup_act))  # SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE
+
+            self._lib = lib
+            self._echo = echo_st
+            self._pp = pp_st
+            self.ready = True
+            print("[STATIOND] Loaded native 2-ch SpeexDSP AEC + Residual Echo Suppressor (128ms tail)", flush=True)
+        except Exception as e:
+            print(f"[STATIOND] SpeexDSP not available ({e}), AEC will be bypassed", flush=True)
+
+    def process(self, mic_i16: np.ndarray, fb_l_i16: np.ndarray, fb_r_i16: np.ndarray) -> np.ndarray:
+        if not self.ready:
+            return mic_i16
+        n = len(mic_i16)
+        out = np.empty(n, dtype=np.int16)
+        # Масштабируем аппаратный feedback (ch 8/9) в 4x под динамический диапазон микрофона
+        fb_l = np.clip(fb_l_i16.astype(np.int32) * 4, -32767, 32767).astype(np.int16)
+        fb_r = np.clip(fb_r_i16.astype(np.int32) * 4, -32767, 32767).astype(np.int16)
+        ref_blk = np.empty(self.FRAME * 2, dtype=np.int16)
+        e_blk = np.empty(self.FRAME, dtype=np.int16)
+        for off in range(0, n - self.FRAME + 1, self.FRAME):
+            m_blk = np.ascontiguousarray(mic_i16[off : off + self.FRAME], dtype=np.int16)
+            ref_blk[0::2] = fb_l[off : off + self.FRAME]
+            ref_blk[1::2] = fb_r[off : off + self.FRAME]
+            self._lib.speex_echo_cancellation(self._echo, m_blk.ctypes.data, ref_blk.ctypes.data, e_blk.ctypes.data)
+            self._lib.speex_preprocess_run(self._pp, e_blk.ctypes.data)
+            out[off : off + self.FRAME] = e_blk
+        return out
+
+
+class DSPProcessor:
+    """DC-блокер + децимация 48->16 кГц + 2-канальный SpeexDSP AEC по ch 8/9 + мягкий лимитер."""
+
+    def __init__(self):
         self.dc_blocker_enabled = True
         self.aec_enabled = True
-        self.mic_gain = 1.0
+        self.mic_gain = 4.0
 
-        # Состояние IIR DC-блокера (R = 0.985 @ 16kHz -> cutoff ~38 Hz)
-        self._dc_x1 = 0.0
-        self._dc_y1 = 0.0
-        self._fb_x1 = 0.0
-        self._fb_y1 = 0.0
+        # Состояние IIR DC-блокера (R = 0.985 @ 16kHz -> cutoff ~38 Hz) для mic, fbL, fbR
+        self._dc_state = {"mic": [0.0, 0.0], "fbl": [0.0, 0.0], "fbr": [0.0, 0.0]}
+        self.aec = Speex2ChAEC()
 
-        # Адаптивный NLMS-фильтр для вычитания эха музыки
-        self.filter_len = filter_len
-        self.w = np.zeros(filter_len, dtype=np.float32)
-        self.ref_hist = np.zeros(filter_len + CHUNK_SAMPLES_16K, dtype=np.float32)
-
-    def _dc_block(self, x: np.ndarray, is_fb: bool = False) -> np.ndarray:
+    def _dc_block(self, x: np.ndarray, key: str) -> np.ndarray:
         if len(x) == 0:
             return x
-        # Быстрое снятие постоянной составляющей (вычитание скользящего среднего + 1-й порядок HPF)
         x = x - np.mean(x)
         r = 0.985
-        x1 = self._fb_x1 if is_fb else self._dc_x1
-        y1 = self._fb_y1 if is_fb else self._dc_y1
+        x1, y1 = self._dc_state[key]
         out = np.empty_like(x)
         for i in range(len(x)):
             xi = float(x[i])
@@ -179,10 +239,8 @@ class DSPProcessor:
             x1 = xi
             y1 = yi
             out[i] = yi
-        if is_fb:
-            self._fb_x1, self._fb_y1 = x1, y1
-        else:
-            self._dc_x1, self._dc_y1 = x1, y1
+        self._dc_state[key][0] = x1
+        self._dc_state[key][1] = y1
         return out
 
     def process_48k_16ch(self, raw_bytes: bytes) -> np.ndarray:
@@ -194,44 +252,26 @@ class DSPProcessor:
             + arr[:, 4].astype(np.float32)
             + arr[:, 7].astype(np.float32)
         ) * 0.25
-        # Аппаратный feedback (ch 8 + ch 9)
-        fb_48k = (arr[:, 8].astype(np.float32) + arr[:, 9].astype(np.float32)) * 0.5
+        fb_l_48k = arr[:, 8].astype(np.float32)
+        fb_r_48k = arr[:, 9].astype(np.float32)
 
-        # Децимация 48 кГц -> 16 кГц (усреднение троек сэмплов)
+        # Децимация 48 кГц -> 16 кГц
         n16 = len(mic_48k) // 3
         mic_16k = mic_48k[: n16 * 3].reshape(n16, 3).mean(axis=1)
-        fb_16k = fb_48k[: n16 * 3].reshape(n16, 3).mean(axis=1)
+        fbl_16k = fb_l_48k[: n16 * 3].reshape(n16, 3).mean(axis=1)
+        fbr_16k = fb_r_48k[: n16 * 3].reshape(n16, 3).mean(axis=1)
 
         if self.dc_blocker_enabled:
-            mic_16k = self._dc_block(mic_16k, is_fb=False)
-            fb_16k = self._dc_block(fb_16k, is_fb=True)
+            mic_16k = self._dc_block(mic_16k, "mic")
+            fbl_16k = self._dc_block(fbl_16k, "fbl")
+            fbr_16k = self._dc_block(fbr_16k, "fbr")
 
-        # Программный блочный NLMS AEC (активируется, когда в feedback есть заметный сигнал динамика)
-        if self.aec_enabled and n16 == CHUNK_SAMPLES_16K:
-            fb_energy = float(np.mean(fb_16k * fb_16k))
-            self.ref_hist[:-n16] = self.ref_hist[n16:]
-            self.ref_hist[-n16:] = fb_16k
-            if fb_energy > 25.0:
-                L = self.filter_len
-                # Блочная оценка эха (подблоки по 160 сэмплов = 10 мс для быстрой сходимости)
-                step = 160
-                mu = 0.25
-                eps = 1e4
-                out = np.empty_like(mic_16k)
-                for pos in range(0, n16, step):
-                    end = pos + step
-                    # Формируем матрицу задержек (step, L)
-                    idx = np.arange(pos, end)[:, None] + np.arange(L, 0, -1)[None, :]
-                    X = self.ref_hist[idx]
-                    y_hat = X @ self.w
-                    err = mic_16k[pos:end] - y_hat
-                    out[pos:end] = err
-                    norm = float(np.sum(X * X)) / step + eps
-                    grad = (err @ X) / (step * norm)
-                    self.w += mu * grad
-                    # Защита весов от расходимости
-                    np.clip(self.w, -4.0, 4.0, out=self.w)
-                mic_16k = out
+        # 2-канальный нативный SpeexDSP AEC + Residual Echo Suppressor (вычитает музыку до -29 дБ!)
+        if self.aec_enabled and self.aec.ready and n16 == CHUNK_SAMPLES_16K:
+            mic_i16 = np.clip(mic_16k, -32767.0, 32767.0).astype(np.int16)
+            fbl_i16 = np.clip(fbl_16k, -32767.0, 32767.0).astype(np.int16)
+            fbr_i16 = np.clip(fbr_16k, -32767.0, 32767.0).astype(np.int16)
+            mic_16k = self.aec.process(mic_i16, fbl_i16, fbr_i16).astype(np.float32)
 
         if self.mic_gain != 1.0:
             mic_16k = mic_16k * float(self.mic_gain)

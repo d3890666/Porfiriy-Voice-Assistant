@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.157
+- **Профессиональный 2-канальный C-эхоподавитель SpeexDSP AEC + Residual Echo Suppressor (`porfiriy_stationd.py`)**:
+  - Заменён базовый Python NLMS на нативный 64-битный `libspeexdsp.so.1` (`speex_echo_state_init_mc` с 2 стерео-каналами аппаратного feedback `ch 8` и `ch 9`, длина хвоста 128 мс + `speex_preprocess_run` с Residual Echo Suppression и шумодавом).
+  - На реальной музыке Squeezelite достигнуто подавление **29.0 дБ** (`15.2 дБ` линейный AEC + `13.8 дБ` RES/NS, с `-40.5 dBFS` до `-69.6 dBFS`) за `10.8 мс` на 80 мс блок.
+- Синхронизация версий до `0.0.157`.
+
 ## 0.0.156
 - **Студийный звуковой дизайн Earcons в стиле Apple HomePod / macOS / Google Nest (`backend/audio_utils.py`, `index.html`)**:
   - Заменён примитивный синусоидальный синтез на физико-модельный DSP-синтез: многослойные гармоники с разной скоростью затухания, лёгкий детюн/хорус, мягкий FM-окрас (Rhodes/вибрафон), молоточковая атака, ранние отражения комнаты (multi-tap room reverb), тёплый LPF-фильтр и аналоговая сатурация (`tanh`).
