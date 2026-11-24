@@ -428,6 +428,30 @@ function renderDevicesGrid() {
                 }).join('')}
               </div>
             </details>
+
+            <!-- Известные Wi-Fi сети и серверы (Дом / Дача) -->
+            <details style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px 10px;" ontoggle="if(this.open) loadStationWifi('${dev.mac}')">
+              <summary style="cursor: pointer; font-size: 12px; font-weight: 600; color: #38bdf8;">📶 Известные Wi-Fi сети и серверы (Дом / Дача)</summary>
+              <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
+                <div id="st-wifi-list-${dev.mac}" style="display: flex; flex-direction: column; gap: 5px; color: #94a3b8;">
+                  <span>Загрузка списка сетей со Станции...</span>
+                </div>
+                <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; display: flex; flex-direction: column; gap: 6px;">
+                  <div style="font-size: 11px; color: #94a3b8; font-weight: 600;">➕ Добавить / обновить сеть на Станции:</div>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                    <input type="text" id="st-wifi-ssid-${dev.mac}" placeholder="SSID (имя Wi-Fi)" style="background:#0d1117; border:1px solid #30363d; color:#f0f3f6; padding:5px 8px; border-radius:6px; font-size:12px;">
+                    <input type="password" id="st-wifi-pass-${dev.mac}" placeholder="Пароль Wi-Fi" style="background:#0d1117; border:1px solid #30363d; color:#f0f3f6; padding:5px 8px; border-radius:6px; font-size:12px;">
+                  </div>
+                  <div style="display: grid; grid-template-columns: 1.4fr 0.6fr; gap: 6px;">
+                    <input type="text" id="st-wifi-srv-${dev.mac}" placeholder="IP сервера Порфирия (напр. 192.168.1.50)" style="background:#0d1117; border:1px solid #30363d; color:#f0f3f6; padding:5px 8px; border-radius:6px; font-size:12px;">
+                    <input type="number" id="st-wifi-prio-${dev.mac}" value="10" placeholder="Приоритет" title="Приоритет подключения (чем выше, тем главнее)" style="background:#0d1117; border:1px solid #30363d; color:#f0f3f6; padding:5px 8px; border-radius:6px; font-size:12px;">
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="saveStationWifi('${dev.mac}')" style="font-size: 11px; padding: 5px 10px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
+                    💾 Сохранить сеть на Станцию
+                  </button>
+                </div>
+              </div>
+            </details>
           </div>
           `}
           `;
@@ -2888,3 +2912,91 @@ async function dumpAndPlayStationMic(mac) {
   }
 }
 window.dumpAndPlayStationMic = dumpAndPlayStationMic;
+
+async function loadStationWifi(mac) {
+  const listEl = document.getElementById(`st-wifi-list-${mac}`);
+  if (listEl) listEl.innerHTML = '<span style="color:#94a3b8;">Загрузка сетей со Станции...</span>';
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/wifi`);
+    const data = await res.json();
+    if (!data.success) {
+      if (listEl) listEl.innerHTML = `<span style="color:#f87171;">Ошибка: ${escapeHtml(data.error || 'SSH сбой')}</span>`;
+      return;
+    }
+    const nets = data.networks || [];
+    if (!nets.length) {
+      if (listEl) listEl.innerHTML = '<span style="color:#94a3b8;">Сохранённых сетей не найдено.</span>';
+      return;
+    }
+    if (listEl) {
+      listEl.innerHTML = nets.map(n => `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; padding:5px 8px; background:#0d1117; border:1px solid ${n.is_active ? 'rgba(52, 211, 153, 0.4)' : '#30363d'}; border-radius:6px;">
+          <div style="display:flex; flex-direction:column; gap:2px; min-width:0;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <strong style="color:#f0f3f6; font-size:12px;">${escapeHtml(n.ssid)}</strong>
+              ${n.is_active ? '<span style="font-size:10px; color:#34d399; background:rgba(52,211,153,0.12); padding:1px 5px; border-radius:4px;">● Активна</span>' : ''}
+              <span style="font-size:10px; color:#64748b;">prio: ${n.priority}</span>
+            </div>
+            <span style="font-size:11px; color:#94a3b8; font-family:monospace;">Сервер: ${escapeHtml(n.server_ip || 'по умолчанию')}</span>
+          </div>
+          ${!n.is_active ? `<button type="button" class="btn btn-secondary btn-sm" onclick="deleteStationWifi('${mac}', '${escapeHtml(n.ssid).replace(/'/g, "\\'")}')" style="padding:2px 6px; font-size:11px; color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить сеть">🗑️</button>` : ''}
+        </div>
+      `).join('');
+    }
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<span style="color:#f87171;">Сетевая ошибка: ${escapeHtml(e.message)}</span>`;
+  }
+}
+window.loadStationWifi = loadStationWifi;
+
+async function saveStationWifi(mac) {
+  const ssid = document.getElementById(`st-wifi-ssid-${mac}`)?.value?.trim() || '';
+  const password = document.getElementById(`st-wifi-pass-${mac}`)?.value || '';
+  const server_ip = document.getElementById(`st-wifi-srv-${mac}`)?.value?.trim() || '';
+  const priority = parseInt(document.getElementById(`st-wifi-prio-${mac}`)?.value || '10', 10);
+  if (!ssid) {
+    showToast('Укажите SSID (название Wi-Fi сети)', true);
+    return;
+  }
+  showToast(`Сохраняю Wi-Fi «${ssid}» на Станцию...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/wifi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid, password, server_ip, priority })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || `Сеть «${ssid}» сохранена!`);
+      const pEl = document.getElementById(`st-wifi-pass-${mac}`);
+      if (pEl) pEl.value = '';
+      loadStationWifi(mac);
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.saveStationWifi = saveStationWifi;
+
+async function deleteStationWifi(mac, ssid) {
+  if (!confirm(`Удалить Wi-Fi сеть «${ssid}» со Станции?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/station/${encodeURIComponent(mac)}/wifi`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || `Сеть «${ssid}» удалена`);
+      loadStationWifi(mac);
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.deleteStationWifi = deleteStationWifi;

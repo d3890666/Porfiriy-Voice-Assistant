@@ -125,6 +125,9 @@ class WebServer:
         self.app.router.add_post("/api/station/{mac}/stationd", self.handle_station_control_stationd)
         self.app.router.add_post("/api/station/{mac}/upload_model", self.handle_station_upload_model)
         self.app.router.add_post("/api/station/{mac}/dump_mic", self.handle_station_dump_mic)
+        self.app.router.add_get("/api/station/{mac}/wifi", self.handle_station_wifi_get)
+        self.app.router.add_post("/api/station/{mac}/wifi", self.handle_station_wifi_save)
+        self.app.router.add_delete("/api/station/{mac}/wifi", self.handle_station_wifi_delete)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -1163,4 +1166,44 @@ class WebServer:
             return web.json_response({"success": True})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_station_wifi_get(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        res = await self.quasar_manager.get_station_wifi_networks(ip, port=port)
+        return web.json_response(res)
+
+    async def handle_station_wifi_save(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        res = await self.quasar_manager.save_station_wifi_network(
+            ip,
+            ssid=str(data.get("ssid", "")),
+            password=str(data.get("password", "")),
+            server_ip=str(data.get("server_ip", "")),
+            priority=int(data.get("priority", 10)),
+            ws_port=int(data.get("ws_port", 8765)),
+            port=port,
+        )
+        return web.json_response(res)
+
+    async def handle_station_wifi_delete(self, request):
+        mac = request.match_info.get("mac", "").strip().lower()
+        dev, ip, port = self._resolve_station_ssh(mac)
+        if not dev or not ip or ip == "---":
+            return web.json_response({"success": False, "error": "Station IP not configured"}, status=400)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        res = await self.quasar_manager.delete_station_wifi_network(ip, ssid=str(data.get("ssid", "")), port=port)
+        return web.json_response(res)
 

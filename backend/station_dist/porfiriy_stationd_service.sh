@@ -41,6 +41,7 @@ start() {
     export PORFIRIY_WS_PORT="8765"
     export PORFIRIY_MODELS_DIR="$base/models"
     export PYTHONPATH="$base/site"
+    amixer set 'Music' 100% >/dev/null 2>&1 || true
     rm -f "$pidfile"
     (
         exec nice -n 5 "$base/lib64/ld-linux-aarch64.so.1" \

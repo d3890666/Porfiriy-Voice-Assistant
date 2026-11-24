@@ -31,6 +31,8 @@ ALICE_WATCHER_INIT_PATH = "/etc/init.d/S96alice-watcher"
 STATIOND_DIR = "/data/opt/porfiriy-stationd"
 STATIOND_SERVICE_PATH = "/data/opt/porfiriy-stationd/service"
 STATIOND_INIT_PATH = "/etc/init.d/S99porfiriy-stationd"
+STATIOND_WIFI_SERVERS_PATH = "/data/opt/porfiriy-stationd/wifi_servers.json"
+WPA_SUPPLICANT_PATH = "/bkupgrade/data/wpa_supplicant.conf"
 DISABLE_ALICE_FLAG = "/data/opt/disable_alice"
 SET_VOLUME_PATH = "/system/vendor/quasar/set_volume.sh"
 ASOUND_CONF_PATH = "/etc/asound.conf"
@@ -1051,7 +1053,8 @@ class QuasarManager:
                         "chmod +x /etc/init.d/S99quasar; "
                         "fi; "
                         f"touch {DISABLE_ALICE_FLAG}; "
-                        "killall quasar_launcher2 maind 2>/dev/null || true; "
+                        "killall quasar_launcher2 maind quasar-bridge 2>/dev/null || true; "
+                        f"[ -x {ALICE_WATCHER_SERVICE_PATH} ] && sh {ALICE_WATCHER_SERVICE_PATH} stop >/dev/null 2>&1 || true; "
                         "sleep 1; "
                         f"[ -x {STATIOND_SERVICE_PATH} ] && sh {STATIOND_SERVICE_PATH} restart || true"
                     )
@@ -1153,5 +1156,262 @@ class QuasarManager:
             return {"success": True, "size": len(model_bytes), "message": "Модель porfiriy.onnx загружена на Станцию"}
         except Exception as e:
             logger.error(f"[STATIOND] upload_station_ww_model error ({ip}:{port}): {e}")
+            return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------ #
+    # Управление известными Wi-Fi сетями и серверами (Дом / Дача)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _parse_wpa_supplicant(content: str):
+        """Разбирает wpa_supplicant.conf на заголовок (до network={) и список словарей сетей."""
+        import re
+        header_lines = []
+        networks = []
+        blocks = list(re.finditer(r"network\s*=\s*\{([^}]*)\}", content, flags=re.DOTALL))
+        if blocks:
+            prefix = content[: blocks[0].start()].strip()
+            if prefix:
+                header_lines = [l for l in prefix.splitlines() if l.strip()]
+        else:
+            header_lines = [l for l in content.splitlines() if l.strip()]
+        if not any("ctrl_interface=" in l for l in header_lines):
+            header_lines.insert(0, "ctrl_interface=/var/run/wpa_supplicant")
+        if not any("update_config=" in l for l in header_lines):
+            header_lines.append("update_config=1")
+
+        for m in blocks:
+            body = m.group(1)
+            net: Dict[str, Any] = {"raw_lines": []}
+            for line in body.splitlines():
+                s = line.strip()
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, v = s.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k == "ssid":
+                    net["ssid"] = v.strip('"')
+                elif k == "psk":
+                    net["psk_raw"] = v
+                elif k == "priority":
+                    try:
+                        net["priority"] = int(v)
+                    except Exception:
+                        net["priority"] = 0
+                elif k == "bssid":
+                    net["bssid"] = v
+                else:
+                    net["raw_lines"].append((k, v))
+            if net.get("ssid"):
+                networks.append(net)
+        return header_lines, networks
+
+    @staticmethod
+    def _render_wpa_supplicant(header_lines, networks) -> str:
+        out = list(header_lines) + [""]
+        for n in networks:
+            out.append("network={")
+            ssid_esc = str(n["ssid"]).replace("\\", "\\\\").replace('"', '\\"')
+            out.append(f'\tssid="{ssid_esc}"')
+            if n.get("bssid"):
+                out.append(f'\tbssid={n["bssid"]}')
+            if n.get("psk_raw"):
+                out.append(f'\tpsk={n["psk_raw"]}')
+            has_km = any(k == "key_mgmt" for k, _ in n.get("raw_lines", []))
+            for k, v in n.get("raw_lines", []):
+                out.append(f"\t{k}={v}")
+            if not has_km:
+                out.append("\tkey_mgmt=WPA-PSK" if n.get("psk_raw") else "\tkey_mgmt=NONE")
+                out.append("\tauth_alg=OPEN")
+            if n.get("priority") is not None:
+                out.append(f'\tpriority={int(n["priority"])}')
+            out.append("}")
+            out.append("")
+        return "\n".join(out)
+
+    async def get_station_wifi_networks(self, ip: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """Читает известные Wi-Fi сети из wpa_supplicant.conf и карту серверов wifi_servers.json."""
+        if not HAS_ASYNCSSH:
+            return {"success": False, "error": "asyncssh не установлен"}
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=5.0) as conn:
+                r_wpa = await conn.run(f"cat {WPA_SUPPLICANT_PATH} 2>/dev/null || true", check=False)
+                r_srv = await conn.run(f"cat {STATIOND_WIFI_SERVERS_PATH} 2>/dev/null || echo '{{}}'", check=False)
+                r_st = await conn.run("wpa_cli -i wlan0 status 2>/dev/null || true", check=False)
+                r_def = await conn.run("cat /data/opt/porfiriy_host 2>/dev/null || true", check=False)
+
+            current_ssid = ""
+            for line in (r_st.stdout or "").splitlines():
+                if line.startswith("ssid="):
+                    current_ssid = line.split("=", 1)[1].strip()
+                    break
+
+            try:
+                servers_map = json.loads(r_srv.stdout or "{}")
+                if not isinstance(servers_map, dict):
+                    servers_map = {}
+            except Exception:
+                servers_map = {}
+
+            default_host = (r_def.stdout or "").strip()
+            _, nets = self._parse_wpa_supplicant(r_wpa.stdout or "")
+
+            # Дедупликация по SSID (игнорируем системные BSSID-blacklist записи с priority=-999)
+            seen = {}
+            result = []
+            for n in nets:
+                if n.get("bssid") and (n.get("priority") or 0) < 0:
+                    continue
+                ssid = n["ssid"]
+                if ssid in seen:
+                    continue
+                seen[ssid] = True
+                srv_entry = servers_map.get(ssid, {})
+                result.append({
+                    "ssid": ssid,
+                    "priority": n.get("priority", 0),
+                    "server_ip": srv_entry.get("server_ip", default_host if ssid == current_ssid else ""),
+                    "ws_port": int(srv_entry.get("ws_port", 8765)),
+                    "is_active": ssid == current_ssid,
+                })
+            result.sort(key=lambda x: (not x["is_active"], -int(x.get("priority") or 0), x["ssid"]))
+            return {
+                "success": True,
+                "current_ssid": current_ssid,
+                "default_host": default_host,
+                "networks": result,
+            }
+        except Exception as e:
+            logger.error(f"[WIFI] get_station_wifi_networks error ({ip}:{port}): {e}")
+            return {"success": False, "error": str(e)}
+
+    async def save_station_wifi_network(
+        self,
+        ip: str,
+        ssid: str,
+        password: str = "",
+        server_ip: str = "",
+        priority: int = 10,
+        ws_port: int = 8765,
+        port: int = DEFAULT_SSH_PORT,
+    ) -> Dict[str, Any]:
+        """Добавляет или обновляет Wi-Fi сеть в wpa_supplicant.conf и привязку IP сервера в wifi_servers.json."""
+        ssid = (ssid or "").strip()
+        if not ssid:
+            return {"success": False, "error": "SSID не может быть пустым"}
+        if not HAS_ASYNCSSH:
+            return {"success": False, "error": "asyncssh не установлен"}
+        try:
+            async with await self._open_ssh_connection(ip, port, timeout=6.0) as conn:
+                # Бэкап оригинального wpa_supplicant.conf перед первым изменением
+                await conn.run(
+                    f"mkdir -p /data/opt/backup {STATIOND_DIR}; "
+                    f"[ -f /data/opt/backup/wpa_supplicant.conf.bak ] || cp -f {WPA_SUPPLICANT_PATH} /data/opt/backup/wpa_supplicant.conf.bak 2>/dev/null || true",
+                    check=False,
+                )
+                r_wpa = await conn.run(f"cat {WPA_SUPPLICANT_PATH} 2>/dev/null || true", check=False)
+                r_srv = await conn.run(f"cat {STATIOND_WIFI_SERVERS_PATH} 2>/dev/null || echo '{{}}'", check=False)
+
+                header_lines, nets = self._parse_wpa_supplicant(r_wpa.stdout or "")
+                updated = False
+                for n in nets:
+                    if n["ssid"] == ssid and not n.get("bssid"):
+                        if password:
+                            pwd_esc = password.replace("\\", "\\\\").replace('"', '\\"')
+                            n["psk_raw"] = f'"{pwd_esc}"'
+                        n["priority"] = int(priority)
+                        updated = True
+                        break
+                if not updated:
+                    if not password:
+                        return {"success": False, "error": "Для новой Wi-Fi сети нужно указать пароль"}
+                    pwd_esc = password.replace("\\", "\\\\").replace('"', '\\"')
+                    nets.append({
+                        "ssid": ssid,
+                        "psk_raw": f'"{pwd_esc}"',
+                        "priority": int(priority),
+                        "raw_lines": [("key_mgmt", "WPA-PSK"), ("auth_alg", "OPEN")],
+                    })
+
+                new_wpa = self._render_wpa_supplicant(header_lines, nets)
+                proc = await conn.create_process(f"cat > {WPA_SUPPLICANT_PATH}", encoding=None)
+                proc.stdin.write(new_wpa.encode("utf-8"))
+                proc.stdin.write_eof()
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
+
+                try:
+                    servers_map = json.loads(r_srv.stdout or "{}")
+                    if not isinstance(servers_map, dict):
+                        servers_map = {}
+                except Exception:
+                    servers_map = {}
+
+                if server_ip.strip():
+                    servers_map[ssid] = {"server_ip": server_ip.strip(), "ws_port": int(ws_port)}
+                elif ssid in servers_map and server_ip == "":
+                    servers_map.pop(ssid, None)
+
+                srv_json = json.dumps(servers_map, indent=2, ensure_ascii=False)
+                proc2 = await conn.create_process(f"cat > {STATIOND_WIFI_SERVERS_PATH}", encoding=None)
+                proc2.stdin.write(srv_json.encode("utf-8"))
+                proc2.stdin.write_eof()
+                await asyncio.wait_for(proc2.wait(), timeout=10.0)
+
+                await conn.run("wpa_cli -i wlan0 reconfigure >/dev/null 2>&1 || true", check=False)
+
+            res = await self.get_station_wifi_networks(ip, port=port)
+            res["message"] = f"Сеть «{ssid}» сохранена на Станции"
+            return res
+        except Exception as e:
+            logger.error(f"[WIFI] save_station_wifi_network error ({ip}:{port}): {e}")
+            return {"success": False, "error": str(e)}
+
+    async def delete_station_wifi_network(self, ip: str, ssid: str, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
+        """Удаляет Wi-Fi сеть из wpa_supplicant.conf (с защитой от удаления единственной/активной сети)."""
+        ssid = (ssid or "").strip()
+        if not ssid:
+            return {"success": False, "error": "SSID не указан"}
+        if not HAS_ASYNCSSH:
+            return {"success": False, "error": "asyncssh не установлен"}
+        try:
+            cur = await self.get_station_wifi_networks(ip, port=port)
+            if not cur.get("success"):
+                return cur
+            if len(cur.get("networks", [])) <= 1:
+                return {"success": False, "error": "Нельзя удалить единственную сохранённую Wi-Fi сеть"}
+            if ssid == cur.get("current_ssid"):
+                return {"success": False, "error": "Нельзя удалить текущую активную сеть (чтобы не потерять связь)"}
+
+            async with await self._open_ssh_connection(ip, port, timeout=6.0) as conn:
+                r_wpa = await conn.run(f"cat {WPA_SUPPLICANT_PATH} 2>/dev/null || true", check=False)
+                r_srv = await conn.run(f"cat {STATIOND_WIFI_SERVERS_PATH} 2>/dev/null || echo '{{}}'", check=False)
+
+                header_lines, nets = self._parse_wpa_supplicant(r_wpa.stdout or "")
+                nets = [n for n in nets if n["ssid"] != ssid]
+                new_wpa = self._render_wpa_supplicant(header_lines, nets)
+                proc = await conn.create_process(f"cat > {WPA_SUPPLICANT_PATH}", encoding=None)
+                proc.stdin.write(new_wpa.encode("utf-8"))
+                proc.stdin.write_eof()
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
+
+                try:
+                    servers_map = json.loads(r_srv.stdout or "{}")
+                    if isinstance(servers_map, dict) and ssid in servers_map:
+                        servers_map.pop(ssid, None)
+                        proc2 = await conn.create_process(f"cat > {STATIOND_WIFI_SERVERS_PATH}", encoding=None)
+                        proc2.stdin.write(json.dumps(servers_map, indent=2, ensure_ascii=False).encode("utf-8"))
+                        proc2.stdin.write_eof()
+                        await asyncio.wait_for(proc2.wait(), timeout=10.0)
+                except Exception:
+                    pass
+
+                await conn.run("wpa_cli -i wlan0 reconfigure >/dev/null 2>&1 || true", check=False)
+
+            res = await self.get_station_wifi_networks(ip, port=port)
+            res["message"] = f"Сеть «{ssid}» удалена со Станции"
+            return res
+        except Exception as e:
+            logger.error(f"[WIFI] delete_station_wifi_network error ({ip}:{port}): {e}")
             return {"success": False, "error": str(e)}
 

@@ -42,6 +42,112 @@ CHUNK_FRAMES_48K = CHUNK_SAMPLES_16K * 3  # 3840 frames @ 48 kHz
 NUM_CHANNELS_HW = 16
 BYTES_PER_BLOCK_48K = CHUNK_FRAMES_48K * NUM_CHANNELS_HW * 2  # 122880 bytes
 
+STATIOND_BASE = "/data/opt/porfiriy-stationd"
+LOCAL_CONFIG_PATH = os.path.join(STATIOND_BASE, "config.json")
+WIFI_SERVERS_PATH = os.path.join(STATIOND_BASE, "wifi_servers.json")
+
+PERSISTED_KEYS = (
+    "ww_threshold",
+    "pdm_gain",
+    "mic_gain",
+    "dc_blocker_enabled",
+    "aec_enabled",
+    "led_brightness",
+    "led_mode_idle",
+    "led_color_idle",
+    "led_mode_listen",
+    "led_color_listen",
+    "led_mode_think",
+    "led_color_think",
+    "led_mode_speak",
+    "led_color_speak",
+)
+
+
+def load_local_config() -> dict:
+    try:
+        if os.path.exists(LOCAL_CONFIG_PATH):
+            with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+    except Exception as e:
+        print(f"[STATIOND] Failed to read local config.json: {e}", flush=True)
+    return {}
+
+
+def save_local_config(cfg: dict) -> None:
+    try:
+        clean = {k: cfg[k] for k in PERSISTED_KEYS if k in cfg and cfg[k] is not None}
+        os.makedirs(STATIOND_BASE, exist_ok=True)
+        tmp_path = LOCAL_CONFIG_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(clean, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, LOCAL_CONFIG_PATH)
+    except Exception as e:
+        print(f"[STATIOND] Failed to save local config.json: {e}", flush=True)
+
+
+def get_current_ssid() -> str:
+    try:
+        out = subprocess.check_output(
+            ["wpa_cli", "-i", "wlan0", "status"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+        )
+        for line in out.splitlines():
+            if line.startswith("ssid="):
+                return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_server_for_ssid(ssid: str, fallback_host: str, fallback_port: int = 8765):
+    """Определяет IP сервера Порфирия для текущего Wi-Fi SSID из wifi_servers.json."""
+    try:
+        if ssid and os.path.exists(WIFI_SERVERS_PATH):
+            with open(WIFI_SERVERS_PATH, "r", encoding="utf-8") as f:
+                mapping = json.load(f)
+            if isinstance(mapping, dict) and ssid in mapping:
+                entry = mapping[ssid]
+                if isinstance(entry, dict) and entry.get("server_ip"):
+                    host = str(entry["server_ip"]).strip()
+                    port = int(entry.get("ws_port", fallback_port))
+                    return host, port
+    except Exception as e:
+        print(f"[STATIOND] wifi_servers.json parse note: {e}", flush=True)
+    return fallback_host, fallback_port
+
+
+def sync_squeezelite_server(server_ip: str) -> None:
+    """Если сервер изменился (например, при переезде на дачу), обновляет SQUEEZELITE_SERVER и перезапускает squeezelite."""
+    env_path = "/data/opt/squeezelite/squeezelite.env"
+    if not server_ip or not os.path.exists(env_path):
+        return
+    try:
+        content = open(env_path, "r", encoding="utf-8").read()
+        target_line = f'SQUEEZELITE_SERVER="{server_ip}"'
+        if f"SQUEEZELITE_SERVER={server_ip}" in content or target_line in content:
+            return
+        new_lines = []
+        replaced = False
+        for line in content.splitlines():
+            if line.startswith("SQUEEZELITE_SERVER="):
+                new_lines.append(target_line)
+                replaced = True
+            else:
+                new_lines.append(line)
+        if not replaced:
+            new_lines.append(target_line)
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+        subprocess.Popen(["sh", "/data/opt/squeezelite/service", "restart"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[STATIOND] Updated Squeezelite server to {server_ip} for current Wi-Fi", flush=True)
+    except Exception as e:
+        print(f"[STATIOND] Squeezelite sync note: {e}", flush=True)
+
 
 class StationLEDController:
     """Управление LED-панелью Яндекс Станции 2 через /dev/fb0 (89x1, 32bpp) и backlight."""
@@ -392,22 +498,14 @@ def get_station_ip() -> str:
 
 
 async def run_daemon():
-    server_host = os.environ.get("PORFIRIY_HOST", "").strip()
-    if not server_host and os.path.exists("/data/opt/porfiriy_host"):
-        server_host = open("/data/opt/porfiriy_host").read().strip()
-    ws_port = int(os.environ.get("PORFIRIY_WS_PORT", "8765"))
+    fallback_host = os.environ.get("PORFIRIY_HOST", "").strip()
+    if not fallback_host and os.path.exists("/data/opt/porfiriy_host"):
+        fallback_host = open("/data/opt/porfiriy_host").read().strip()
+    fallback_port = int(os.environ.get("PORFIRIY_WS_PORT", "8765"))
     models_dir = os.environ.get("PORFIRIY_MODELS_DIR", "/data/opt/porfiriy-stationd/models")
     ww_model = os.environ.get("PORFIRIY_WW_MODEL", "porfiriy.onnx")
 
-    if not server_host:
-        print("[STATIOND] PORFIRIY_HOST is empty, waiting...", flush=True)
-        await asyncio.sleep(5)
-        return
-
-    ws_url = f"ws://{server_host}:{ws_port}"
     mac = get_station_mac()
-    ip = get_station_ip()
-
     led = StationLEDController()
     led.start()
     dsp = DSPProcessor()
@@ -416,6 +514,7 @@ async def run_daemon():
     state = {
         "mode": "idle",  # idle | listening | thinking | speaking
         "ww_threshold": 0.90,
+        "pdm_gain": 40,
         "cooldown_until": 0.0,
         "listen_start": 0.0,
         "last_speech": 0.0,
@@ -424,6 +523,61 @@ async def run_daemon():
         "peak_time": 0.0,
         "last_tel_time": 0.0,
     }
+
+    local_cfg = {
+        "ww_threshold": 0.90,
+        "pdm_gain": 40,
+        "mic_gain": 4.0,
+        "dc_blocker_enabled": True,
+        "aec_enabled": True,
+        "led_brightness": 80,
+        "led_mode_idle": 0,
+        "led_color_idle": "#000000",
+        "led_mode_listen": 1,
+        "led_color_listen": "#0088ff",
+        "led_mode_think": 2,
+        "led_color_think": "#ffaa00",
+        "led_mode_speak": 1,
+        "led_color_speak": "#00ff88",
+    }
+
+    def apply_config(cfg: dict, persist: bool = True):
+        if "ww_threshold" in cfg and cfg["ww_threshold"] is not None:
+            state["ww_threshold"] = float(cfg["ww_threshold"])
+            local_cfg["ww_threshold"] = state["ww_threshold"]
+        if "dc_blocker_enabled" in cfg and cfg["dc_blocker_enabled"] is not None:
+            dsp.dc_blocker_enabled = bool(cfg["dc_blocker_enabled"])
+            local_cfg["dc_blocker_enabled"] = dsp.dc_blocker_enabled
+        if "aec_enabled" in cfg and cfg["aec_enabled"] is not None:
+            dsp.aec_enabled = bool(cfg["aec_enabled"])
+            local_cfg["aec_enabled"] = dsp.aec_enabled
+        if "mic_gain" in cfg and cfg["mic_gain"] is not None:
+            dsp.mic_gain = max(0.2, min(20.0, float(cfg["mic_gain"])))
+            local_cfg["mic_gain"] = dsp.mic_gain
+        if "pdm_gain" in cfg and cfg["pdm_gain"] is not None:
+            pdm_val = max(0, min(48, int(cfg["pdm_gain"])))
+            state["pdm_gain"] = pdm_val
+            local_cfg["pdm_gain"] = pdm_val
+            subprocess.Popen(
+                ["amixer", "cset", "numid=42", str(pdm_val)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        led.update_config(cfg)
+        for k in PERSISTED_KEYS:
+            if k.startswith("led_") and k in cfg and cfg[k] is not None:
+                local_cfg[k] = cfg[k]
+        if persist:
+            save_local_config(local_cfg)
+
+    # Применяем сохранённый локальный конфиг сразу при старте (ещё до подключения к серверу!)
+    saved = load_local_config()
+    if saved:
+        apply_config(saved, persist=False)
+        print(f"[STATIOND] Loaded local config.json: thr={state['ww_threshold']:.2f} pdm={state['pdm_gain']} gain={dsp.mic_gain:.1f}x", flush=True)
+    else:
+        apply_config(local_cfg, persist=True)
+
+    duck_music(False)
 
     preroll = collections.deque(maxlen=10)   # 0.8s @ 80ms
     debug_ring = collections.deque(maxlen=38)  # ~3.0s @ 80ms
@@ -456,15 +610,26 @@ async def run_daemon():
     while True:
         arecord_proc = None
         try:
-            print(f"[STATIOND] Connecting to {ws_url} (mac={mac}, ip={ip})...", flush=True)
+            cur_ssid = get_current_ssid()
+            server_host, ws_port = resolve_server_for_ssid(cur_ssid, fallback_host, fallback_port)
+            if not server_host:
+                print("[STATIOND] Server host is empty, waiting 5s...", flush=True)
+                await asyncio.sleep(5)
+                continue
+            sync_squeezelite_server(server_host)
+            ip = get_station_ip()
+            ws_url = f"ws://{server_host}:{ws_port}"
+            print(f"[STATIOND] Connecting to {ws_url} (mac={mac}, ip={ip}, ssid={cur_ssid or '?'})...", flush=True)
             async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10, max_size=4 * 1024 * 1024) as ws:
                 await ws.send(json.dumps({
                     "type": "register",
                     "mac": mac,
                     "ip": ip,
+                    "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.0",
+                    "firmware": "stationd-1.1",
+                    "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
 
@@ -503,24 +668,10 @@ async def run_daemon():
                                     led.set_state("idle")
                                 elif mtype == "set_config":
                                     cfg = data.get("config", data)
-                                    if "ww_threshold" in cfg:
-                                        state["ww_threshold"] = float(cfg["ww_threshold"])
-                                    if "dc_blocker_enabled" in cfg:
-                                        dsp.dc_blocker_enabled = bool(cfg["dc_blocker_enabled"])
-                                    if "aec_enabled" in cfg:
-                                        dsp.aec_enabled = bool(cfg["aec_enabled"])
-                                    if "mic_gain" in cfg:
-                                        dsp.mic_gain = max(0.2, min(20.0, float(cfg["mic_gain"])))
-                                    if "pdm_gain" in cfg:
-                                        pdm_val = max(0, min(48, int(cfg["pdm_gain"])))
-                                        subprocess.Popen(
-                                            ["amixer", "cset", "numid=42", str(pdm_val)],
-                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                        )
-                                    led.update_config(cfg)
+                                    apply_config(cfg, persist=True)
                                     print(
-                                        f"[STATIOND] Config applied: thr={state['ww_threshold']:.2f} "
-                                        f"gain={dsp.mic_gain:.1f}x pdm={cfg.get('pdm_gain', '-')} "
+                                        f"[STATIOND] Config applied & saved: thr={state['ww_threshold']:.2f} "
+                                        f"gain={dsp.mic_gain:.1f}x pdm={state['pdm_gain']} "
                                         f"dc={dsp.dc_blocker_enabled} aec={dsp.aec_enabled}",
                                         flush=True,
                                     )

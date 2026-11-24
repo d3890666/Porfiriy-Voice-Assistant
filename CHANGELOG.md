@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.158
+- **Автономное локальное хранение настроек на Яндекс Станции 2 и менеджер известных Wi-Fi сетей (Дом / Дача)**:
+  - В `porfiriy_stationd.py` добавлено атомарное сохранение всех параметров колонки (`ww_threshold`, `pdm_gain`, `mic_gain`, `dc_blocker_enabled`, `aec_enabled`, все `led_*`) в `/data/opt/porfiriy-stationd/config.json` на флеше Станции. При холодном старте параметры (включая аппаратный `PDM Gain` и LED) применяются сразу, до подключения к серверу, и передаются новому серверу при регистрации.
+  - Добавлен авто-выбор IP сервера Порфирия и Squeezelite по текущему Wi-Fi SSID через `/data/opt/porfiriy-stationd/wifi_servers.json` (`wpa_cli -i wlan0 status`).
+  - В `quasar_manager.py`, `web_server.py` и карточке Станции (`app.js`) добавлен блок **«📶 Известные Wi-Fi сети и серверы (Дом / Дача)»** для просмотра, добавления и удаления сетей в `/bkupgrade/data/wpa_supplicant.conf` с привязкой IP сервера для каждой сети (с бэкапом и защитой от удаления активной/единственной сети).
+  - В `set_alice_disabled(True)` добавлена остановка ненужных в нативном режиме `quasar-bridge` и `alice-watcher`.
+- Синхронизация версий до `0.0.158`.
+
 ## 0.0.157
 - **Профессиональный 2-канальный C-эхоподавитель SpeexDSP AEC + Residual Echo Suppressor (`porfiriy_stationd.py`)**:
   - Заменён базовый Python NLMS на нативный 64-битный `libspeexdsp.so.1` (`speex_echo_state_init_mc` с 2 стерео-каналами аппаратного feedback `ch 8` и `ch 9`, длина хвоста 128 мс + `speex_preprocess_run` с Residual Echo Suppression и шумодавом).
