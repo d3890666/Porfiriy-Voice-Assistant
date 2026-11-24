@@ -1496,13 +1496,18 @@ function populateGlobalSettingsForm() {
   populateAirplayPlayersDropdown(globalOptions.default_airplay_player || '');
 
   // Настройки звуковых сигналов (Earcons)
+  const earAlias = {
+    alice_click: 'apple_taptic', soft_pop: 'nest_bubble', wood_tick: 'studio_wood', crystal_tap: 'glass_tick',
+    marimba_tudun: 'google_home', warm_chord: 'apple_homepod', short_ding: 'macos_glass', cyber_ping: 'warm_marimba',
+    soft_chime: 'google_listen', subtle_bloop: 'apple_siri', double_tap: 'warm_halo'
+  };
   const earVolChk = document.getElementById('cfg-earcon-volume-enabled');
   if (earVolChk) earVolChk.checked = globalOptions.earcon_volume_enabled !== false;
-  setVal('cfg-earcon-volume-preset', globalOptions.earcon_volume_preset || 'alice_click');
+  setVal('cfg-earcon-volume-preset', earAlias[globalOptions.earcon_volume_preset] || globalOptions.earcon_volume_preset || 'apple_taptic');
   const earShChk = document.getElementById('cfg-earcon-smarthome-enabled');
   if (earShChk) earShChk.checked = globalOptions.earcon_smarthome_enabled !== false;
-  setVal('cfg-earcon-smarthome-preset', globalOptions.earcon_smarthome_preset || 'marimba_tudun');
-  setVal('cfg-earcon-wake-preset', globalOptions.earcon_wake_preset || 'soft_chime');
+  setVal('cfg-earcon-smarthome-preset', earAlias[globalOptions.earcon_smarthome_preset] || globalOptions.earcon_smarthome_preset || 'google_home');
+  setVal('cfg-earcon-wake-preset', earAlias[globalOptions.earcon_wake_preset] || globalOptions.earcon_wake_preset || 'google_listen');
 
   // Настройки OpenAI API / Яндекс Станция (Quasar Bridge)
   const opEnabled = globalOptions.openai_api_enabled !== false;

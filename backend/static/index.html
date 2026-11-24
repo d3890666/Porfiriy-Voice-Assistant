@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.155">
+  <link rel="stylesheet" href="static/style.css?v=0.0.156">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.155</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.156</span></p>
         </div>
       </div>
       
@@ -557,10 +557,10 @@
               </label>
               <div class="input-with-action">
                 <select id="cfg-earcon-volume-preset" name="earcon_volume_preset">
-                  <option value="alice_click">Мягкий щелчок (как у Алисы)</option>
-                  <option value="wood_tick">Тёплый деревянный тик</option>
-                  <option value="crystal_tap">Чистый кристальный клик</option>
-                  <option value="soft_pop">Деликатный мягкий поп</option>
+                  <option value="apple_taptic">Apple Taptic (тактильный щелчок)</option>
+                  <option value="nest_bubble">Google Nest (бархатный поп)</option>
+                  <option value="studio_wood">Studio Woodblock (деревянный тик)</option>
+                  <option value="glass_tick">macOS Glass (хрустальный клик)</option>
                 </select>
                 <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('volume', document.getElementById('cfg-earcon-volume-preset').value)" title="Прослушать звук">▶</button>
               </div>
@@ -574,10 +574,10 @@
               </label>
               <div class="input-with-action">
                 <select id="cfg-earcon-smarthome-preset" name="earcon_smarthome_preset">
-                  <option value="marimba_tudun">Мягкий «ту-дун» (маримба)</option>
-                  <option value="warm_chord">Тёплый гармонический аккорд</option>
-                  <option value="short_ding">Короткий чистый дзынь</option>
-                  <option value="cyber_ping">Лёгкий футуристичный пинг</option>
+                  <option value="google_home">Google Home (тёплый «ту-дун»)</option>
+                  <option value="apple_homepod">Apple HomePod (глубокий бархатный аккорд)</option>
+                  <option value="macos_glass">macOS Bloom (кристальный maj7)</option>
+                  <option value="warm_marimba">Sonos Marimba (деревянная маримба)</option>
                 </select>
                 <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('smarthome', document.getElementById('cfg-earcon-smarthome-preset').value)" title="Прослушать звук">▶</button>
               </div>
@@ -588,9 +588,9 @@
               <label for="cfg-earcon-wake-preset">Сигнал активации вейкворда («Порфирий слушает»)</label>
               <div class="input-with-action">
                 <select id="cfg-earcon-wake-preset" name="earcon_wake_preset">
-                  <option value="soft_chime">Мягкое «слушаю»</option>
-                  <option value="subtle_bloop">Деликатный короткий отклик</option>
-                  <option value="double_tap">Лёгкий двойной импульс</option>
+                  <option value="google_listen">Google Listen (мягкий подъём)</option>
+                  <option value="apple_siri">Apple Siri (деликатный двойной отклик)</option>
+                  <option value="warm_halo">Warm Halo (тёплое сияние)</option>
                   <option value="none">Без звука (выкл)</option>
                 </select>
                 <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('wake', document.getElementById('cfg-earcon-wake-preset').value)" title="Прослушать звук">▶</button>
@@ -1010,6 +1010,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.155"></script>
+  <script src="static/app.js?v=0.0.156"></script>
 </body>
 </html>

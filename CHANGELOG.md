@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.156
+- **Студийный звуковой дизайн Earcons в стиле Apple HomePod / macOS / Google Nest (`backend/audio_utils.py`, `index.html`)**:
+  - Заменён примитивный синусоидальный синтез на физико-модельный DSP-синтез: многослойные гармоники с разной скоростью затухания, лёгкий детюн/хорус, мягкий FM-окрас (Rhodes/вибрафон), молоточковая атака, ранние отражения комнаты (multi-tap room reverb), тёплый LPF-фильтр и аналоговая сатурация (`tanh`).
+  - Новые пресеты: `Apple Taptic`, `Google Nest`, `Studio Woodblock`, `macOS Glass` (громкость); `Google Home`, `Apple HomePod`, `macOS Bloom (maj7)`, `Sonos Marimba` (умный дом); `Google Listen`, `Apple Siri`, `Warm Halo` (активация).
+- Синхронизация версий до `0.0.156`.
+
 ## 0.0.155
 - **Устранён спам логов `MQTT Command received: porfiriy/.../media/state -> idle` (`backend/mqtt_discovery.py`)**:
   - Подписка MQTT сужена с `porfiriy/+/media/#` до `porfiriy/+/media/command`, чтобы аддон не получал собственные публикации `media/state`.

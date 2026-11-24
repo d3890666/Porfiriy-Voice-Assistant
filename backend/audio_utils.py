@@ -73,67 +73,146 @@ ERROR_CHIME = generate_beep(300, 150) + generate_beep(200, 200)
 
 
 # ---------------------------------------------------------------------------
-# Библиотека приятных звуковых подтверждений (Earcons) 24 kHz 16-bit mono PCM
+# Студийная библиотека звуковых подтверждений (Earcons) 24 kHz 16-bit mono PCM
+# Вдохновлено звуковым дизайном Apple HomePod / macOS / Google Nest
 # ---------------------------------------------------------------------------
 
 EARCON_CATALOG: Dict[str, Dict[str, str]] = {
     "volume": {
-        "alice_click": "Мягкий щелчок (как у Алисы)",
-        "wood_tick": "Тёплый деревянный тик",
-        "crystal_tap": "Чистый кристальный клик",
-        "soft_pop": "Деликатный мягкий поп",
+        "apple_taptic": "Apple Taptic (тактильный щелчок)",
+        "nest_bubble": "Google Nest (бархатный поп)",
+        "studio_wood": "Studio Woodblock (деревянный тик)",
+        "glass_tick": "macOS Glass (хрустальный клик)",
     },
     "smarthome": {
-        "marimba_tudun": "Мягкий «ту-дун» (маримба)",
-        "warm_chord": "Тёплый гармонический аккорд",
-        "short_ding": "Короткий чистый дзынь",
-        "cyber_ping": "Лёгкий футуристичный пинг",
+        "google_home": "Google Home (тёплый «ту-дун»)",
+        "apple_homepod": "Apple HomePod (глубокий бархатный аккорд)",
+        "macos_glass": "macOS Bloom (кристальный maj7)",
+        "warm_marimba": "Sonos Marimba (деревянная маримба)",
     },
     "wake": {
-        "soft_chime": "Мягкое «слушаю»",
-        "subtle_bloop": "Деликатный короткий отклик",
-        "double_tap": "Лёгкий двойной импульс",
+        "google_listen": "Google Listen (мягкий подъём)",
+        "apple_siri": "Apple Siri (деликатный двойной отклик)",
+        "warm_halo": "Warm Halo (тёплое сияние)",
         "none": "Без звука (выкл)",
     },
+}
+
+_LEGACY_PRESET_ALIAS = {
+    "alice_click": "apple_taptic",
+    "soft_pop": "nest_bubble",
+    "wood_tick": "studio_wood",
+    "crystal_tap": "glass_tick",
+    "marimba_tudun": "google_home",
+    "warm_chord": "apple_homepod",
+    "short_ding": "macos_glass",
+    "cyber_ping": "warm_marimba",
+    "soft_chime": "google_listen",
+    "subtle_bloop": "apple_siri",
+    "double_tap": "warm_halo",
 }
 
 _EARCON_CACHE: Dict[tuple, bytes] = {}
 
 
-def _synth_note(
+def _apply_warm_reverb_and_lpf(buf: list, sample_rate: int = 24000, wet: float = 0.22, lpf_alpha: float = 0.72) -> list:
+    """Мягкий студийный room-reverb (multi-tap early reflections) + тёплый 1-pole LPF."""
+    n = len(buf)
+    # Короткие ранние отражения комнаты (мс, коэффициент)
+    taps = (
+        (13.0, 0.34),
+        (23.5, 0.26),
+        (37.0, 0.19),
+        (53.5, 0.13),
+        (74.0, 0.08),
+        (98.0, 0.05),
+    )
+    out = list(buf)
+    if wet > 0.0:
+        for delay_ms, gain in taps:
+            d = int(sample_rate * delay_ms / 1000.0)
+            g = gain * wet
+            if d < n:
+                for i in range(d, n):
+                    out[i] += buf[i - d] * g
+    # Тёплый low-pass фильтр убирает «цифровую» резкость
+    if 0.0 < lpf_alpha < 1.0:
+        y = 0.0
+        inv = 1.0 - lpf_alpha
+        for i in range(n):
+            y = lpf_alpha * out[i] + inv * y
+            out[i] = y
+    return out
+
+
+def _synth_rich_tone(
     freq_start: float,
     freq_end: float,
     duration_ms: float,
     sample_rate: int = 24000,
-    amp: float = 0.45,
-    attack_ms: float = 4.0,
-    decay_tau_ms: float = 60.0,
-    harmonics: tuple = ((1.0, 1.0),),
+    amp: float = 0.42,
+    attack_ms: float = 6.0,
+    decay_tau_ms: float = 95.0,
+    partials: tuple = ((1.0, 1.0, 1.0), (2.0, 0.22, 0.55), (3.0, 0.06, 0.35)),
+    detune_hz: float = 1.2,
+    fm_index: float = 0.0,
+    fm_ratio: float = 2.0,
+    mallet_ms: float = 0.0,
 ) -> list:
-    """Синтезирует мягкую затухающую ноту/импульс с плавной атакой (float -1..1)."""
+    """
+    Богатый физико-модельный тон:
+    - partials: кортежи (freq_mult, weight, decay_speed_factor) — высокие гармоники затухают быстрее, как в живых инструментах!
+    - detune_hz: лёгкий хорус/объём
+    - fm_index: мягкая FM-окраска (Rhodes / стеклянная маримба)
+    - mallet_ms: короткий тёплый импульс удара молоточка в начале
+    """
     n = max(1, int(sample_rate * duration_ms / 1000.0))
     att = max(1, int(sample_rate * attack_ms / 1000.0))
-    tau = max(1.0, sample_rate * decay_tau_ms / 1000.0)
+    base_tau = max(1.0, sample_rate * decay_tau_ms / 1000.0)
+    mallet_n = int(sample_rate * mallet_ms / 1000.0)
+    tail_n = min(n // 4, int(sample_rate * 0.012))
+
     out = [0.0] * n
-    phase = 0.0
+    p1 = 0.0
+    p2 = 0.0
+    pfm = 0.0
+    # Детерминированный LCG для мягкого удара молоточка
+    seed = 1234567
     for i in range(n):
         frac = i / float(n)
-        f = freq_start + (freq_end - freq_start) * frac
-        phase += 2.0 * math.pi * f / sample_rate
-        env = (i / float(att)) if i < att else math.exp(-(i - att) / tau)
-        # Плавное сведение в 0 на последних 5 мс, чтобы не было щелчка на конце
-        tail_n = min(n // 4, int(sample_rate * 0.005))
-        if tail_n > 0 and i >= n - tail_n:
-            env *= (n - i) / float(tail_n)
+        # Экспоненциальный питч-глайд (естественнее линейного)
+        f = freq_end + (freq_start - freq_end) * math.exp(-frac * 5.0)
+        p1 += 2.0 * math.pi * f / sample_rate
+        p2 += 2.0 * math.pi * (f + detune_hz) / sample_rate
+        pfm += 2.0 * math.pi * (f * fm_ratio) / sample_rate
+
+        # Плавная косинусная атака (без щелчка)
+        att_env = 0.5 * (1.0 - math.cos(math.pi * i / float(att))) if i < att else 1.0
+        dt = max(0, i - att)
+
+        fm_mod = (fm_index * math.exp(-dt / (base_tau * 0.25)) * math.sin(pfm)) if fm_index > 0.0 else 0.0
+
         val = 0.0
-        for mult, weight in harmonics:
-            val += weight * math.sin(phase * mult)
-        out[i] = val * env * amp
+        for mult, weight, tau_scale in partials:
+            p_env = math.exp(-dt / max(1.0, base_tau * tau_scale))
+            s = math.sin(p1 * mult + fm_mod)
+            if detune_hz > 0.0 and mult <= 2.1:
+                s = 0.65 * s + 0.35 * math.sin(p2 * mult + fm_mod)
+            val += weight * s * p_env
+
+        if mallet_n > 0 and i < mallet_n:
+            seed = (1103515245 * seed + 12345) & 0x7FFFFFFF
+            noise = (seed / 1073741824.0) - 1.0
+            m_env = math.sin(math.pi * i / float(mallet_n))
+            val += noise * 0.08 * m_env
+
+        end_env = ((n - i) / float(tail_n)) if (tail_n > 0 and i >= n - tail_n) else 1.0
+        out[i] = val * att_env * end_env * amp
     return out
 
 
-def _mix_layers(layers: list, total_ms: float, sample_rate: int = 24000) -> bytes:
-    """Смешивает список кортежей (offset_ms, samples_float) в 16-bit mono PCM."""
+def _mix_studio(layers: list, total_ms: float, sample_rate: int = 24000, reverb_wet: float = 0.24, lpf_alpha: float = 0.72) -> bytes:
+    """Смешивает слои, добавляет студийный room-reverb, мягкую сатурацию и пакует в 16-bit PCM."""
     total_n = max(1, int(sample_rate * total_ms / 1000.0))
     buf = [0.0] * total_n
     for offset_ms, samples in layers:
@@ -142,63 +221,108 @@ def _mix_layers(layers: list, total_ms: float, sample_rate: int = 24000) -> byte
             idx = start + i
             if 0 <= idx < total_n:
                 buf[idx] += s
-    # Мягкий лимитер
+
+    buf = _apply_warm_reverb_and_lpf(buf, sample_rate=sample_rate, wet=reverb_wet, lpf_alpha=lpf_alpha)
+
+    # Нормализация с мягким аналоговым лимитером (tanh) для богатого и плотного звучания
     peak = max((abs(x) for x in buf), default=0.0)
-    scale = (0.85 / peak) if peak > 0.85 else 1.0
+    gain = (0.78 / peak) if peak > 1e-5 else 1.0
     out = bytearray(total_n * 2)
     for i, x in enumerate(buf):
-        v = max(-32767, min(32767, int(round(x * scale * 32767.0))))
+        y = math.tanh(x * gain * 1.15) * 0.88
+        v = max(-32767, min(32767, int(round(y * 32767.0))))
         struct.pack_into("<h", out, i * 2, v)
     return bytes(out)
 
 
 def _build_earcon_pcm(category: str, preset: str, sample_rate: int = 24000) -> bytes:
+    preset = _LEGACY_PRESET_ALIAS.get(preset, preset)
+
     if category == "volume":
-        if preset == "wood_tick":
-            s = _synth_note(920, 680, 32, sample_rate, amp=0.50, attack_ms=1.0, decay_tau_ms=8.0, harmonics=((1.0, 0.8), (2.3, 0.25)))
-            return _mix_layers([(0, s)], 40, sample_rate)
-        if preset == "crystal_tap":
-            s = _synth_note(2100, 1950, 28, sample_rate, amp=0.38, attack_ms=0.8, decay_tau_ms=7.0, harmonics=((1.0, 0.85), (1.5, 0.2)))
-            return _mix_layers([(0, s)], 36, sample_rate)
-        if preset == "soft_pop":
-            s = _synth_note(360, 170, 42, sample_rate, amp=0.55, attack_ms=2.0, decay_tau_ms=11.0, harmonics=((1.0, 1.0),))
-            return _mix_layers([(0, s)], 48, sample_rate)
-        # default: alice_click
-        s1 = _synth_note(1350, 580, 26, sample_rate, amp=0.48, attack_ms=0.8, decay_tau_ms=6.5, harmonics=((1.0, 0.85), (2.0, 0.2)))
-        return _mix_layers([(0, s1)], 34, sample_rate)
+        if preset == "nest_bubble":
+            # Google Nest: бархатный мягкий «бульк» вверх
+            s1 = _synth_rich_tone(360, 640, 52, sample_rate, amp=0.50, attack_ms=3.0, decay_tau_ms=16.0,
+                                  partials=((1.0, 1.0, 1.0), (2.0, 0.14, 0.4)), detune_hz=0.0)
+            return _mix_studio([(0, s1)], 85, sample_rate, reverb_wet=0.14, lpf_alpha=0.55)
+        if preset == "studio_wood":
+            # Реалистичный деревянный вудблок (резонансы 1.0 + 2.76)
+            s1 = _synth_rich_tone(780, 740, 48, sample_rate, amp=0.48, attack_ms=1.2, decay_tau_ms=13.0,
+                                  partials=((1.0, 1.0, 1.0), (2.76, 0.28, 0.35)), detune_hz=0.0, mallet_ms=3.5)
+            return _mix_studio([(0, s1)], 85, sample_rate, reverb_wet=0.18, lpf_alpha=0.68)
+        if preset == "glass_tick":
+            # Деликатный хрустальный клик (macOS style)
+            s1 = _synth_rich_tone(1680, 1650, 46, sample_rate, amp=0.38, attack_ms=1.0, decay_tau_ms=12.0,
+                                  partials=((1.0, 0.9, 1.0), (2.02, 0.25, 0.45), (3.5, 0.08, 0.25)), detune_hz=1.5)
+            return _mix_studio([(0, s1)], 85, sample_rate, reverb_wet=0.22, lpf_alpha=0.75)
+        # default: apple_taptic — фирменный мягкий тактильный щелчок (HomePod / iOS)
+        s_body = _synth_rich_tone(480, 155, 28, sample_rate, amp=0.55, attack_ms=0.8, decay_tau_ms=7.0,
+                                  partials=((1.0, 1.0, 1.0), (2.2, 0.18, 0.35)), detune_hz=0.0, mallet_ms=2.0)
+        return _mix_studio([(0, s_body)], 58, sample_rate, reverb_wet=0.10, lpf_alpha=0.52)
 
     if category == "smarthome":
-        if preset == "warm_chord":
-            n1 = _synth_note(349.23, 349.23, 250, sample_rate, amp=0.30, attack_ms=8.0, decay_tau_ms=90.0, harmonics=((1.0, 0.85), (2.0, 0.18)))
-            n2 = _synth_note(440.00, 440.00, 240, sample_rate, amp=0.28, attack_ms=8.0, decay_tau_ms=85.0, harmonics=((1.0, 0.85), (2.0, 0.15)))
-            n3 = _synth_note(523.25, 523.25, 230, sample_rate, amp=0.26, attack_ms=10.0, decay_tau_ms=80.0, harmonics=((1.0, 0.9),))
-            return _mix_layers([(0, n1), (22, n2), (44, n3)], 290, sample_rate)
-        if preset == "short_ding":
-            n1 = _synth_note(880.0, 880.0, 210, sample_rate, amp=0.40, attack_ms=3.0, decay_tau_ms=65.0, harmonics=((1.0, 0.8), (2.0, 0.22), (3.0, 0.06)))
-            return _mix_layers([(0, n1)], 225, sample_rate)
-        if preset == "cyber_ping":
-            n1 = _synth_note(659.25, 659.25, 95, sample_rate, amp=0.36, attack_ms=3.0, decay_tau_ms=35.0, harmonics=((1.0, 0.9), (2.0, 0.12)))
-            n2 = _synth_note(987.77, 987.77, 130, sample_rate, amp=0.38, attack_ms=3.0, decay_tau_ms=48.0, harmonics=((1.0, 0.9), (2.0, 0.12)))
-            return _mix_layers([(0, n1), (68, n2)], 215, sample_rate)
-        # default: marimba_tudun (мягкий «ту-дун» C5 -> G5)
-        n1 = _synth_note(523.25, 523.25, 110, sample_rate, amp=0.42, attack_ms=3.0, decay_tau_ms=38.0, harmonics=((1.0, 0.85), (2.0, 0.15), (4.0, 0.05)))
-        n2 = _synth_note(783.99, 783.99, 175, sample_rate, amp=0.44, attack_ms=3.0, decay_tau_ms=65.0, harmonics=((1.0, 0.85), (2.0, 0.14), (4.0, 0.04)))
-        return _mix_layers([(0, n1), (78, n2)], 265, sample_rate)
+        if preset == "apple_homepod":
+            # Apple HomePod: глубокий, тёплый, дорогой двухнотный бархатный аккорд (D4 -> A4 + суб-тепло)
+            p_warm = ((0.5, 0.22, 1.1), (1.0, 1.0, 1.0), (2.0, 0.20, 0.50), (3.0, 0.05, 0.25))
+            n1 = _synth_rich_tone(293.66, 293.66, 210, sample_rate, amp=0.36, attack_ms=10.0, decay_tau_ms=95.0,
+                                  partials=p_warm, detune_hz=1.1, fm_index=0.25, fm_ratio=2.0)
+            n2 = _synth_rich_tone(440.00, 440.00, 320, sample_rate, amp=0.40, attack_ms=10.0, decay_tau_ms=135.0,
+                                  partials=p_warm, detune_hz=1.4, fm_index=0.30, fm_ratio=2.0)
+            n3 = _synth_rich_tone(659.25, 659.25, 280, sample_rate, amp=0.16, attack_ms=14.0, decay_tau_ms=110.0,
+                                  partials=((1.0, 1.0, 1.0), (2.0, 0.15, 0.4)), detune_hz=1.8)
+            return _mix_studio([(0, n1), (95, n2), (105, n3)], 470, sample_rate, reverb_wet=0.30, lpf_alpha=0.60)
+        if preset == "macos_glass":
+            # macOS Bloom: богатый кристальный арпеджио-аккорд Cmaj7 (C5 - E5 - G5 - B5)
+            p_glass = ((1.0, 1.0, 1.0), (2.0, 0.24, 0.55), (3.01, 0.10, 0.35), (4.0, 0.04, 0.2))
+            notes = [(0, 523.25, 0.26), (34, 659.25, 0.26), (68, 783.99, 0.28), (102, 987.77, 0.24)]
+            layers = [
+                (off, _synth_rich_tone(f, f, 290, sample_rate, amp=a, attack_ms=5.0, decay_tau_ms=115.0,
+                                       partials=p_glass, detune_hz=1.6, fm_index=0.2, fm_ratio=3.0))
+                for off, f, a in notes
+            ]
+            return _mix_studio(layers, 460, sample_rate, reverb_wet=0.34, lpf_alpha=0.76)
+        if preset == "warm_marimba":
+            # Sonos / тёплая деревянная маримба (C5 -> G5 с ударом мягкого молоточка)
+            p_mar = ((1.0, 1.0, 1.0), (3.98, 0.18, 0.22), (2.0, 0.08, 0.35))
+            n1 = _synth_rich_tone(523.25, 523.25, 165, sample_rate, amp=0.44, attack_ms=2.5, decay_tau_ms=65.0,
+                                  partials=p_mar, detune_hz=0.8, mallet_ms=4.0)
+            n2 = _synth_rich_tone(783.99, 783.99, 270, sample_rate, amp=0.46, attack_ms=2.5, decay_tau_ms=105.0,
+                                  partials=p_mar, detune_hz=1.0, mallet_ms=4.0)
+            return _mix_studio([(0, n1), (92, n2)], 400, sample_rate, reverb_wet=0.26, lpf_alpha=0.68)
+        # default: google_home — фирменный тёплый, округлый «ту-дун» в стиле Google Home (F4 -> C5 Rhodes/vibe)
+        p_rhodes = ((1.0, 1.0, 1.0), (2.0, 0.24, 0.45), (3.0, 0.07, 0.25), (4.0, 0.02, 0.15))
+        n1 = _synth_rich_tone(349.23, 349.23, 180, sample_rate, amp=0.40, attack_ms=5.0, decay_tau_ms=75.0,
+                              partials=p_rhodes, detune_hz=1.0, fm_index=0.35, fm_ratio=2.0, mallet_ms=2.5)
+        n2 = _synth_rich_tone(523.25, 523.25, 310, sample_rate, amp=0.44, attack_ms=5.0, decay_tau_ms=125.0,
+                              partials=p_rhodes, detune_hz=1.3, fm_index=0.38, fm_ratio=2.0, mallet_ms=2.5)
+        # Тихая подложка терции A4 для «дорогой» гармонии
+        n3 = _synth_rich_tone(440.00, 440.00, 260, sample_rate, amp=0.14, attack_ms=12.0, decay_tau_ms=105.0,
+                              partials=((1.0, 1.0, 1.0),), detune_hz=1.0)
+        return _mix_studio([(0, n1), (86, n2), (86, n3)], 440, sample_rate, reverb_wet=0.28, lpf_alpha=0.64)
 
     if category == "wake":
         if preset == "none":
             return b""
-        if preset == "subtle_bloop":
-            n1 = _synth_note(440.0, 620.0, 105, sample_rate, amp=0.36, attack_ms=4.0, decay_tau_ms=38.0, harmonics=((1.0, 0.9), (2.0, 0.1)))
-            return _mix_layers([(0, n1)], 120, sample_rate)
-        if preset == "double_tap":
-            n1 = _synth_note(740.0, 680.0, 38, sample_rate, amp=0.38, attack_ms=1.5, decay_tau_ms=12.0, harmonics=((1.0, 0.9),))
-            n2 = _synth_note(980.0, 920.0, 44, sample_rate, amp=0.40, attack_ms=1.5, decay_tau_ms=15.0, harmonics=((1.0, 0.9),))
-            return _mix_layers([(0, n1), (62, n2)], 120, sample_rate)
-        # default: soft_chime (E5 -> B5)
-        n1 = _synth_note(659.25, 659.25, 95, sample_rate, amp=0.34, attack_ms=4.0, decay_tau_ms=36.0, harmonics=((1.0, 0.88), (2.0, 0.12)))
-        n2 = _synth_note(987.77, 987.77, 135, sample_rate, amp=0.36, attack_ms=4.0, decay_tau_ms=52.0, harmonics=((1.0, 0.88), (2.0, 0.12)))
-        return _mix_layers([(0, n1), (65, n2)], 210, sample_rate)
+        if preset == "apple_siri":
+            # Apple Siri style: короткий, современный, ненавязчивый двойной бархатный отклик (D5 -> F#5)
+            p_siri = ((1.0, 1.0, 1.0), (2.0, 0.16, 0.40))
+            n1 = _synth_rich_tone(550.0, 587.33, 95, sample_rate, amp=0.38, attack_ms=5.0, decay_tau_ms=38.0,
+                                  partials=p_siri, detune_hz=1.0, fm_index=0.2, fm_ratio=2.0)
+            n2 = _synth_rich_tone(700.0, 739.99, 145, sample_rate, amp=0.40, attack_ms=5.0, decay_tau_ms=58.0,
+                                  partials=p_siri, detune_hz=1.2, fm_index=0.2, fm_ratio=2.0)
+            return _mix_studio([(0, n1), (68, n2)], 250, sample_rate, reverb_wet=0.24, lpf_alpha=0.62)
+        if preset == "warm_halo":
+            # Тёплое сияние: мягкий аккорд A4 + E5 + B5 с плавной атакой
+            p_pad = ((1.0, 1.0, 1.0), (2.0, 0.18, 0.55))
+            n1 = _synth_rich_tone(440.00, 440.00, 230, sample_rate, amp=0.30, attack_ms=16.0, decay_tau_ms=95.0, partials=p_pad, detune_hz=1.2)
+            n2 = _synth_rich_tone(659.25, 659.25, 250, sample_rate, amp=0.26, attack_ms=18.0, decay_tau_ms=105.0, partials=p_pad, detune_hz=1.5)
+            return _mix_studio([(0, n1), (25, n2)], 320, sample_rate, reverb_wet=0.32, lpf_alpha=0.62)
+        # default: google_listen — классический мягкий подъём Google Assistant (G4 -> B4)
+        p_g = ((1.0, 1.0, 1.0), (2.0, 0.20, 0.45), (3.0, 0.04, 0.2))
+        n1 = _synth_rich_tone(392.00, 392.00, 120, sample_rate, amp=0.38, attack_ms=4.0, decay_tau_ms=52.0,
+                              partials=p_g, detune_hz=0.9, fm_index=0.25, fm_ratio=2.0)
+        n2 = _synth_rich_tone(493.88, 493.88, 195, sample_rate, amp=0.40, attack_ms=4.0, decay_tau_ms=80.0,
+                              partials=p_g, detune_hz=1.1, fm_index=0.25, fm_ratio=2.0)
+        return _mix_studio([(0, n1), (70, n2)], 310, sample_rate, reverb_wet=0.26, lpf_alpha=0.64)
 
     return b""
 
