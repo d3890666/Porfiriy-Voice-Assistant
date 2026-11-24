@@ -1,5 +1,10 @@
 # Журнал изменений (Changelog)
 
+## 0.0.173
+- **Исправлено `Read-only file system` при записи в `/etc/init.d/` на Яндекс Станции 2 (`quasar_manager.py`)**:
+  - В `set_alice_disabled()` и `deploy_stationd_files()` добавлено временное перемонтирование корня `mount -o remount,rw /` → `sync; mount -o remount,ro /`, чтобы патчи `/etc/init.d/S99quasar`, `/etc/init.d/S96quasar-bridge` и установка `/etc/init.d/S99porfiriy-stationd` гарантированно записывались на флеш и сохранялись после перезагрузки.
+- Синхронизация версий до `0.0.173`.
+
 ## 0.0.172
 - **Гарантированное отключение Алисы и Quasar Bridge после перезагрузки Станции (`quasar_manager.py`, `porfiriy_stationd_service.sh`)**:
   - `set_alice_disabled(True)` теперь патчит оба init-скрипта (`/etc/init.d/S99quasar` и `/etc/init.d/S96quasar-bridge` с бэкапами в `/data/opt/backup/`), чтобы при наличии `/data/opt/disable_alice` ни Алиса (`maind`), ни `quasar-bridge` не запускались после ребута.

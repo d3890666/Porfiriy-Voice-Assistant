@@ -1047,6 +1047,7 @@ class QuasarManager:
                 if disabled:
                     cmd = (
                         "mkdir -p /data/opt/backup; "
+                        "mount -o remount,rw / 2>/dev/null || true; "
                         "[ -f /data/opt/backup/S99quasar.orig ] || cp -f /etc/init.d/S99quasar /data/opt/backup/S99quasar.orig 2>/dev/null || true; "
                         f"if ! grep -q 'disable_alice' /etc/init.d/S99quasar 2>/dev/null; then "
                         f"printf '#!/bin/sh\\n[ \"$1\" = \"start\" ] && [ -f {DISABLE_ALICE_FLAG} ] && exit 0\\n[ -x /system/vendor/quasar/onboot.sh ] && /system/vendor/quasar/onboot.sh \"$@\"\\n' > /etc/init.d/S99quasar; "
@@ -1057,6 +1058,7 @@ class QuasarManager:
                         f"printf '#!/bin/sh\\n[ \"${{1:-start}}\" = \"start\" ] && [ -f {DISABLE_ALICE_FLAG} ] && exit 0\\nexport QUASAR_DATA_DIR=/data/opt/quasar-bridge\\nexec sh \"$QUASAR_DATA_DIR/app/control.sh\" \"${{1:-start}}\"\\n' > /etc/init.d/S96quasar-bridge; "
                         "chmod +x /etc/init.d/S96quasar-bridge; "
                         "fi; "
+                        "sync; mount -o remount,ro / 2>/dev/null || true; "
                         f"touch {DISABLE_ALICE_FLAG}; "
                         "killall quasar_launcher2 maind quasar-bridge 2>/dev/null || true; "
                         f"[ -x {ALICE_WATCHER_SERVICE_PATH} ] && sh {ALICE_WATCHER_SERVICE_PATH} stop >/dev/null 2>&1 || true; "
@@ -1068,8 +1070,10 @@ class QuasarManager:
                     cmd = (
                         f"[ -x {STATIOND_SERVICE_PATH} ] && sh {STATIOND_SERVICE_PATH} stop || true; "
                         f"rm -f {DISABLE_ALICE_FLAG}; "
+                        "mount -o remount,rw / 2>/dev/null || true; "
                         "if [ -f /data/opt/backup/S99quasar.orig ]; then cp -f /data/opt/backup/S99quasar.orig /etc/init.d/S99quasar && chmod +x /etc/init.d/S99quasar; fi; "
                         "if [ -f /data/opt/backup/S96quasar-bridge.orig ]; then cp -f /data/opt/backup/S96quasar-bridge.orig /etc/init.d/S96quasar-bridge && chmod +x /etc/init.d/S96quasar-bridge; fi; "
+                        "sync; mount -o remount,ro / 2>/dev/null || true; "
                         "sh /etc/init.d/S99quasar start >/dev/null 2>&1 &"
                     )
                     await conn.run(cmd, check=False)
@@ -1105,6 +1109,7 @@ class QuasarManager:
                 await conn.run(f"mkdir -p {STATIOND_DIR}/models", check=False)
                 if server_ip:
                     await conn.run(f"echo '{server_ip}' > /data/opt/porfiriy_host", check=False)
+                await conn.run("mount -o remount,rw / 2>/dev/null || true", check=False)
                 for src, dst, is_exec in files_map:
                     if os.path.exists(src):
                         # Не перезатираем уже существующий непустой porfiriy.onnx (дефолтная модель)
@@ -1126,6 +1131,7 @@ class QuasarManager:
                         await conn.run(f"test -s {tmp_dst} && mv -f {tmp_dst} {dst} || rm -f {tmp_dst}", check=False)
                         if is_exec:
                             await conn.run(f"chmod +x {dst}", check=False)
+                await conn.run("sync; mount -o remount,ro / 2>/dev/null || true", check=False)
                 # Если Алиса уже отключена и рантайм стоит — перезапускаем сервис
                 await conn.run(
                     f"if [ -f {DISABLE_ALICE_FLAG} ] && [ -x {STATIOND_DIR}/lib64/ld-linux-aarch64.so.1 ]; then sh {STATIOND_SERVICE_PATH} restart; fi",
