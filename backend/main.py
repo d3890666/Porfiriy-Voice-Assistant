@@ -1270,10 +1270,13 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             sc_flags.append("in_tr")
                         if getattr(sc_dbg, "output_transcription", None):
                             sc_flags.append("out_tr")
+                    extra_repr = ""
+                    if not response.tool_call and not sc_flags:
+                        extra_repr = f" raw={repr(response)[:300]}"
                     logger.info(
                         f"[YANDEX-WS] RX#{rx_count} from Gemini: "
                         f"tool={bool(response.tool_call)} sc=[{','.join(sc_flags)}] "
-                        f"go_away={bool(getattr(response, 'go_away', None))}"
+                        f"go_away={bool(getattr(response, 'go_away', None))}{extra_repr}"
                     )
                 if response.tool_call:
                     gemini_responded = True
