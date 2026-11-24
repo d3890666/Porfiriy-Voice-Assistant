@@ -942,6 +942,18 @@ async def run_daemon():
                                 t0 = time.perf_counter()
                                 score = await asyncio.to_thread(oww.predict, pcm_i16)
                                 infer_ms = (time.perf_counter() - t0) * 1000.0
+                                if score > state["peak_score"] or (now - state["peak_time"] > 3.0):
+                                    state["peak_score"] = score
+                                    state["peak_time"] = now
+                                if (score >= 0.15 and now - state["last_tel_time"] >= 0.12) or (now - state["last_tel_time"] >= 0.35):
+                                    state["last_tel_time"] = now
+                                    await ws.send(json.dumps({
+                                        "type": "ww_telemetry",
+                                        "score": round(score, 4),
+                                        "peak": round(state["peak_score"], 4),
+                                        "rms_dbfs": dbfs,
+                                        "infer_ms": round(infer_ms, 1),
+                                    }))
                                 if score >= state["ww_threshold"]:
                                     print(
                                         f"[STATIOND] BARGE-IN WAKE DETECTED! score={score:.3f} "

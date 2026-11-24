@@ -1395,9 +1395,18 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             is_gen_done = bool(sc and getattr(sc, "generation_complete", False) and gemini_is_speaking)
                             if is_turn_done or is_gen_done:
                                 full_reply = "".join(output_text_parts).strip()
+                                low_reply = full_reply.lower()
+                                is_dismissal = any(
+                                    kw in low_reply
+                                    for kw in (
+                                        "умолкаю", "замолкаю", "молчу", "до свидания",
+                                        "спокойной ночи", "отключаюсь", "выключаюсь", "отбой",
+                                    )
+                                )
                                 wants_follow_up = (
                                     not turn_state.get("earcon_played")
                                     and bool(full_reply)
+                                    and not is_dismissal
                                     and turn_idx < 4
                                 )
                                 # Если нужен follow-up в той же сессии, дожидаемся реального turn_complete
