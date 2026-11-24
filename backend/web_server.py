@@ -94,6 +94,7 @@ class WebServer:
         self.app.router.add_post("/api/devices/{mac}/beep", self.handle_device_beep)
         self.app.router.add_post("/api/devices/{mac}/reboot", self.handle_device_reboot)
         self.app.router.add_post("/api/devices/{mac}/wake", self.handle_device_wake)
+        self.app.router.add_post("/api/devices/{mac}/stop", self.handle_device_stop)
         self.app.router.add_get("/api/areas", self.handle_get_areas)
         self.app.router.add_get("/api/media_players", self.handle_get_media_players)
         self.app.router.add_get("/api/global", self.handle_get_global)
@@ -305,6 +306,12 @@ class WebServer:
     async def handle_device_wake(self, request):
         mac = request.match_info["mac"]
         success = await self.device_manager.trigger_wake(mac)
+        return web.json_response({"success": success})
+
+    async def handle_device_stop(self, request):
+        mac = request.match_info["mac"]
+        success = await self.device_manager.send_command(mac, {"type": "stop"})
+        self.device_manager.set_device_state(mac, "idle")
         return web.json_response({"success": success})
 
     async def handle_firmware_info(self, request):

@@ -855,6 +855,11 @@ async def run_daemon():
                                             "wav_b64": base64.b64encode(wav_b).decode("ascii"),
                                             "duration_s": len(pcm_all) / 32000.0,
                                         }))
+                                elif mtype == "stop":
+                                    print("[STATIOND] STOP command received — silencing playback & returning to idle.", flush=True)
+                                    player.stop_now()
+                                    _go_idle_after_playback()
+                                    await ws.send(json.dumps({"type": "listen_timeout"}))
                                 elif mtype == "wake":
                                     if state["mode"] == "idle":
                                         duck_music(True)

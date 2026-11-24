@@ -211,6 +211,7 @@ function renderDevicesGrid() {
           const dcOn = cfg.dc_blocker_enabled !== false;
           const aecOn = cfg.aec_enabled !== false;
           const bargeInOn = Boolean(cfg.barge_in_enabled);
+          const followUpOn = Boolean(cfg.follow_up_enabled);
           const ledBright = cfg.led_brightness !== undefined ? cfg.led_brightness : 80;
           return `
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, ${aliceDisabled ? 'rgba(16, 185, 129, 0.18), rgba(59, 130, 246, 0.14)' : 'rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)'}); border: 1px solid ${aliceDisabled ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.35)'}; border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -369,6 +370,10 @@ function renderDevicesGrid() {
                 <input type="checkbox" ${bargeInOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'barge_in_enabled', this.checked)">
                 <span>⚡ Перебивание (Barge-in)</span>
               </label>
+              <label style="display:flex; align-items:center; gap:5px; cursor:pointer; margin:0;" title="Оставлять микрофон открытым на 5 секунд после голосового ответа для продолжения диалога без вейкворда">
+                <input type="checkbox" ${followUpOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'follow_up_enabled', this.checked)">
+                <span>💬 Follow-up (диалог)</span>
+              </label>
             </div>
 
             <!-- Встроенная мини-отладка openWakeWord прямо в карточке -->
@@ -382,9 +387,14 @@ function renderDevicesGrid() {
                 <div style="position: absolute; top: 0; bottom: 0; left: ${Math.min(100, Math.round(wwThr * 100))}%; width: 2px; background: #f87171;"></div>
               </div>
               <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
-                <button class="btn btn-sm" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия на Станции без вейкворда (начать слушать)" style="width: 100%; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #ffffff; font-size: 12px; font-weight: 600; padding: 6px 10px; border: none; border-radius: 7px; cursor: pointer; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);">
-                  ⚡ Принудительный вызов
-                </button>
+                <div style="width: 100%; display: flex; gap: 6px;">
+                  <button class="btn btn-sm" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия на Станции без вейкворда (начать слушать)" style="flex: 1; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #ffffff; font-size: 12px; font-weight: 600; padding: 6px 10px; border: none; border-radius: 7px; cursor: pointer; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);">
+                    ⚡ Вызов
+                  </button>
+                  <button class="btn btn-sm" onclick="triggerDeviceStop('${dev.mac}')" title="Мгновенно остановить речь Порфирия и сбросить в режим ожидания" style="background: rgba(239, 68, 68, 0.18); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 7px; cursor: pointer;">
+                    ⏹ Стоп
+                  </button>
+                </div>
                 <button class="btn btn-secondary btn-sm" onclick="dumpAndPlayStationMic('${dev.mac}')" style="flex: 1; font-size: 11px; padding: 4px 8px;" title="Получить последние 3 секунды очищенного после DSP/AEC аудио с микрофона">
                   🎙️ 3с (после AEC)
                 </button>
@@ -1302,6 +1312,21 @@ async function triggerDeviceWake(mac) {
   }
 }
 window.triggerDeviceWake = triggerDeviceWake;
+
+async function triggerDeviceStop(mac) {
+  try {
+    const res = await fetch(`${API_BASE}/api/devices/${encodeURIComponent(mac)}/stop`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('⏹ Порфирий остановлен');
+    } else {
+      showToast('Устройство офлайн', true);
+    }
+  } catch (err) {
+    showToast('Ошибка остановки', true);
+  }
+}
+window.triggerDeviceStop = triggerDeviceStop;
 
 // Полное удаление устройства из списка и хранилища
 async function deleteDevice(mac, name) {

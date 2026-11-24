@@ -1403,8 +1403,11 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                         "спокойной ночи", "отключаюсь", "выключаюсь", "отбой",
                                     )
                                 )
+                                dev_cfg_now = device_manager.get_device_config(client_mac)
+                                follow_up_on = bool(dev_cfg_now.get("follow_up_enabled", False))
                                 wants_follow_up = (
-                                    not turn_state.get("earcon_played")
+                                    follow_up_on
+                                    and not turn_state.get("earcon_played")
                                     and bool(full_reply)
                                     and not is_dismissal
                                     and turn_idx < 4
