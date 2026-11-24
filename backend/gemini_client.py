@@ -112,7 +112,24 @@ class GeminiProxyClient:
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
-        ha_tool = types.FunctionDeclaration(
+        # Модели gemini-3.8* по умолчанию используют асинхронный (NON_BLOCKING) вызов инструментов;
+        # для синхронного выполнения в нашем receive-цикле явно задаём behavior="BLOCKING" (как в ha-gemini-live).
+        tool_extra = {}
+        if "gemini-3.8" in (self.model or "").lower():
+            if hasattr(types, "Behavior") and hasattr(types.Behavior, "BLOCKING"):
+                tool_extra["behavior"] = types.Behavior.BLOCKING
+            else:
+                tool_extra["behavior"] = "BLOCKING"
+
+        def _make_decl(**kwargs):
+            if tool_extra:
+                try:
+                    return types.FunctionDeclaration(**kwargs, **tool_extra)
+                except Exception:
+                    pass
+            return types.FunctionDeclaration(**kwargs)
+
+        ha_tool = _make_decl(
             name="call_ha_service",
             description=(
                 "Call a Home Assistant service or action to control smart home devices, run scripts/scenes, "
@@ -133,7 +150,7 @@ class GeminiProxyClient:
                 required=["domain", "service"]
             )
         )
-        get_state_tool = types.FunctionDeclaration(
+        get_state_tool = _make_decl(
             name="get_ha_state",
             description="Get current state, sensor value (temperature, humidity, battery, etc.) or attributes of any Home Assistant entity.",
             parameters=types.Schema(
@@ -144,7 +161,7 @@ class GeminiProxyClient:
                 required=["entity_id"]
             )
         )
-        search_music_tool = types.FunctionDeclaration(
+        search_music_tool = _make_decl(
             name="search_music_assistant",
             description=(
                 "Search Music Assistant catalog for artists, albums, tracks, playlists, or radio. "
@@ -172,7 +189,7 @@ class GeminiProxyClient:
             )
         )
         
-        play_music_tool = types.FunctionDeclaration(
+        play_music_tool = _make_decl(
             name="play_music_assistant",
             description="Play a music URI obtained from search_music_assistant on the smart speaker.",
             parameters=types.Schema(
@@ -196,11 +213,20 @@ class GeminiProxyClient:
             
         realtime_input_config = None
         if self.manual_vad:
-            realtime_input_config = types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=True
+            try:
+                realtime_input_config = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=True
+                    ),
+                    activity_handling="NO_INTERRUPTION",
+                    turn_coverage="TURN_INCLUDES_ONLY_ACTIVITY",
                 )
-            )
+            except Exception:
+                realtime_input_config = types.RealtimeInputConfig(
+                    automatic_activity_detection=types.AutomaticActivityDetection(
+                        disabled=True
+                    )
+                )
         elif self.vad_silence_duration_ms:
             realtime_input_config = types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(

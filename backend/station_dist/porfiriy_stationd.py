@@ -25,6 +25,7 @@ import io
 import json
 import math
 import os
+import queue
 import signal
 import struct
 import subprocess
@@ -513,6 +514,100 @@ class LocalSileroVAD:
         return max_prob
 
 
+class NonBlockingAudioPlayer:
+    """Фоновый неблокирующий плеер для aplay (24 кГц PCM).
+    Никогда не блокирует asyncio event loop (устраняет keepalive ping timeout на длинных ответах)
+    и гарантированно доигрывает буфер до конца перед переходом в idle / follow_up."""
+
+    def __init__(self):
+        self._q: queue.Queue = queue.Queue()
+        self._proc = None
+        self._playing = False
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+
+    @property
+    def is_playing(self) -> bool:
+        with self._lock:
+            return self._playing or not self._q.empty()
+
+    def write(self, pcm_bytes: bytes) -> None:
+        if not pcm_bytes:
+            return
+        with self._lock:
+            self._playing = True
+        self._q.put(("pcm", pcm_bytes))
+
+    def finish_turn(self, loop, on_done) -> None:
+        self._q.put(("eof", loop, on_done))
+
+    def stop_now(self) -> None:
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+        with self._lock:
+            self._playing = False
+            proc = self._proc
+            self._proc = None
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _ensure_proc(self):
+        if self._proc is None or self._proc.poll() is not None:
+            self._proc = subprocess.Popen(
+                ["aplay", "-D", "default", "-t", "raw", "-f", "S16_LE", "-c", "1", "-r", "24000", "-q"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        return self._proc
+
+    def _close_proc_graceful(self):
+        proc = self._proc
+        self._proc = None
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+                proc.wait(timeout=45.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def _worker(self):
+        while True:
+            item = self._q.get()
+            kind = item[0]
+            if kind == "pcm":
+                try:
+                    p = self._ensure_proc()
+                    p.stdin.write(item[1])
+                    p.stdin.flush()
+                except Exception:
+                    self._close_proc_graceful()
+            elif kind == "eof":
+                _, loop, on_done = item
+                self._close_proc_graceful()
+                with self._lock:
+                    self._playing = False
+                if loop and on_done and not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(on_done)
+                    except Exception:
+                        pass
+
+
 def duck_music(enable: bool):
     if enable and (os.path.exists("/data/opt/disable_ducking") or os.path.exists("/tmp/disable_ducking")):
         return
@@ -578,6 +673,8 @@ async def run_daemon():
         "last_speech": 0.0,
         "user_spoke": False,
         "speech_frames": 0,
+        "is_follow_up": False,
+        "follow_up_timeout_s": 5.0,
         "noise_floor_rms": 120.0,
         "peak_score": 0.0,
         "peak_time": 0.0,
@@ -641,31 +738,33 @@ async def run_daemon():
 
     preroll = collections.deque(maxlen=6)    # ~0.48s @ 80ms
     debug_ring = collections.deque(maxlen=38)  # ~3.0s @ 80ms
+    player = NonBlockingAudioPlayer()
+    loop = asyncio.get_running_loop()
 
-    aplay_proc = None
+    def _go_idle_after_playback():
+        duck_music(False)
+        oww.reset()
+        state["mode"] = "idle"
+        state["is_follow_up"] = False
+        state["cooldown_until"] = time.monotonic() + 0.8
+        led.set_state("idle")
 
-    def ensure_aplay():
-        nonlocal aplay_proc
-        if aplay_proc is None or aplay_proc.poll() is not None:
-            aplay_proc = subprocess.Popen(
-                ["aplay", "-D", "default", "-t", "raw", "-f", "S16_LE", "-c", "1", "-r", "24000", "-q"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        return aplay_proc
-
-    def close_aplay():
-        nonlocal aplay_proc
-        if aplay_proc is not None:
-            try:
-                if aplay_proc.stdin:
-                    aplay_proc.stdin.close()
-                aplay_proc.wait(timeout=3.0)
-            except Exception:
-                try:
-                    aplay_proc.kill()
-                except Exception:
-                    pass
-            aplay_proc = None
+    def _start_follow_up_after_playback(timeout_s: float):
+        async def _delayed():
+            # Короткая пауза 0.25с, чтобы затухла реверберация собственного голоса в комнате
+            await asyncio.sleep(0.25)
+            vad.reset()
+            now_f = time.monotonic()
+            state["mode"] = "listening"
+            state["is_follow_up"] = True
+            state["follow_up_timeout_s"] = timeout_s
+            state["listen_start"] = now_f
+            state["last_speech"] = now_f
+            state["user_spoke"] = False
+            state["speech_frames"] = 0
+            led.set_state("listening")
+            print(f"[STATIOND] Follow-up listening window opened ({timeout_s:.1f}s)", flush=True)
+        asyncio.create_task(_delayed())
 
     while True:
         arecord_proc = None
@@ -688,7 +787,7 @@ async def run_daemon():
                     "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.3",
+                    "firmware": "stationd-1.4",
                     "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
@@ -702,30 +801,25 @@ async def run_daemon():
                 async def ws_receiver():
                     async for msg in ws:
                         if isinstance(msg, bytes):
-                            p = ensure_aplay()
-                            try:
-                                p.stdin.write(msg)
-                                p.stdin.flush()
-                            except Exception:
-                                close_aplay()
+                            player.write(msg)
                         elif isinstance(msg, str):
                             try:
                                 data = json.loads(msg)
                                 mtype = data.get("type")
                                 if mtype == "state":
                                     st = data.get("state", "idle")
-                                    led.set_state(st)
                                     if st in ("thinking", "speaking"):
                                         state["mode"] = st
+                                        led.set_state(st)
                                     elif st == "idle":
-                                        state["mode"] = "idle"
+                                        # Не перебиваем доигрывающий aplay — turn_complete сам переведёт в idle
+                                        if not player.is_playing and state["mode"] != "idle":
+                                            _go_idle_after_playback()
                                 elif mtype == "turn_complete":
-                                    await asyncio.to_thread(close_aplay)
-                                    duck_music(False)
-                                    oww.reset()
-                                    state["mode"] = "idle"
-                                    state["cooldown_until"] = time.monotonic() + 1.2
-                                    led.set_state("idle")
+                                    player.finish_turn(loop, _go_idle_after_playback)
+                                elif mtype == "follow_up":
+                                    to_s = float(data.get("timeout_s", 5.0))
+                                    player.finish_turn(loop, lambda t=to_s: _start_follow_up_after_playback(t))
                                 elif mtype == "set_config":
                                     cfg = data.get("config", data)
                                     apply_config(cfg, persist=True)
@@ -749,6 +843,7 @@ async def run_daemon():
                                         duck_music(True)
                                         vad.reset()
                                         state["mode"] = "listening"
+                                        state["is_follow_up"] = False
                                         state["listen_start"] = time.monotonic()
                                         state["last_speech"] = time.monotonic()
                                         state["user_spoke"] = False
@@ -809,6 +904,7 @@ async def run_daemon():
                                 duck_music(True)
                                 vad.reset()
                                 state["mode"] = "listening"
+                                state["is_follow_up"] = False
                                 state["listen_start"] = now
                                 state["last_speech"] = now
                                 state["user_spoke"] = False
@@ -827,12 +923,12 @@ async def run_daemon():
                         elif state["mode"] == "listening":
                             await ws.send(pcm_bytes)
                             listen_elapsed = now - state["listen_start"]
+                            grace_s = 0.15 if state["is_follow_up"] else 0.35
+                            no_speech_to = state["follow_up_timeout_s"] if state["is_follow_up"] else 4.5
 
                             if vad.ready:
                                 speech_prob = await asyncio.to_thread(vad.process_chunk, pcm_i16)
-                                # Первые 0.35с после вейкворда (хвост слова «Порфирий» и earcon) прогреваем Silero VAD
-                                # и стримим звук в Gemini, но не засчитываем за user_spoke.
-                                if listen_elapsed >= 0.35:
+                                if listen_elapsed >= grace_s:
                                     if not state["user_spoke"]:
                                         if speech_prob >= 0.50:
                                             state["speech_frames"] += 1
@@ -848,21 +944,22 @@ async def run_daemon():
                                 if state["user_spoke"] and ((now - state["last_speech"] >= 0.75) or (listen_elapsed > 10.0)):
                                     print(
                                         f"[STATIOND] End of speech [Silero VAD] (elapsed={listen_elapsed:.2f}s, "
-                                        f"prob={speech_prob:.2f}). Switching to thinking.",
+                                        f"prob={speech_prob:.2f}, followup={state['is_follow_up']}). Switching to thinking.",
                                         flush=True,
                                     )
                                     state["mode"] = "thinking"
                                     led.set_state("thinking")
                                     await ws.send(json.dumps({"type": "end_of_speech"}))
-                                elif not state["user_spoke"] and listen_elapsed > 4.5:
+                                elif not state["user_spoke"] and listen_elapsed > no_speech_to:
                                     print(
                                         f"[STATIOND] No speech [Silero VAD] for {listen_elapsed:.1f}s "
-                                        f"(prob={speech_prob:.2f}). Returning to idle.",
+                                        f"(prob={speech_prob:.2f}, followup={state['is_follow_up']}). Returning to idle.",
                                         flush=True,
                                     )
                                     duck_music(False)
                                     oww.reset()
                                     state["mode"] = "idle"
+                                    state["is_follow_up"] = False
                                     state["cooldown_until"] = now + 0.8
                                     led.set_state("idle")
                                     await ws.send(json.dumps({"type": "listen_timeout"}))
@@ -901,13 +998,13 @@ async def run_daemon():
                                     await ws.send(json.dumps({"type": "listen_timeout"}))
                 finally:
                     rx_task.cancel()
-                    close_aplay()
+                    player.stop_now()
                     duck_music(False)
                     if arecord_proc and arecord_proc.returncode is None:
                         arecord_proc.terminate()
         except Exception as e:
             print(f"[STATIOND] Connection/loop error: {e}. Reconnecting in 3s...", flush=True)
-            close_aplay()
+            player.stop_now()
             duck_music(False)
             led.set_state("idle")
             await asyncio.sleep(3)

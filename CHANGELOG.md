@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.167
+- **Архитектура по мотивам `ha-gemini-live` + неблокирующий плеер и follow-up диалог на Яндекс Станции 2 (`gemini_client.py`, `main.py`, `porfiriy_stationd.py`)**:
+  - **Специфика `gemini-3.8`**: во все `FunctionDeclaration` добавлен `behavior="BLOCKING"` (устраняет нестабильность асинхронных tool calls по умолчанию на `gemini-3.8*`), а в Manual VAD `realtime_input_config` добавлены `activity_handling="NO_INTERRUPTION"` и `turn_coverage="TURN_INCLUDES_ONLY_ACTIVITY"`.
+  - **Ленивый `ActivityStart` + авто-продолжение беседы (follow-up)**: `ActivityStart` отправляется перед первым реальным аудио-чанком; после команд умного дома (earcon) сессия закрывается сразу, а если Порфирий закончил голосовой ответ вопросом (`?`), Станция автоматически открывает 5-секундное окно `Silero VAD` в той же сессии Gemini (до 4 уточнений без вейкворда).
+  - **Неблокирующий `NonBlockingAudioPlayer` в `porfiriy_stationd.py` (`stationd-1.4`)**: запись в `aplay` вынесена в отдельный поток с `queue.Queue` — event loop Станции больше никогда не блокируется на длинных ответах (устранён `keepalive ping timeout` и обрыв речи через 3с), а переход в `idle`/`follow_up` происходит строго после фактического доигрывания звука.
+- Синхронизация версий до `0.0.167`.
+
 ## 0.0.166
 - **Авто-ретрай при подвисании Gemini Live после `ActivityEnd` и быстрое завершение по `generation_complete` (`backend/main.py`)**:
   - Если Gemini Live не отвечает в течение `3.5с` после `ActivityEnd` (редкий немой залип на стороне API), бэкенд автоматически повторяет запрос на свежей сессии с уже записанным буфером `utterance_chunks` вместо 12-секундного молчания.

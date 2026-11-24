@@ -1219,198 +1219,252 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         }
 
         async def _run_single_attempt(replay_chunks: Optional[list[bytes]] = None) -> bool:
-            """Выполняет одну попытку сессии Gemini Live. Возвращает True, если Gemini ответил."""
-            nonlocal gemini_is_speaking, gemini_responded
+            """Выполняет сессию Gemini Live (1 ход + до 4 follow-up ходов, если Порфирий задал вопрос)."""
+            nonlocal gemini_is_speaking, gemini_responded, utterance_saved
             attempt_responded = False
-            eos_sent_event = asyncio.Event()
 
-            async def _stream_mic_to_gemini(session):
-                sent_chunks = 0
-                activity_started = False
-                try:
-                    await session.send_realtime_input(activity_start=types.ActivityStart())
-                    activity_started = True
-                    if replay_chunks is not None:
-                        for c in replay_chunks:
-                            await session.send_realtime_input(
-                                audio=types.Blob(data=c, mime_type="audio/pcm;rate=16000")
-                            )
-                            sent_chunks += 1
-                        await session.send_realtime_input(activity_end=types.ActivityEnd())
+            t_conn = time.monotonic()
+            tag = "[RETRY] " if replay_chunks is not None else ""
+            async with gemini_client.connect() as session:
+                q_backlog = len(replay_chunks) if replay_chunks is not None else (audio_queue.qsize() if audio_queue else 0)
+                logger.info(
+                    f"[YANDEX-WS] {tag}Gemini connected for {client_mac} "
+                    f"(prompt={t_prompt:.2f}s, connect={time.monotonic() - t_conn:.2f}s, backlog={q_backlog} chunks)"
+                )
+
+                for turn_idx in range(5):
+                    turn_responded = False
+                    turn_should_follow_up = False
+                    eos_sent_event = asyncio.Event()
+                    output_text_parts: list[str] = []
+                    for k in turn_state:
+                        turn_state[k] = False
+
+                    async def _stream_turn_audio():
+                        sent_chunks = 0
                         activity_started = False
-                        eos_sent_event.set()
-                        logger.info(f"[YANDEX-WS] [RETRY] Sent ActivityEnd to Gemini after {sent_chunks} replayed chunks ({client_mac})")
-                        return
-
-                    while session_active:
-                        chunk = await audio_queue.get()
-                        if chunk is None:
-                            break
-                        if chunk == "__ACTIVITY_END__":
-                            if activity_started:
-                                await session.send_realtime_input(activity_end=types.ActivityEnd())
-                                activity_started = False
+                        try:
+                            if replay_chunks is not None and turn_idx == 0:
+                                for c in replay_chunks:
+                                    if not c:
+                                        continue
+                                    if not activity_started:
+                                        await session.send_realtime_input(activity_start=types.ActivityStart())
+                                        activity_started = True
+                                    await session.send_realtime_input(
+                                        audio=types.Blob(data=c, mime_type="audio/pcm;rate=16000")
+                                    )
+                                    sent_chunks += 1
+                                if activity_started:
+                                    await session.send_realtime_input(activity_end=types.ActivityEnd())
+                                    activity_started = False
                                 eos_sent_event.set()
-                                logger.info(f"[YANDEX-WS] Sent ActivityEnd to Gemini after {sent_chunks} audio chunks ({client_mac})")
-                            break
-                        if gemini_is_speaking:
-                            continue
-                        await session.send_realtime_input(
-                            audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
-                        )
-                        sent_chunks += 1
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e_stream:
-                    logger.warning(f"[YANDEX-WS] Mic stream worker error for {client_mac}: {e_stream}")
+                                logger.info(f"[YANDEX-WS] [RETRY] Sent ActivityEnd after {sent_chunks} replayed chunks ({client_mac})")
+                                return
 
-            async def _receive_from_gemini(session):
-                nonlocal gemini_is_speaking, gemini_responded, attempt_responded
-                rx_count = 0
-                async for response in session.receive():
-                    rx_count += 1
-                    sc = response.server_content
-                    if rx_count <= 8 or (sc and (getattr(sc, "turn_complete", False) or getattr(sc, "generation_complete", False))):
-                        sc_flags = []
-                        if sc:
-                            if getattr(sc, "model_turn", None):
-                                p_kinds = [
-                                    ("audio" if getattr(p, "inline_data", None) else ("thought" if getattr(p, "thought", False) else ("text" if getattr(p, "text", None) else "other")))
-                                    for p in (sc.model_turn.parts or [])
-                                ]
-                                sc_flags.append(f"model_turn({','.join(p_kinds)})")
-                            if getattr(sc, "turn_complete", False):
-                                sc_flags.append("turn_complete")
-                            if getattr(sc, "generation_complete", False):
-                                sc_flags.append("generation_complete")
-                            if getattr(sc, "interrupted", False):
-                                sc_flags.append("interrupted")
-                            if getattr(sc, "input_transcription", None):
-                                sc_flags.append("in_tr")
-                            if getattr(sc, "output_transcription", None):
-                                sc_flags.append("out_tr")
-                        logger.info(
-                            f"[YANDEX-WS] RX#{rx_count} from Gemini: "
-                            f"tool={bool(response.tool_call)} sc=[{','.join(sc_flags)}] "
-                            f"go_away={bool(getattr(response, 'go_away', None))}"
-                        )
-                    if response.tool_call:
-                        gemini_responded = True
-                        attempt_responded = True
-                        _cancel_eos_watchdog()
-                        _flush_utterance()
-                        logger.info(f"[YANDEX-WS] Tool Call from Gemini: {response.tool_call}")
-                        device_manager.set_device_state(client_mac, "thinking")
-                        await _send_json({"type": "state", "state": "thinking"})
-                        function_responses = []
-                        for fc in response.tool_call.function_calls:
-                            tool_res = await tool_executor.execute(
-                                fc.name,
-                                dict(fc.args) if fc.args else {},
-                                options,
-                                dev=device_manager.get_device(client_mac),
-                                turn_state=turn_state,
-                            )
-                            function_responses.append(types.FunctionResponse(
-                                name=fc.name,
-                                id=fc.id,
-                                response=tool_res,
-                            ))
-                        await session.send_tool_response(function_responses=function_responses)
+                            while session_active:
+                                chunk = await audio_queue.get()
+                                if chunk is None:
+                                    break
+                                if chunk == "__ACTIVITY_END__":
+                                    if activity_started:
+                                        await session.send_realtime_input(activity_end=types.ActivityEnd())
+                                        activity_started = False
+                                        eos_sent_event.set()
+                                        logger.info(
+                                            f"[YANDEX-WS] Sent ActivityEnd (turn={turn_idx + 1}) "
+                                            f"after {sent_chunks} audio chunks ({client_mac})"
+                                        )
+                                    break
+                                if gemini_is_speaking:
+                                    continue
+                                if not chunk:
+                                    continue
+                                # Ленивый ActivityStart прямо перед первым реальным чанком (как в ha-gemini-live)
+                                if not activity_started:
+                                    await session.send_realtime_input(activity_start=types.ActivityStart())
+                                    activity_started = True
+                                await session.send_realtime_input(
+                                    audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
+                                )
+                                sent_chunks += 1
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e_stream:
+                            logger.warning(f"[YANDEX-WS] Mic stream worker error for {client_mac}: {e_stream}")
 
-                        # Тихое подтверждение earcon (щелчок / «тудун») вместо голоса для громкости и простого УД
-                        earcon_cat = None
-                        earcon_preset = None
-                        if turn_state.get("volume_changed") and options.get("earcon_volume_enabled", True):
-                            earcon_cat = "volume"
-                            earcon_preset = options.get("earcon_volume_preset", "alice_click")
-                        elif turn_state.get("simple_smarthome_executed") and options.get("earcon_smarthome_enabled", True):
-                            earcon_cat = "smarthome"
-                            earcon_preset = options.get("earcon_smarthome_preset", "marimba_tudun")
+                    async def _receive_turn():
+                        nonlocal gemini_is_speaking, gemini_responded, attempt_responded, turn_responded, turn_should_follow_up
+                        rx_count = 0
+                        async for response in session.receive():
+                            rx_count += 1
+                            sc = response.server_content
+                            if rx_count <= 6 or (sc and (getattr(sc, "turn_complete", False) or getattr(sc, "generation_complete", False))):
+                                sc_flags = []
+                                if sc:
+                                    if getattr(sc, "model_turn", None):
+                                        p_kinds = [
+                                            ("audio" if getattr(p, "inline_data", None) else ("thought" if getattr(p, "thought", False) else ("text" if getattr(p, "text", None) else "other")))
+                                            for p in (sc.model_turn.parts or [])
+                                        ]
+                                        sc_flags.append(f"model_turn({','.join(p_kinds)})")
+                                    if getattr(sc, "turn_complete", False):
+                                        sc_flags.append("turn_complete")
+                                    if getattr(sc, "generation_complete", False):
+                                        sc_flags.append("generation_complete")
+                                    if getattr(sc, "input_transcription", None):
+                                        sc_flags.append("in_tr")
+                                    if getattr(sc, "output_transcription", None):
+                                        sc_flags.append("out_tr")
+                                logger.info(
+                                    f"[YANDEX-WS] T{turn_idx + 1}/RX#{rx_count}: "
+                                    f"tool={bool(response.tool_call)} sc=[{','.join(sc_flags)}] "
+                                    f"go_away={bool(getattr(response, 'go_away', None))}"
+                                )
 
-                        if earcon_cat and earcon_preset:
-                            earcon_pcm = get_earcon_pcm(earcon_cat, earcon_preset, sample_rate=24000, volume=1.0)
-                            if earcon_pcm:
-                                gemini_is_speaking = True
-                                turn_state["earcon_played"] = True
-                                pcm_response_chunks.append(earcon_pcm)
-                                try:
-                                    await websocket.send(earcon_pcm)
-                                except Exception:
-                                    pass
-                                logger.info(f"[YANDEX-WS] Played earcon {earcon_cat}/{earcon_preset} instead of voice reply")
+                            if response.tool_call:
+                                gemini_responded = True
+                                attempt_responded = True
+                                turn_responded = True
+                                _cancel_eos_watchdog()
+                                _flush_utterance()
+                                logger.info(f"[YANDEX-WS] Tool Call from Gemini: {response.tool_call}")
+                                device_manager.set_device_state(client_mac, "thinking")
+                                await _send_json({"type": "state", "state": "thinking"})
+                                function_responses = []
+                                for fc in response.tool_call.function_calls:
+                                    tool_res = await tool_executor.execute(
+                                        fc.name,
+                                        dict(fc.args) if fc.args else {},
+                                        options,
+                                        dev=device_manager.get_device(client_mac),
+                                        turn_state=turn_state,
+                                    )
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response=tool_res,
+                                    ))
+                                await session.send_tool_response(function_responses=function_responses)
+
+                                # Тихое подтверждение earcon для громкости и простого УД — сразу закрываем сессию (без follow-up)
+                                earcon_cat = None
+                                earcon_preset = None
+                                if turn_state.get("volume_changed") and options.get("earcon_volume_enabled", True):
+                                    earcon_cat = "volume"
+                                    earcon_preset = options.get("earcon_volume_preset", "alice_click")
+                                elif turn_state.get("simple_smarthome_executed") and options.get("earcon_smarthome_enabled", True):
+                                    earcon_cat = "smarthome"
+                                    earcon_preset = options.get("earcon_smarthome_preset", "marimba_tudun")
+
+                                if earcon_cat and earcon_preset:
+                                    earcon_pcm = get_earcon_pcm(earcon_cat, earcon_preset, sample_rate=24000, volume=1.0)
+                                    if earcon_pcm:
+                                        gemini_is_speaking = True
+                                        turn_state["earcon_played"] = True
+                                        pcm_response_chunks.append(earcon_pcm)
+                                        try:
+                                            await websocket.send(earcon_pcm)
+                                        except Exception:
+                                            pass
+                                        logger.info(f"[YANDEX-WS] Played earcon {earcon_cat}/{earcon_preset} instead of voice reply")
+                                        gemini_is_speaking = False
+                                        turn_should_follow_up = False
+                                        await _send_json({"type": "turn_complete"})
+                                        break
+                                continue
+
+                            if sc:
+                                if getattr(sc, "input_transcription", None) and getattr(sc.input_transcription, "text", None):
+                                    attempt_responded = True
+                                    turn_responded = True
+                                    logger.info(f"[YANDEX-WS] User Speech Recognized ({client_mac}): {sc.input_transcription.text}")
+                                if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
+                                    out_txt = sc.output_transcription.text
+                                    output_text_parts.append(out_txt)
+                                    logger.info(f"[YANDEX-WS] Gemini Speech ({client_mac}): {out_txt}")
+
+                            if sc and sc.model_turn:
+                                gemini_responded = True
+                                attempt_responded = True
+                                turn_responded = True
+                                _cancel_eos_watchdog()
+                                _flush_utterance()
+                                if not gemini_is_speaking:
+                                    gemini_is_speaking = True
+                                    device_manager.set_device_state(client_mac, "speaking")
+                                    await _send_json({"type": "state", "state": "speaking"})
+                                for part in sc.model_turn.parts:
+                                    if part.inline_data and part.inline_data.data:
+                                        chunk = part.inline_data.data
+                                        pcm_response_chunks.append(chunk)
+                                        try:
+                                            await websocket.send(chunk)
+                                        except Exception:
+                                            pass
+
+                            is_turn_done = bool(sc and getattr(sc, "turn_complete", False))
+                            is_gen_done = bool(sc and getattr(sc, "generation_complete", False) and gemini_is_speaking)
+                            if is_turn_done or is_gen_done:
+                                full_reply = "".join(output_text_parts).strip()
+                                wants_follow_up = (
+                                    not turn_state.get("earcon_played")
+                                    and full_reply.endswith("?")
+                                    and turn_idx < 4
+                                )
+                                # Если нужен follow-up в той же сессии, дожидаемся реального turn_complete
+                                # (чтобы SDK корректно завершил генератор перед следующим ходом).
+                                if wants_follow_up and not is_turn_done:
+                                    continue
+
                                 gemini_is_speaking = False
-                                await _send_json({"type": "turn_complete"})
+                                if wants_follow_up:
+                                    turn_should_follow_up = True
+                                    logger.info(
+                                        f"[YANDEX-WS] Question detected in reply ('{full_reply[-40:]}'); "
+                                        f"opening 5.0s follow-up window on {client_mac}."
+                                    )
+                                    await _send_json({"type": "follow_up", "timeout_s": 5.0})
+                                else:
+                                    turn_should_follow_up = False
+                                    logger.info(f"[YANDEX-WS] Gemini turn {turn_idx + 1} complete for {client_mac}.")
+                                    await _send_json({"type": "turn_complete"})
                                 break
-                        continue
 
-                    if sc:
-                        if getattr(sc, "input_transcription", None) and getattr(sc.input_transcription, "text", None):
-                            attempt_responded = True
-                            logger.info(f"[YANDEX-WS] User Speech Recognized ({client_mac}): {sc.input_transcription.text}")
-                        if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
-                            logger.info(f"[YANDEX-WS] Gemini Speech ({client_mac}): {sc.output_transcription.text}")
+                    sender_task = asyncio.create_task(_stream_turn_audio())
+                    recv_task = asyncio.create_task(_receive_turn())
+                    stall_task = None
 
-                    if sc and sc.model_turn:
-                        gemini_responded = True
-                        attempt_responded = True
-                        _cancel_eos_watchdog()
-                        _flush_utterance()
-                        if not gemini_is_speaking:
-                            gemini_is_speaking = True
-                            device_manager.set_device_state(client_mac, "speaking")
-                            await _send_json({"type": "state", "state": "speaking"})
-                        for part in sc.model_turn.parts:
-                            if part.inline_data and part.inline_data.data:
-                                chunk = part.inline_data.data
-                                pcm_response_chunks.append(chunk)
-                                try:
-                                    await websocket.send(chunk)
-                                except Exception:
-                                    pass
-
-                    if sc and (getattr(sc, "turn_complete", False) or (getattr(sc, "generation_complete", False) and gemini_is_speaking)):
-                        gemini_is_speaking = False
-                        logger.info(f"[YANDEX-WS] Gemini turn complete for {client_mac}.")
-                        await _send_json({"type": "turn_complete"})
-                        break
-
-            sender_task = None
-            stall_task = None
-            recv_task = None
-            try:
-                t_conn = time.monotonic()
-                async with gemini_client.connect() as session:
-                    q_backlog = len(replay_chunks) if replay_chunks is not None else (audio_queue.qsize() if audio_queue else 0)
-                    tag = "[RETRY] " if replay_chunks is not None else ""
-                    logger.info(
-                        f"[YANDEX-WS] {tag}Gemini connected for {client_mac} "
-                        f"(prompt={t_prompt:.2f}s, connect={time.monotonic() - t_conn:.2f}s, backlog={q_backlog} chunks)"
-                    )
-                    sender_task = asyncio.create_task(_stream_mic_to_gemini(session))
-                    recv_task = asyncio.create_task(_receive_from_gemini(session))
-
-                    # Если после ActivityEnd Gemini молчит 3.5с (даже без in_tr) — не ждём 12с, выходим на мгновенный ретрай
                     async def _stall_guard():
                         await eos_sent_event.wait()
-                        await asyncio.sleep(3.5 if replay_chunks is None else 8.0)
-                        if not attempt_responded and not recv_task.done():
-                            logger.warning(f"[YANDEX-WS] {tag}Gemini stalled after ActivityEnd for {client_mac}; aborting attempt.")
+                        await asyncio.sleep(3.5 if (replay_chunks is None and turn_idx == 0) else 8.0)
+                        if not turn_responded and not recv_task.done():
+                            logger.warning(f"[YANDEX-WS] {tag}Gemini stalled after ActivityEnd (T{turn_idx + 1}) for {client_mac}; aborting attempt.")
                             recv_task.cancel()
 
                     stall_task = asyncio.create_task(_stall_guard())
-                    await asyncio.wait_for(recv_task, timeout=45.0)
-            except asyncio.CancelledError:
-                if not attempt_responded and replay_chunks is None:
-                    return False
-                raise
-            finally:
-                if stall_task and not stall_task.done():
-                    stall_task.cancel()
-                if sender_task and not sender_task.done():
-                    sender_task.cancel()
-                if recv_task and not recv_task.done():
-                    recv_task.cancel()
+                    try:
+                        await asyncio.wait_for(recv_task, timeout=45.0)
+                    except asyncio.CancelledError:
+                        if not turn_responded and replay_chunks is None and turn_idx == 0:
+                            return False
+                        raise
+                    finally:
+                        if stall_task and not stall_task.done():
+                            stall_task.cancel()
+                        if sender_task and not sender_task.done():
+                            sender_task.cancel()
+                        if recv_task and not recv_task.done():
+                            recv_task.cancel()
+
+                    if not turn_should_follow_up:
+                        break
+
+                    # Готовим буфер для следующего хода (follow-up) в этой же сессии Gemini
+                    utterance_chunks.clear()
+                    utterance_saved = False
+                    gemini_is_speaking = False
+
             return attempt_responded
 
         try:
