@@ -185,8 +185,8 @@ function renderDevicesGrid() {
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 12px; color: #8b949e; min-width: 90px;">🎯 Порог WW:</span>
-              <input type="range" min="0.30" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" style="flex: 1;" oninput="document.getElementById('ww-thr-val-${dev.mac}').innerText = parseFloat(this.value).toFixed(2)" onchange="saveStreamerConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
-              <span id="ww-thr-val-${dev.mac}" style="font-family: monospace; font-size: 12px; min-width: 36px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
+              <input type="range" min="0.01" max="1.00" step="0.01" value="${cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.94}" style="flex: 1;" oninput="document.getElementById('ww-thr-val-${dev.mac}').innerText = parseFloat(this.value).toFixed(2)" onchange="saveStreamerConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
+              <span id="ww-thr-val-${dev.mac}" style="font-family: monospace; font-size: 12px; min-width: 36px;">${Number(cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.94).toFixed(2)}</span>
             </div>
           </div>
           <div style="margin-top: 8px; display: flex; gap: 8px;">
@@ -334,7 +334,7 @@ function renderDevicesGrid() {
             <!-- Порог openWakeWord и усиление микрофона -->
             <div class="slider-row">
               <span>🎯 Порог WW:</span>
-              <input type="range" min="0.30" max="0.99" step="0.01" value="${wwThr}"
+              <input type="range" min="0.01" max="1.00" step="0.01" value="${wwThr}"
                 oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)"
                 onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))">
               <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600;">${Number(wwThr).toFixed(2)}</span>
@@ -613,10 +613,10 @@ function renderDevicesGrid() {
                 ${cfg.wake_word_mode === 'server' ? `
                   <div class="slider-row">
                     <span>🎯 Порог WW:</span>
-                    <input type="range" min="0.30" max="1.00" step="0.01" value="${cfg.ww_threshold || 0.94}" 
+                    <input type="range" min="0.01" max="1.00" step="0.01" value="${cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.94}" 
                       onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_threshold', parseFloat(this.value))"
                       oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)">
-                    <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${(cfg.ww_threshold || 0.94).toFixed(2)}</span>
+                    <span style="min-width: 40px; font-family: monospace; font-size: 12px;">${Number(cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.94).toFixed(2)}</span>
                   </div>
                   <div style="font-size: 11px; color: #58a6ff; margin: 4px 0 6px 0; padding: 5px 8px; background: rgba(88, 166, 255, 0.08); border-radius: 6px; display: flex; align-items: center; gap: 6px;">
                     <span>ℹ️ Монитор отклика и отладка открыты на вкладке <strong>🧠 Интеллект</strong></span>
