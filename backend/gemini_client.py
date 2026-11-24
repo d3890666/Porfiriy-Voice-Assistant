@@ -88,7 +88,7 @@ async def fetch_available_gemini_models(api_key: str) -> List[Dict[str, Any]]:
     return live_models + other_models
 
 class GeminiProxyClient:
-    def __init__(self, api_key: str, system_prompt: str, ha_api=None, voice_name: str = "Zephyr", model: str = "models/gemini-3.1-flash-live-preview", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None):
+    def __init__(self, api_key: str, system_prompt: str, ha_api=None, voice_name: str = "Zephyr", model: str = "models/gemini-3.1-flash-live-preview", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None, manual_vad: bool = False):
         """
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
@@ -108,6 +108,7 @@ class GeminiProxyClient:
         self.enable_google_search = enable_google_search
         self.vad_silence_duration_ms = vad_silence_duration_ms
         self.response_modalities = response_modalities or ["AUDIO"]
+        self.manual_vad = manual_vad
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
@@ -194,7 +195,13 @@ class GeminiProxyClient:
         tools = [tool]
             
         realtime_input_config = None
-        if self.vad_silence_duration_ms:
+        if self.manual_vad:
+            realtime_input_config = types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=True
+                )
+            )
+        elif self.vad_silence_duration_ms:
             realtime_input_config = types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     silence_duration_ms=self.vad_silence_duration_ms

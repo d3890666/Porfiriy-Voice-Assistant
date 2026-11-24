@@ -1165,10 +1165,10 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         device_manager.set_device_state(client_mac, "listening")
         await _send_json({"type": "state", "state": "listening"})
 
-        # Опциональный мягкий сигнал активации «слушаю»
+        # Опциональный мягкий сигнал активации «слушаю» (тихий 0.30, чтобы не глушить начало речи через AEC)
         wake_preset = options.get("earcon_wake_preset", "soft_chime")
         if wake_preset and wake_preset != "none":
-            wake_pcm = get_earcon_pcm("wake", wake_preset, sample_rate=24000, volume=1.0)
+            wake_pcm = get_earcon_pcm("wake", wake_preset, sample_rate=24000, volume=0.30)
             if wake_pcm:
                 try:
                     await websocket.send(wake_pcm)
@@ -1206,6 +1206,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             enable_google_search=options.get("enable_google_search", True),
             vad_silence_duration_ms=vad_silence,
             response_modalities=["AUDIO"],
+            manual_vad=True,
         )
 
         pcm_response_chunks = []
@@ -1218,28 +1219,31 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         }
 
         async def _stream_mic_to_gemini(session):
+            sent_chunks = 0
+            activity_started = False
             try:
+                await session.send_realtime_input(activity_start=types.ActivityStart())
+                activity_started = True
                 while session_active:
                     chunk = await audio_queue.get()
                     if chunk is None:
                         break
+                    if chunk == "__ACTIVITY_END__":
+                        if activity_started:
+                            await session.send_realtime_input(activity_end=types.ActivityEnd())
+                            activity_started = False
+                            logger.info(f"[YANDEX-WS] Sent ActivityEnd to Gemini after {sent_chunks} audio chunks ({client_mac})")
+                        break
                     if gemini_is_speaking:
                         continue
-                    is_silence = isinstance(chunk, tuple) and chunk[0] == "silence"
-                    payload = chunk[1] if is_silence else chunk
                     await session.send_realtime_input(
-                        audio=types.Blob(data=payload, mime_type="audio/pcm;rate=16000")
+                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
                     )
-                    # Плавный темп при догонке буфера и отправке тишины, чтобы VAD Gemini
-                    # корректно отсчитал silence_duration_ms, а не получил всё в 1мс-всплеске
-                    if is_silence:
-                        await asyncio.sleep(0.020)
-                    elif audio_queue and audio_queue.qsize() > 1:
-                        await asyncio.sleep(0.015)
+                    sent_chunks += 1
             except asyncio.CancelledError:
                 pass
             except Exception as e_stream:
-                logger.debug(f"[YANDEX-WS] Mic stream worker note: {e_stream}")
+                logger.warning(f"[YANDEX-WS] Mic stream worker error for {client_mac}: {e_stream}")
 
         async def _receive_from_gemini(session):
             nonlocal gemini_is_speaking, gemini_responded
@@ -1399,15 +1403,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             _flush_utterance()
                             device_manager.set_device_state(client_mac, "thinking")
                             await _send_json({"type": "state", "state": "thinking"})
-                            vad_ms = int(get_options().get("vad_silence_duration_ms", 600))
-                            needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)
-                            logger.info(
-                                f"[YANDEX-WS] Received end_of_speech from {client_mac}. "
-                                f"Pushing {needed_chunks} silence chunks (~{needed_chunks * 32}ms) to trigger Gemini VAD."
-                            )
-                            silence = b"\x00" * 1024
-                            for _ in range(needed_chunks):
-                                audio_queue.put_nowait(("silence", silence))
+                            logger.info(f"[YANDEX-WS] Received end_of_speech from {client_mac}. Queuing ActivityEnd for Gemini.")
+                            audio_queue.put_nowait("__ACTIVITY_END__")
 
                             # Защита от 45-секундного молчания, если Gemini не услышал речь
                             _cancel_eos_watchdog()

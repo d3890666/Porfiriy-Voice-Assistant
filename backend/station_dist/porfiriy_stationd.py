@@ -287,8 +287,8 @@ class Speex2ChAEC:
             denoise = ctypes.c_int(1)
             lib.speex_preprocess_ctl(pp_st, 0, ctypes.byref(denoise))  # SPEEX_PREPROCESS_SET_DENOISE
             lib.speex_preprocess_ctl(pp_st, 24, ctypes.c_void_p(echo_st))  # SPEEX_PREPROCESS_SET_ECHO_STATE
-            sup = ctypes.c_int(-40)
-            sup_act = ctypes.c_int(-25)
+            sup = ctypes.c_int(-35)
+            sup_act = ctypes.c_int(-12)
             lib.speex_preprocess_ctl(pp_st, 20, ctypes.byref(sup))  # SPEEX_PREPROCESS_SET_ECHO_SUPPRESS
             lib.speex_preprocess_ctl(pp_st, 22, ctypes.byref(sup_act))  # SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE
 

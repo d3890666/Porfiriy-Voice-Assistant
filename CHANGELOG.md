@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.163
+- **Детерминированный Manual VAD (`ActivityStart` / `ActivityEnd`) для нативной Яндекс Станции 2 и защита от съедания первых слов (`gemini_client.py`, `main.py`, `porfiriy_stationd.py`)**:
+  - Для сессий Станции 2 с локальным Silero VAD v5 включён `AutomaticActivityDetection(disabled=True)` + явные `ActivityStart` / `ActivityEnd`: Gemini Live API больше не гадает о начале/конце речи по тишине (устранены зависания после 1.5с паузы перед командой) и мгновенно отвечает по сигналу Silero VAD.
+  - Громкость сигнала активации (`earcon_wake_preset`) снижена с `1.0` до `0.30`, а `SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE` в `porfiriy_stationd.py` смягчён с `-25 дБ` до `-12 дБ`, чтобы одновременный голос поверх сигнала активации («включи свет») не глушился эхоподавителем.
+- Синхронизация версий до `0.0.163`.
+
 ## 0.0.162
 - **Исправление молчания Gemini Live API после `end_of_speech` на Яндекс Станции 2 (`backend/main.py`)**:
   - Убран вызов `audio_stream_end=True`, который на выбранной модели Gemini Live API сбрасывал буфер VAD вместо завершения реплики (приводил к 12-секундному таймауту при коротких командах, когда `end_of_speech` приходил раньше серверного VAD).
