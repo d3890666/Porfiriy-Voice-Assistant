@@ -203,7 +203,42 @@ class GeminiProxyClient:
             )
         )
 
-        tool_args = {"function_declarations": [ha_tool, get_state_tool, search_music_tool, play_music_tool]}
+        schedule_action_tool = _make_decl(
+            name="schedule_ha_action",
+            description=(
+                "Schedule a delayed Home Assistant action or countdown timer (e.g. 'выключи свет через 5 минут', "
+                "'включи пончик через 30 секунд', 'выключи музыку через полчаса', 'поставь таймер на 3 минуты'). "
+                "For delayed device control, pass domain, service, entity_id, and delay_seconds. "
+                "For a plain countdown alarm/timer with a chime, pass domain='alarm', service='ring', delay_seconds, and label."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "delay_seconds": types.Schema(type=types.Type.INTEGER, description="Delay in seconds before executing (e.g. 30, 300, 1800, 3600)."),
+                    "domain": types.Schema(type=types.Type.STRING, description="HA domain (light, switch, cover, media_player, fan, climate, script, scene) or 'alarm' for a countdown chime."),
+                    "service": types.Schema(type=types.Type.STRING, description="HA service (turn_on, turn_off, toggle, media_pause, close_cover, etc.) or 'ring' for alarm."),
+                    "entity_id": types.Schema(type=types.Type.STRING, description="Target HA entity_id (required for device control, omit for plain alarm)."),
+                    "parameters": types.Schema(type=types.Type.OBJECT, description="Optional extra HA service parameters."),
+                    "label": types.Schema(type=types.Type.STRING, description="Short Russian description of the timer (e.g. 'выключить свет на кухне' or 'макароны')."),
+                },
+                required=["delay_seconds", "domain", "service"]
+            )
+        )
+
+        manage_timers_tool = _make_decl(
+            name="manage_timers",
+            description="List active scheduled actions/timers, cancel a specific timer, or cancel all timers ('какие таймеры стоят', 'отмени таймер', 'отмени все таймеры').",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "action": types.Schema(type=types.Type.STRING, description="Action: 'list', 'cancel', or 'cancel_all'."),
+                    "query": types.Schema(type=types.Type.STRING, description="Optional timer_id or Russian keyword (e.g. 'кухн', 'свет', 't1') when action is 'cancel'."),
+                },
+                required=["action"]
+            )
+        )
+
+        tool_args = {"function_declarations": [ha_tool, get_state_tool, search_music_tool, play_music_tool, schedule_action_tool, manage_timers_tool]}
         if self.enable_google_search:
             tool_args["google_search"] = types.GoogleSearch()
             

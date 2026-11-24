@@ -42,7 +42,7 @@ from wakeword_engine import WakeWordEngine
 phrase_manager = PhraseManager()
 device_manager = DeviceManager()
 ha_api_singleton = HomeAssistantAPI()
-tool_executor = ToolExecutor(ha_api_singleton)
+tool_executor = ToolExecutor(ha_api_singleton, device_manager=device_manager)
 
 # Серверный детектор вейкворда (один на весь процесс)
 _WW_MODEL_PATH = "porfiriy.onnx"

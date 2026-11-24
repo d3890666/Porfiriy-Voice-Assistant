@@ -1,8 +1,11 @@
 import asyncio
+import datetime
+import json
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from audio_utils import is_simple_smarthome_action
+from audio_utils import get_earcon_pcm, is_simple_smarthome_action
 from net_utils import get_device_ip
 from prompt_builder import resolve_target_player
 
@@ -10,12 +13,15 @@ tool_logger = logging.getLogger("tools")
 
 
 class ToolExecutor:
-    """Единый исполнитель инструментов Gemini Live (Home Assistant, Music Assistant)."""
+    """Единый исполнитель инструментов Gemini Live (Home Assistant, Music Assistant, таймеры)."""
 
-    def __init__(self, ha_api: Any, quasar_manager: Any = None, ducking_manager: Any = None):
+    def __init__(self, ha_api: Any, quasar_manager: Any = None, ducking_manager: Any = None, device_manager: Any = None):
         self.ha_api = ha_api
         self.quasar_manager = quasar_manager
         self.ducking_manager = ducking_manager
+        self.device_manager = device_manager
+        self._timers: Dict[str, Dict[str, Any]] = {}
+        self._timer_seq: int = 0
 
     async def execute(
         self,
@@ -155,6 +161,129 @@ class ToolExecutor:
                     status = "error" if (isinstance(res, dict) and res.get("status") == "error") else "success"
                     await on_feedback(status, False)
                 return res if isinstance(res, dict) else {"result": res}
+
+            if name == "schedule_ha_action":
+                delay_s = int(args.get("delay_seconds") or 0)
+                if delay_s <= 0 or delay_s > 86400:
+                    return {"status": "error", "error": "delay_seconds must be between 1 and 86400 (24 hours)"}
+                domain = str(args.get("domain") or "alarm").strip().lower()
+                service = str(args.get("service") or "ring").strip().lower()
+                entity_id = args.get("entity_id")
+                label = str(args.get("label") or f"{domain}.{service}" + (f" {entity_id}" if entity_id else "")).strip()
+                service_data = {}
+                if isinstance(args.get("parameters"), dict):
+                    service_data.update(args["parameters"])
+                if entity_id:
+                    service_data["entity_id"] = entity_id
+
+                if domain != "alarm" and not entity_id and domain in ("light", "switch", "cover", "fan", "climate", "media_player"):
+                    return {"status": "error", "error": f"entity_id is required to schedule {domain}.{service}"}
+
+                self._timer_seq += 1
+                tid = f"t{self._timer_seq}"
+                fire_ts = time.time() + delay_s
+                fire_local = datetime.datetime.fromtimestamp(fire_ts).strftime("%H:%M:%S")
+                caller_mac = (dev or {}).get("mac", "")
+
+                async def _timer_runner(timer_id: str):
+                    try:
+                        await asyncio.sleep(delay_s)
+                        if domain == "alarm":
+                            tool_logger.info(f"[TIMER] Alarm '{label}' ({timer_id}) fired!")
+                            ws = self.device_manager.active_sockets.get(caller_mac) if (self.device_manager and caller_mac) else None
+                            if ws and not getattr(ws, "closed", False):
+                                chime = get_earcon_pcm("smarthome", "apple_homepod", sample_rate=24000, volume=1.0)
+                                if chime:
+                                    for _ in range(3):
+                                        await ws.send(chime)
+                                        await asyncio.sleep(0.45)
+                                    await ws.send(json.dumps({"type": "turn_complete"}))
+                        else:
+                            tool_logger.info(f"[TIMER] Executing scheduled {domain}.{service} {service_data} ({timer_id}: {label})")
+                            res = await self.ha_api.call_ha_action(
+                                domain=domain,
+                                service=service,
+                                service_data=service_data,
+                            )
+                            tool_logger.info(f"[TIMER] Result ({timer_id}): {res}")
+                    except asyncio.CancelledError:
+                        tool_logger.info(f"[TIMER] Cancelled {timer_id} ({label})")
+                    except Exception as ex:
+                        tool_logger.error(f"[TIMER] Error in {timer_id} ({label}): {ex}")
+                    finally:
+                        self._timers.pop(timer_id, None)
+
+                task = asyncio.create_task(_timer_runner(tid))
+                self._timers[tid] = {
+                    "id": tid,
+                    "task": task,
+                    "fire_ts": fire_ts,
+                    "fire_local": fire_local,
+                    "delay_seconds": delay_s,
+                    "domain": domain,
+                    "service": service,
+                    "entity_id": entity_id or "",
+                    "label": label,
+                    "mac": caller_mac,
+                }
+                if turn_state is not None:
+                    turn_state["tool_executed"] = True
+                tool_logger.info(f"[TIMER] Scheduled {tid}: '{label}' in {delay_s}s (at {fire_local})")
+                return {
+                    "status": "scheduled",
+                    "timer_id": tid,
+                    "delay_seconds": delay_s,
+                    "fire_at_local": fire_local,
+                    "label": label,
+                }
+
+            if name == "manage_timers":
+                action = str(args.get("action") or "list").strip().lower()
+                query = str(args.get("query") or "").strip().lower()
+                now_ts = time.time()
+
+                if action == "list":
+                    items = [
+                        {
+                            "timer_id": t["id"],
+                            "label": t["label"],
+                            "remaining_seconds": max(0, int(t["fire_ts"] - now_ts)),
+                            "fire_at_local": t["fire_local"],
+                        }
+                        for t in self._timers.values()
+                    ]
+                    return {"status": "success", "count": len(items), "timers": items}
+
+                if action == "cancel_all":
+                    n = len(self._timers)
+                    for t in list(self._timers.values()):
+                        t["task"].cancel()
+                    self._timers.clear()
+                    return {"status": "success", "cancelled_count": n}
+
+                if action == "cancel":
+                    target_ids = []
+                    if query:
+                        for tid, t in self._timers.items():
+                            hay = f"{tid} {t['label']} {t['entity_id']}".lower()
+                            if query in hay:
+                                target_ids.append(tid)
+                    elif self._timers:
+                        # Если запрос не уточнён — отменяем последний поставленный таймер
+                        target_ids.append(list(self._timers.keys())[-1])
+
+                    cancelled = []
+                    for tid in target_ids:
+                        t = self._timers.pop(tid, None)
+                        if t:
+                            t["task"].cancel()
+                            cancelled.append({"timer_id": tid, "label": t["label"]})
+                    return {
+                        "status": "success" if cancelled else "not_found",
+                        "cancelled": cancelled,
+                    }
+
+                return {"status": "error", "error": f"Unknown manage_timers action: {action}"}
 
             tool_logger.warning(f"Unknown tool called: {name}")
             return {"status": "unknown_tool", "error": f"Unknown tool: {name}"}
