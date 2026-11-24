@@ -378,9 +378,12 @@ function renderDevicesGrid() {
               </div>
               <div style="margin-top: 8px; display: flex; gap: 6px;">
                 <button class="btn btn-secondary btn-sm" onclick="dumpAndPlayStationMic('${dev.mac}')" style="flex: 1; font-size: 11px; padding: 4px 8px;" title="Получить последние 3 секунды очищенного после DSP/AEC аудио с микрофона">
-                  🎙️ Прослушать 3с (после AEC)
+                  🎙️ 3с (после AEC)
                 </button>
-                <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" style="font-size: 11px; padding: 4px 8px;">
+                <button class="btn btn-secondary btn-sm" onclick="playLastUtterance('${dev.mac}')" style="font-size: 11px; padding: 4px 8px;" title="Прослушать последнюю фразу, которая реально улетела в Gemini после вейкворда">
+                  💬 Реплика
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="playStreamerResponse('${dev.mac}')" style="font-size: 11px; padding: 4px 8px;" title="Прослушать последний ответ Gemini">
                   ▶ Ответ
                 </button>
               </div>
@@ -947,6 +950,9 @@ window.playLastUtterance = async function(mac) {
       audioEl.src = audioUrl;
       audioEl.load();
       audioEl.play().catch(() => {});
+    } else {
+      const tmpAudio = new Audio(audioUrl);
+      tmpAudio.play().catch(() => {});
     }
     let metricsHtml = '';
     if (metricsEl && statusData.stats) {

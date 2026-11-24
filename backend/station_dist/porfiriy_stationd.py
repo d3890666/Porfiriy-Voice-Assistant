@@ -519,6 +519,8 @@ async def run_daemon():
         "listen_start": 0.0,
         "last_speech": 0.0,
         "user_spoke": False,
+        "speech_frames": 0,
+        "noise_floor_rms": 120.0,
         "peak_score": 0.0,
         "peak_time": 0.0,
         "last_tel_time": 0.0,
@@ -579,7 +581,7 @@ async def run_daemon():
 
     duck_music(False)
 
-    preroll = collections.deque(maxlen=10)   # 0.8s @ 80ms
+    preroll = collections.deque(maxlen=6)    # ~0.48s @ 80ms
     debug_ring = collections.deque(maxlen=38)  # ~3.0s @ 80ms
 
     aplay_proc = None
@@ -628,7 +630,7 @@ async def run_daemon():
                     "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.1",
+                    "firmware": "stationd-1.2",
                     "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
@@ -691,6 +693,7 @@ async def run_daemon():
                                         state["listen_start"] = time.monotonic()
                                         state["last_speech"] = time.monotonic()
                                         state["user_spoke"] = False
+                                        state["speech_frames"] = 0
                                         led.set_state("listening")
                                         await ws.send(json.dumps({"type": "wake_word_detected", "score": 1.0, "infer_ms": 0.0}))
                             except Exception as e_rx:
@@ -716,6 +719,14 @@ async def run_daemon():
                             score = await asyncio.to_thread(oww.predict, pcm_i16)
                             infer_ms = (time.perf_counter() - t0) * 1000.0
 
+                            # Адаптивно отслеживаем фоновый шум комнаты, когда вейкворд молчит
+                            if score < 0.15:
+                                nf = state["noise_floor_rms"]
+                                if rms < nf:
+                                    state["noise_floor_rms"] = nf * 0.90 + rms * 0.10
+                                elif rms < nf * 3.0:
+                                    state["noise_floor_rms"] = nf * 0.98 + rms * 0.02
+
                             if score > state["peak_score"] or (now - state["peak_time"] > 3.0):
                                 state["peak_score"] = score
                                 state["peak_time"] = now
@@ -731,31 +742,66 @@ async def run_daemon():
                                 }))
 
                             if score >= state["ww_threshold"]:
-                                print(f"[STATIOND] WAKE DETECTED! score={score:.3f} infer={infer_ms:.1f}ms rms={dbfs}dBFS", flush=True)
+                                print(
+                                    f"[STATIOND] WAKE DETECTED! score={score:.3f} infer={infer_ms:.1f}ms "
+                                    f"rms={dbfs}dBFS noise_floor={state['noise_floor_rms']:.0f}",
+                                    flush=True,
+                                )
                                 duck_music(True)
                                 state["mode"] = "listening"
                                 state["listen_start"] = now
                                 state["last_speech"] = now
                                 state["user_spoke"] = False
+                                state["speech_frames"] = 0
                                 led.set_state("listening")
                                 await ws.send(json.dumps({
                                     "type": "wake_word_detected",
                                     "score": round(score, 4),
                                     "infer_ms": round(infer_ms, 1),
                                 }))
-                                # Отправляем pre-roll буфер
+                                # Отправляем pre-roll буфер (чтобы слитная речь сразу после «Порфирий» не обрезалась)
                                 for pr in list(preroll):
                                     await ws.send(pr)
+                                preroll.clear()
 
                         elif state["mode"] == "listening":
                             await ws.send(pcm_bytes)
-                            if rms > 220.0:
-                                state["user_spoke"] = True
-                                state["last_speech"] = now
-                            if (state["user_spoke"] and (now - state["last_speech"] > 0.85)) or (now - state["listen_start"] > 8.0):
+                            listen_elapsed = now - state["listen_start"]
+                            speech_thresh = min(2500.0, max(350.0, state["noise_floor_rms"] * 2.2))
+
+                            # Первые 0.40с после вейкворда (хвост слова «Порфирий» и earcon) звук стримим,
+                            # но не засчитываем за user_spoke, чтобы пауза после вейкворда не обрывала запись.
+                            if listen_elapsed >= 0.40:
+                                if rms >= speech_thresh:
+                                    state["speech_frames"] += 1
+                                    if state["speech_frames"] >= 2:
+                                        state["user_spoke"] = True
+                                        state["last_speech"] = now
+                                else:
+                                    if not state["user_spoke"]:
+                                        state["speech_frames"] = 0
+
+                            if state["user_spoke"] and ((now - state["last_speech"] > 1.0) or (listen_elapsed > 12.0)):
+                                print(
+                                    f"[STATIOND] End of speech (elapsed={listen_elapsed:.2f}s, "
+                                    f"thresh={speech_thresh:.0f}). Switching to thinking.",
+                                    flush=True,
+                                )
                                 state["mode"] = "thinking"
                                 led.set_state("thinking")
                                 await ws.send(json.dumps({"type": "end_of_speech"}))
+                            elif not state["user_spoke"] and listen_elapsed > 5.5:
+                                print(
+                                    f"[STATIOND] No speech detected for {listen_elapsed:.1f}s "
+                                    f"(thresh={speech_thresh:.0f}). Returning to idle.",
+                                    flush=True,
+                                )
+                                duck_music(False)
+                                oww.reset()
+                                state["mode"] = "idle"
+                                state["cooldown_until"] = now + 0.8
+                                led.set_state("idle")
+                                await ws.send(json.dumps({"type": "listen_timeout"}))
                 finally:
                     rx_task.cancel()
                     close_aplay()

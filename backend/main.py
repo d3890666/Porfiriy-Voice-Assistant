@@ -1123,6 +1123,23 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     session_active = False
     audio_queue: Optional[asyncio.Queue] = None
     gemini_is_speaking = False
+    utterance_chunks: list[bytes] = []
+    utterance_saved = False
+    session_task: Optional[asyncio.Task] = None
+    eos_watchdog_task: Optional[asyncio.Task] = None
+    gemini_responded = False
+
+    def _flush_utterance():
+        nonlocal utterance_saved
+        if not utterance_saved and utterance_chunks:
+            utterance_saved = True
+            device_manager.save_last_utterance(client_mac, b"".join(utterance_chunks))
+
+    def _cancel_eos_watchdog():
+        nonlocal eos_watchdog_task
+        if eos_watchdog_task and not eos_watchdog_task.done():
+            eos_watchdog_task.cancel()
+        eos_watchdog_task = None
 
     async def _send_json(payload: dict):
         try:
@@ -1140,10 +1157,11 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         pass
 
     async def _run_gemini_session():
-        nonlocal session_active, audio_queue, gemini_is_speaking
+        nonlocal session_active, audio_queue, gemini_is_speaking, gemini_responded
         options = get_options()
         session_active = True
         gemini_is_speaking = False
+        gemini_responded = False
         device_manager.set_device_state(client_mac, "listening")
         await _send_json({"type": "state", "state": "listening"})
 
@@ -1214,9 +1232,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                 logger.debug(f"[YANDEX-WS] Mic stream worker note: {e_stream}")
 
         async def _receive_from_gemini(session):
-            nonlocal gemini_is_speaking
+            nonlocal gemini_is_speaking, gemini_responded
             async for response in session.receive():
                 if response.tool_call:
+                    gemini_responded = True
+                    _cancel_eos_watchdog()
+                    _flush_utterance()
                     logger.info(f"[YANDEX-WS] Tool Call from Gemini: {response.tool_call}")
                     device_manager.set_device_state(client_mac, "thinking")
                     await _send_json({"type": "state", "state": "thinking"})
@@ -1262,12 +1283,22 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             break
                     continue
 
-                if response.server_content and response.server_content.model_turn:
+                sc = response.server_content
+                if sc:
+                    if getattr(sc, "input_transcription", None) and getattr(sc.input_transcription, "text", None):
+                        logger.info(f"[YANDEX-WS] User Speech Recognized ({client_mac}): {sc.input_transcription.text}")
+                    if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
+                        logger.info(f"[YANDEX-WS] Gemini Speech ({client_mac}): {sc.output_transcription.text}")
+
+                if sc and sc.model_turn:
+                    gemini_responded = True
+                    _cancel_eos_watchdog()
+                    _flush_utterance()
                     if not gemini_is_speaking:
                         gemini_is_speaking = True
                         device_manager.set_device_state(client_mac, "speaking")
                         await _send_json({"type": "state", "state": "speaking"})
-                    for part in response.server_content.model_turn.parts:
+                    for part in sc.model_turn.parts:
                         if part.inline_data and part.inline_data.data:
                             chunk = part.inline_data.data
                             pcm_response_chunks.append(chunk)
@@ -1276,7 +1307,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             except Exception:
                                 pass
 
-                if response.server_content and response.server_content.turn_complete:
+                if sc and sc.turn_complete:
                     gemini_is_speaking = False
                     logger.info(f"[YANDEX-WS] Gemini turn complete for {client_mac}.")
                     await _send_json({"type": "turn_complete"})
@@ -1287,6 +1318,9 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             async with gemini_client.connect() as session:
                 sender_task = asyncio.create_task(_stream_mic_to_gemini(session))
                 await asyncio.wait_for(_receive_from_gemini(session), timeout=45.0)
+        except asyncio.CancelledError:
+            logger.info(f"[YANDEX-WS] Session cancelled for {client_mac}.")
+            await _send_json({"type": "turn_complete"})
         except asyncio.TimeoutError:
             logger.info(f"[YANDEX-WS] Session timed out for {client_mac}.")
             await _send_json({"type": "turn_complete"})
@@ -1294,6 +1328,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             logger.error(f"[YANDEX-WS] Gemini session error for {client_mac}: {e}")
             await _send_json({"type": "turn_complete"})
         finally:
+            _cancel_eos_watchdog()
+            _flush_utterance()
             session_active = False
             gemini_is_speaking = False
             device_manager.set_device_state(client_mac, "idle")
@@ -1319,6 +1355,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     continue
                 if session_active and audio_queue is not None:
                     audio_queue.put_nowait(message)
+                    if not gemini_is_speaking and len(utterance_chunks) < 200:
+                        utterance_chunks.append(message)
 
             elif isinstance(message, str):
                 try:
@@ -1330,15 +1368,53 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 f"[YANDEX-WS] Local wake word detected on {client_mac} "
                                 f"(score={data.get('score')}, infer_ms={data.get('infer_ms')})"
                             )
+                            # КРИТИЧНО: выставляем session_active и очередь СИНХРОННО до create_task,
+                            # чтобы мгновенно летящие следом pre-roll и первые чанки голоса не терялись!
+                            session_active = True
+                            gemini_is_speaking = False
+                            gemini_responded = False
+                            utterance_chunks = []
+                            utterance_saved = False
+                            _cancel_eos_watchdog()
                             audio_queue = asyncio.Queue()
-                            asyncio.create_task(_run_gemini_session())
+                            session_task = asyncio.create_task(_run_gemini_session())
                     elif mtype == "end_of_speech":
                         if session_active and audio_queue is not None:
+                            _flush_utterance()
                             device_manager.set_device_state(client_mac, "thinking")
                             await _send_json({"type": "state", "state": "thinking"})
+                            vad_ms = int(get_options().get("vad_silence_duration_ms", 600))
+                            needed_chunks = max(28, int((vad_ms + 300) * 32 / 1024) + 1)
+                            logger.info(
+                                f"[YANDEX-WS] Received end_of_speech from {client_mac}. "
+                                f"Pushing {needed_chunks} silence chunks (~{needed_chunks * 32}ms) to trigger Gemini VAD."
+                            )
                             silence = b"\x00" * 1024
-                            for _ in range(24):
+                            for _ in range(needed_chunks):
                                 audio_queue.put_nowait(silence)
+
+                            # Защита от 45-секундного молчания, если Gemini не услышал речь
+                            _cancel_eos_watchdog()
+
+                            async def _eos_watchdog():
+                                try:
+                                    await asyncio.sleep(12.0)
+                                    if session_active and not gemini_responded and session_task and not session_task.done():
+                                        logger.warning(f"[YANDEX-WS] No response from Gemini within 12s after end_of_speech for {client_mac}; closing session.")
+                                        session_task.cancel()
+                                except asyncio.CancelledError:
+                                    pass
+
+                            eos_watchdog_task = asyncio.create_task(_eos_watchdog())
+                    elif mtype == "listen_timeout":
+                        logger.info(f"[YANDEX-WS] No speech timeout on {client_mac}; aborting pending Gemini session.")
+                        _cancel_eos_watchdog()
+                        _flush_utterance()
+                        if session_task and not session_task.done():
+                            session_task.cancel()
+                        else:
+                            session_active = False
+                            device_manager.set_device_state(client_mac, "idle")
                     elif mtype == "ww_telemetry":
                         device_manager.update_ww_score(
                             client_mac,
@@ -1373,7 +1449,10 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     except Exception as e:
         logger.error(f"[YANDEX-WS] Error for {client_mac}: {e}")
     finally:
+        _cancel_eos_watchdog()
         session_active = False
+        if session_task and not session_task.done():
+            session_task.cancel()
         if audio_queue:
             audio_queue.put_nowait(None)
         device_manager.set_device_offline(client_mac, ws=websocket)
