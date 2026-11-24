@@ -112,21 +112,7 @@ class GeminiProxyClient:
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
-        # Модели gemini-3.8* по умолчанию используют асинхронный (NON_BLOCKING) вызов инструментов;
-        # для синхронного выполнения в нашем receive-цикле явно задаём behavior="BLOCKING" (как в ha-gemini-live).
-        tool_extra = {}
-        if "gemini-3.8" in (self.model or "").lower():
-            if hasattr(types, "Behavior") and hasattr(types.Behavior, "BLOCKING"):
-                tool_extra["behavior"] = types.Behavior.BLOCKING
-            else:
-                tool_extra["behavior"] = "BLOCKING"
-
         def _make_decl(**kwargs):
-            if tool_extra:
-                try:
-                    return types.FunctionDeclaration(**kwargs, **tool_extra)
-                except Exception:
-                    pass
             return types.FunctionDeclaration(**kwargs)
 
         ha_tool = _make_decl(
@@ -213,20 +199,11 @@ class GeminiProxyClient:
             
         realtime_input_config = None
         if self.manual_vad:
-            try:
-                realtime_input_config = types.RealtimeInputConfig(
-                    automatic_activity_detection=types.AutomaticActivityDetection(
-                        disabled=True
-                    ),
-                    activity_handling="NO_INTERRUPTION",
-                    turn_coverage="TURN_INCLUDES_ONLY_ACTIVITY",
+            realtime_input_config = types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(
+                    disabled=True
                 )
-            except Exception:
-                realtime_input_config = types.RealtimeInputConfig(
-                    automatic_activity_detection=types.AutomaticActivityDetection(
-                        disabled=True
-                    )
-                )
+            )
         elif self.vad_silence_duration_ms:
             realtime_input_config = types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
