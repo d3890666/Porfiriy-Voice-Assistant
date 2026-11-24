@@ -210,6 +210,7 @@ function renderDevicesGrid() {
           const pdmGain = cfg.pdm_gain !== undefined ? cfg.pdm_gain : 40;
           const dcOn = cfg.dc_blocker_enabled !== false;
           const aecOn = cfg.aec_enabled !== false;
+          const bargeInOn = Boolean(cfg.barge_in_enabled);
           const ledBright = cfg.led_brightness !== undefined ? cfg.led_brightness : 80;
           return `
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, ${aliceDisabled ? 'rgba(16, 185, 129, 0.18), rgba(59, 130, 246, 0.14)' : 'rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)'}); border: 1px solid ${aliceDisabled ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.35)'}; border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -363,6 +364,10 @@ function renderDevicesGrid() {
               <label style="display:flex; align-items:center; gap:5px; cursor:pointer; margin:0;">
                 <input type="checkbox" ${aecOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'aec_enabled', this.checked)">
                 <span>AEC (вычитание музыки)</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:5px; cursor:pointer; margin:0;" title="Разрешить перебивать Порфирия словом «Порфирий» во время его речи (работает поверх AEC)">
+                <input type="checkbox" ${bargeInOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'barge_in_enabled', this.checked)">
+                <span>⚡ Перебивание (Barge-in)</span>
               </label>
             </div>
 

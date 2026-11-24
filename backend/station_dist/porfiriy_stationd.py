@@ -54,6 +54,7 @@ PERSISTED_KEYS = (
     "mic_gain",
     "dc_blocker_enabled",
     "aec_enabled",
+    "barge_in_enabled",
     "led_brightness",
     "led_mode_idle",
     "led_color_idle",
@@ -676,6 +677,7 @@ async def run_daemon():
         "mode": "idle",  # idle | listening | thinking | speaking
         "ww_threshold": 0.90,
         "pdm_gain": 40,
+        "barge_in_enabled": False,
         "cooldown_until": 0.0,
         "listen_start": 0.0,
         "last_speech": 0.0,
@@ -696,6 +698,7 @@ async def run_daemon():
         "mic_gain": 4.0,
         "dc_blocker_enabled": True,
         "aec_enabled": True,
+        "barge_in_enabled": False,
         "led_brightness": 80,
         "led_mode_idle": 0,
         "led_color_idle": "#000000",
@@ -717,6 +720,9 @@ async def run_daemon():
         if "aec_enabled" in cfg and cfg["aec_enabled"] is not None:
             dsp.aec_enabled = bool(cfg["aec_enabled"])
             local_cfg["aec_enabled"] = dsp.aec_enabled
+        if "barge_in_enabled" in cfg and cfg["barge_in_enabled"] is not None:
+            state["barge_in_enabled"] = bool(cfg["barge_in_enabled"])
+            local_cfg["barge_in_enabled"] = state["barge_in_enabled"]
         if "mic_gain" in cfg and cfg["mic_gain"] is not None:
             dsp.mic_gain = max(0.2, min(20.0, float(cfg["mic_gain"])))
             local_cfg["mic_gain"] = dsp.mic_gain
@@ -817,6 +823,9 @@ async def run_daemon():
                                 if mtype == "state":
                                     st = data.get("state", "idle")
                                     if st in ("thinking", "speaking"):
+                                        if st == "speaking" and state["mode"] != "speaking":
+                                            oww.reset()
+                                            state["cooldown_until"] = time.monotonic() + 0.6
                                         state["mode"] = st
                                         led.set_state(st)
                                     elif st == "idle":
@@ -927,6 +936,37 @@ async def run_daemon():
                                 for pr in list(preroll):
                                     await ws.send(pr)
                                 preroll.clear()
+
+                        elif state["mode"] == "speaking" and state["barge_in_enabled"]:
+                            if now >= state["cooldown_until"]:
+                                t0 = time.perf_counter()
+                                score = await asyncio.to_thread(oww.predict, pcm_i16)
+                                infer_ms = (time.perf_counter() - t0) * 1000.0
+                                if score >= state["ww_threshold"]:
+                                    print(
+                                        f"[STATIOND] BARGE-IN WAKE DETECTED! score={score:.3f} "
+                                        f"infer={infer_ms:.1f}ms rms={dbfs}dBFS",
+                                        flush=True,
+                                    )
+                                    player.stop_now()
+                                    oww.reset()
+                                    vad.reset()
+                                    duck_music(True)
+                                    state["mode"] = "listening"
+                                    state["is_follow_up"] = False
+                                    state["listen_start"] = now
+                                    state["last_speech"] = now
+                                    state["user_spoke"] = False
+                                    state["speech_frames"] = 0
+                                    led.set_state("listening")
+                                    await ws.send(json.dumps({
+                                        "type": "barge_in_wake",
+                                        "score": round(score, 4),
+                                        "infer_ms": round(infer_ms, 1),
+                                    }))
+                                    for pr in list(preroll):
+                                        await ws.send(pr)
+                                    preroll.clear()
 
                         elif state["mode"] == "listening":
                             await ws.send(pcm_bytes)

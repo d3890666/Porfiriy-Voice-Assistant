@@ -1121,6 +1121,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     device_manager.set_device_state(client_mac, "idle")
 
     session_active = False
+    session_seq = 0
     audio_queue: Optional[asyncio.Queue] = None
     gemini_is_speaking = False
     utterance_chunks: list[bytes] = []
@@ -1156,7 +1157,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     except Exception:
         pass
 
-    async def _run_gemini_session():
+    async def _run_gemini_session(my_sid: int):
         nonlocal session_active, audio_queue, gemini_is_speaking, gemini_responded
         options = get_options()
         session_active = True
@@ -1473,15 +1474,16 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             logger.error(f"[YANDEX-WS] Gemini session error for {client_mac}: {e}")
             await _send_json({"type": "turn_complete"})
         finally:
-            _cancel_eos_watchdog()
-            _flush_utterance()
-            session_active = False
-            gemini_is_speaking = False
-            device_manager.set_device_state(client_mac, "idle")
-            await _send_json({"type": "state", "state": "idle"})
-            if audio_queue:
-                audio_queue.put_nowait(None)
-            audio_queue = None
+            if my_sid == session_seq:
+                _cancel_eos_watchdog()
+                _flush_utterance()
+                session_active = False
+                gemini_is_speaking = False
+                device_manager.set_device_state(client_mac, "idle")
+                await _send_json({"type": "state", "state": "idle"})
+                if audio_queue:
+                    audio_queue.put_nowait(None)
+                audio_queue = None
 
         if pcm_response_chunks:
             raw_pcm = b"".join(pcm_response_chunks)
@@ -1511,8 +1513,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 f"[YANDEX-WS] Local wake word detected on {client_mac} "
                                 f"(score={data.get('score')}, infer_ms={data.get('infer_ms')})"
                             )
-                            # КРИТИЧНО: выставляем session_active и очередь СИНХРОННО до create_task,
-                            # чтобы мгновенно летящие следом pre-roll и первые чанки голоса не терялись!
+                            session_seq += 1
                             session_active = True
                             gemini_is_speaking = False
                             gemini_responded = False
@@ -1520,7 +1521,27 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             utterance_saved = False
                             _cancel_eos_watchdog()
                             audio_queue = asyncio.Queue()
-                            session_task = asyncio.create_task(_run_gemini_session())
+                            session_task = asyncio.create_task(_run_gemini_session(session_seq))
+                    elif mtype == "barge_in_wake":
+                        logger.info(
+                            f"[YANDEX-WS] Barge-in wake word on {client_mac} "
+                            f"(score={data.get('score')}, infer_ms={data.get('infer_ms')}) — interrupting current turn!"
+                        )
+                        session_seq += 1
+                        old_task = session_task
+                        old_q = audio_queue
+                        _cancel_eos_watchdog()
+                        session_active = True
+                        gemini_is_speaking = False
+                        gemini_responded = False
+                        utterance_chunks = []
+                        utterance_saved = False
+                        audio_queue = asyncio.Queue()
+                        if old_q:
+                            old_q.put_nowait(None)
+                        if old_task and not old_task.done():
+                            old_task.cancel()
+                        session_task = asyncio.create_task(_run_gemini_session(session_seq))
                     elif mtype == "end_of_speech":
                         if session_active and audio_queue is not None:
                             _flush_utterance()
