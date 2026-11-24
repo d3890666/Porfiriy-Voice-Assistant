@@ -1101,14 +1101,23 @@ class QuasarManager:
                     await conn.run(f"echo '{server_ip}' > /data/opt/porfiriy_host", check=False)
                 for src, dst, is_exec in files_map:
                     if os.path.exists(src):
+                        # Не перезатираем уже существующий непустой porfiriy.onnx (дефолтная модель)
+                        if dst.endswith("/models/porfiriy.onnx"):
+                            chk = await conn.run(f"test -s {dst} && echo EXISTS || echo MISSING", check=False)
+                            if "EXISTS" in (chk.stdout or ""):
+                                continue
                         with open(src, "rb") as f:
                             raw = f.read()
+                        if not raw:
+                            continue
                         if dst.endswith((".sh", ".py")):
                             raw = raw.replace(b"\r\n", b"\n")
-                        proc = await conn.create_process(f"cat > {dst}", encoding=None)
+                        tmp_dst = f"{dst}.tmp"
+                        proc = await conn.create_process(f"cat > {tmp_dst}", encoding=None)
                         proc.stdin.write(raw)
                         proc.stdin.write_eof()
                         await asyncio.wait_for(proc.wait(), timeout=20.0)
+                        await conn.run(f"test -s {tmp_dst} && mv -f {tmp_dst} {dst} || rm -f {tmp_dst}", check=False)
                         if is_exec:
                             await conn.run(f"chmod +x {dst}", check=False)
                 # Если Алиса уже отключена и рантайм стоит — перезапускаем сервис
@@ -1139,22 +1148,72 @@ class QuasarManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def upload_station_ww_model(self, ip: str, model_bytes: bytes, port: int = DEFAULT_SSH_PORT) -> Dict[str, Any]:
-        """Загружает новый .onnx файл вейкворда напрямую на Яндекс Станцию 2 и перезапускает porfiriy-stationd."""
+    async def upload_station_ww_model(
+        self,
+        ip: str,
+        model_bytes: bytes,
+        filename: str = "custom.onnx",
+        port: int = DEFAULT_SSH_PORT,
+    ) -> Dict[str, Any]:
+        """Загружает новый .onnx файл вейкворда под уникальным именем на Яндекс Станцию 2,
+        атомарно сохраняет его имя в config.json (чтобы не затиралось при обновлениях) и перезапускает stationd."""
         if not HAS_ASYNCSSH:
             return {"error": "asyncssh не установлен"}
+        if not model_bytes or len(model_bytes) < 1024:
+            return {"success": False, "error": "Файл модели пустой или повреждён (< 1 КБ)"}
+
+        import re
+        from datetime import datetime
+
+        base = os.path.basename(filename or "custom.onnx")
+        stem = os.path.splitext(base)[0]
+        clean_stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", stem).strip("_")[:32] or "custom"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_name = f"custom_{clean_stem}_{ts}.onnx"
+        dst = f"{STATIOND_DIR}/models/{unique_name}"
+        tmp_dst = f"{dst}.tmp"
+        cfg_path = f"{STATIOND_DIR}/config.json"
+
         try:
             async with await self._open_ssh_connection(ip, port, timeout=10.0) as conn:
                 await conn.run(f"mkdir -p {STATIOND_DIR}/models", check=False)
-                proc = await conn.create_process(f"cat > {STATIOND_DIR}/models/porfiriy.onnx", encoding=None)
+                proc = await conn.create_process(f"cat > {tmp_dst}", encoding=None)
                 proc.stdin.write(model_bytes)
                 proc.stdin.write_eof()
-                await asyncio.wait_for(proc.wait(), timeout=15.0)
+                await asyncio.wait_for(proc.wait(), timeout=20.0)
+                mv_res = await conn.run(f"test -s {tmp_dst} && mv -f {tmp_dst} {dst}", check=False)
+                if mv_res.exit_status != 0:
+                    await conn.run(f"rm -f {tmp_dst}", check=False)
+                    return {"success": False, "error": "Не удалось сохранить файл модели на Станцию"}
+
+                # Обновляем ww_model в локальном config.json Станции, чтобы деплой stationd никогда её не сбрасывал
+                cur_cfg = {}
+                read_res = await conn.run(f"cat {cfg_path} 2>/dev/null || true", check=False)
+                if read_res.stdout and read_res.stdout.strip():
+                    try:
+                        parsed = json.loads(read_res.stdout)
+                        if isinstance(parsed, dict):
+                            cur_cfg = parsed
+                    except Exception:
+                        pass
+                cur_cfg["ww_model"] = unique_name
+                cfg_bytes = json.dumps(cur_cfg, indent=2, ensure_ascii=False).encode("utf-8")
+                cproc = await conn.create_process(f"cat > {cfg_path}.tmp", encoding=None)
+                cproc.stdin.write(cfg_bytes)
+                cproc.stdin.write_eof()
+                await asyncio.wait_for(cproc.wait(), timeout=10.0)
+                await conn.run(f"mv -f {cfg_path}.tmp {cfg_path}", check=False)
+
                 await conn.run(
                     f"if [ -f {DISABLE_ALICE_FLAG} ] && [ -x {STATIOND_SERVICE_PATH} ]; then sh {STATIOND_SERVICE_PATH} restart; fi",
                     check=False,
                 )
-            return {"success": True, "size": len(model_bytes), "message": "Модель porfiriy.onnx загружена на Станцию"}
+            return {
+                "success": True,
+                "size": len(model_bytes),
+                "model_name": unique_name,
+                "message": f"Модель {unique_name} загружена и закреплена в config.json Станции",
+            }
         except Exception as e:
             logger.error(f"[STATIOND] upload_station_ww_model error ({ip}:{port}): {e}")
             return {"success": False, "error": str(e)}

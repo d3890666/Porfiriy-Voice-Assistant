@@ -48,6 +48,7 @@ LOCAL_CONFIG_PATH = os.path.join(STATIOND_BASE, "config.json")
 WIFI_SERVERS_PATH = os.path.join(STATIOND_BASE, "wifi_servers.json")
 
 PERSISTED_KEYS = (
+    "ww_model",
     "ww_threshold",
     "pdm_gain",
     "mic_gain",
@@ -655,13 +656,20 @@ async def run_daemon():
         fallback_host = open("/data/opt/porfiriy_host").read().strip()
     fallback_port = int(os.environ.get("PORFIRIY_WS_PORT", "8765"))
     models_dir = os.environ.get("PORFIRIY_MODELS_DIR", "/data/opt/porfiriy-stationd/models")
-    ww_model = os.environ.get("PORFIRIY_WW_MODEL", "porfiriy.onnx")
+    default_ww_model = os.environ.get("PORFIRIY_WW_MODEL", "porfiriy.onnx")
+    saved = load_local_config()
+    chosen_ww_model = str(saved.get("ww_model") or default_ww_model).strip() or default_ww_model
+    chosen_ww_path = chosen_ww_model if os.path.isabs(chosen_ww_model) else os.path.join(models_dir, chosen_ww_model)
+    if not (os.path.exists(chosen_ww_path) and os.path.getsize(chosen_ww_path) > 0):
+        print(f"[STATIOND] Configured ww_model '{chosen_ww_model}' missing/empty, falling back to {default_ww_model}", flush=True)
+        chosen_ww_model = default_ww_model
+    print(f"[STATIOND] Using wake word model: {chosen_ww_model}", flush=True)
 
     mac = get_station_mac()
     led = StationLEDController()
     led.start()
     dsp = DSPProcessor()
-    oww = LocalOWW(models_dir, ww_model=ww_model, threads=1)
+    oww = LocalOWW(models_dir, ww_model=chosen_ww_model, threads=1)
     vad = LocalSileroVAD(models_dir, threads=1)
 
     state = {
@@ -682,6 +690,7 @@ async def run_daemon():
     }
 
     local_cfg = {
+        "ww_model": chosen_ww_model,
         "ww_threshold": 0.90,
         "pdm_gain": 40,
         "mic_gain": 4.0,
@@ -727,10 +736,9 @@ async def run_daemon():
             save_local_config(local_cfg)
 
     # Применяем сохранённый локальный конфиг сразу при старте (ещё до подключения к серверу!)
-    saved = load_local_config()
     if saved:
         apply_config(saved, persist=False)
-        print(f"[STATIOND] Loaded local config.json: thr={state['ww_threshold']:.2f} pdm={state['pdm_gain']} gain={dsp.mic_gain:.1f}x", flush=True)
+        print(f"[STATIOND] Loaded local config.json: model={chosen_ww_model} thr={state['ww_threshold']:.2f} pdm={state['pdm_gain']} gain={dsp.mic_gain:.1f}x", flush=True)
     else:
         apply_config(local_cfg, persist=True)
 

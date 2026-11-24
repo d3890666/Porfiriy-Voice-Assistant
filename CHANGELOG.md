@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.171
+- **Защита пользовательской модели вейкворда от перезатирания и атомарный деплой (`quasar_manager.py`, `web_server.py`, `porfiriy_stationd.py`)**:
+  - Загружаемая через Web UI модель `.onnx` теперь сохраняется под уникальным именем (`custom_<name>_<YYYYMMDD_HHMMSS>.onnx`) атомарно через `.tmp` → `mv` (проверка размера > 1 КБ исключает обнуление файла до 0 байт при обрыве связи).
+  - Имя активной модели (`ww_model`) сохраняется в `/data/opt/porfiriy-stationd/config.json` на Станции и в конфиге устройства в бэкенде; при повторном деплое `porfiriy-stationd` пользовательская модель и её имя больше никогда не перезатираются, а дефолтный `porfiriy.onnx` копируется только если он отсутствует/пустой.
+- **Атомарная отправка аудио в Gemini Live API (`v0.0.170`)**:
+  - В `handle_yandex_station_streamer` передача записанной фразы после Silero VAD переведена на атомарный `send_client_content(audio/wav, turn_complete=True)` через `v1beta` (устранены случайные залипы `ActivityEnd` на `gemini-3.8-live`; отклик `0.7–1.0с`).
+- Синхронизация версий до `0.0.171`.
+
 ## 0.0.167
 - **Архитектура по мотивам `ha-gemini-live` + неблокирующий плеер и follow-up диалог на Яндекс Станции 2 (`gemini_client.py`, `main.py`, `porfiriy_stationd.py`)**:
   - **Специфика `gemini-3.8`**: во все `FunctionDeclaration` добавлен `behavior="BLOCKING"` (устраняет нестабильность асинхронных tool calls по умолчанию на `gemini-3.8*`), а в Manual VAD `realtime_input_config` добавлены `activity_handling="NO_INTERRUPTION"` и `turn_coverage="TURN_INCLUDES_ONLY_ACTIVITY"`.

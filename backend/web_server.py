@@ -1150,7 +1150,9 @@ class WebServer:
                     break
                 chunks.append(chunk)
             model_bytes = b"".join(chunks)
-            res = await self.quasar_manager.upload_station_ww_model(ip, model_bytes, port=port)
+            res = await self.quasar_manager.upload_station_ww_model(ip, model_bytes, filename=filename, port=port)
+            if res.get("success") and res.get("model_name"):
+                await self.device_manager.update_device_config(mac, {"ww_model": res["model_name"]})
             return web.json_response(res)
         except Exception as e:
             logger.error(f"[STATIOND] Upload model error: {e}")
