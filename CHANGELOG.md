@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.155
+- **Устранён спам логов `MQTT Command received: porfiriy/.../media/state -> idle` (`backend/mqtt_discovery.py`)**:
+  - Подписка MQTT сужена с `porfiriy/+/media/#` до `porfiriy/+/media/command`, чтобы аддон не получал собственные публикации `media/state`.
+  - В `_on_device_event` отфильтрована высокочастотная телеметрия `ww_score` (в MQTT публикуются только реальные события `registered`, `state_changed`, `config_updated`, `offline`, `heartbeat`).
+- Синхронизация версий до `0.0.155`.
+
 ## 0.0.154
 - **Аппаратное и программное усиление микрофона Яндекс Станции 2 (`porfiriy_stationd.py`, `app.js`)**:
   - В карточку Яндекс Станции добавлен ползунок аппаратного усилителя **`🎛️ PDM Gain (АЦП)` (`0..48`)**, который на лету управляет ALSA `numid=42` (`PDM Gain`) на Станции.

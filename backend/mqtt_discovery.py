@@ -81,9 +81,9 @@ class MQTTDiscoveryManager:
         if rc == 0:
             self.is_connected = True
             logger.info("Connected to MQTT Broker successfully!")
-            # Подписываемся на команды управления колонками
+            # Подписываемся на команды управления колонками (не на state-топики)
             self.client.subscribe("porfiriy/+/set/#")
-            self.client.subscribe("porfiriy/+/media/#")
+            self.client.subscribe("porfiriy/+/media/command")
         else:
             logger.warning(f"MQTT connect failed with result code: {rc}")
 
@@ -158,6 +158,9 @@ class MQTTDiscoveryManager:
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Реакция на события DeviceManager."""
         if not self.is_connected or not self.client or not self.loop:
+            return
+        # Не спамим в MQTT на высокочастотную телеметрию вейкворда и OTA-прогресс
+        if event_type not in ("registered", "state_changed", "config_updated", "offline", "heartbeat"):
             return
         try:
             if event_type == "registered":
