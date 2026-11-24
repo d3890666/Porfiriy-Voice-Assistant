@@ -1241,53 +1241,40 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                         turn_state[k] = False
 
                     async def _stream_turn_audio():
-                        sent_chunks = 0
-                        activity_started = False
+                        turn_pcm_parts: list[bytes] = []
                         try:
                             if replay_chunks is not None and turn_idx == 0:
-                                for c in replay_chunks:
-                                    if not c:
+                                turn_pcm_parts = [c for c in replay_chunks if c]
+                            else:
+                                while session_active:
+                                    chunk = await audio_queue.get()
+                                    if chunk is None:
+                                        return
+                                    if chunk == "__ACTIVITY_END__":
+                                        break
+                                    if gemini_is_speaking or not chunk:
                                         continue
-                                    if not activity_started:
-                                        await session.send_realtime_input(activity_start=types.ActivityStart())
-                                        activity_started = True
-                                    await session.send_realtime_input(
-                                        audio=types.Blob(data=c, mime_type="audio/pcm;rate=16000")
-                                    )
-                                    sent_chunks += 1
-                                if activity_started:
-                                    await session.send_realtime_input(activity_end=types.ActivityEnd())
-                                    activity_started = False
-                                eos_sent_event.set()
-                                logger.info(f"[YANDEX-WS] [RETRY] Sent ActivityEnd after {sent_chunks} replayed chunks ({client_mac})")
+                                    turn_pcm_parts.append(chunk)
+
+                            if not turn_pcm_parts:
                                 return
 
-                            while session_active:
-                                chunk = await audio_queue.get()
-                                if chunk is None:
-                                    break
-                                if chunk == "__ACTIVITY_END__":
-                                    if activity_started:
-                                        await session.send_realtime_input(activity_end=types.ActivityEnd())
-                                        activity_started = False
-                                        eos_sent_event.set()
-                                        logger.info(
-                                            f"[YANDEX-WS] Sent ActivityEnd (turn={turn_idx + 1}) "
-                                            f"after {sent_chunks} audio chunks ({client_mac})"
-                                        )
-                                    break
-                                if gemini_is_speaking:
-                                    continue
-                                if not chunk:
-                                    continue
-                                # Ленивый ActivityStart прямо перед первым реальным чанком (как в ha-gemini-live)
-                                if not activity_started:
-                                    await session.send_realtime_input(activity_start=types.ActivityStart())
-                                    activity_started = True
-                                await session.send_realtime_input(
-                                    audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
-                                )
-                                sent_chunks += 1
+                            raw_turn_pcm = b"".join(turn_pcm_parts)
+                            wav_turn = pcm16_to_wav(raw_turn_pcm, sample_rate=16000)
+                            await session.send_client_content(
+                                turns=[
+                                    types.Content(
+                                        role="user",
+                                        parts=[types.Part.from_bytes(data=wav_turn, mime_type="audio/wav")],
+                                    )
+                                ],
+                                turn_complete=True,
+                            )
+                            eos_sent_event.set()
+                            logger.info(
+                                f"[YANDEX-WS] {tag}Sent atomic WAV turn_complete=True "
+                                f"(turn={turn_idx + 1}, {len(wav_turn)} bytes, {len(raw_turn_pcm)/32000.0:.2f}s) ({client_mac})"
+                            )
                         except asyncio.CancelledError:
                             pass
                         except Exception as e_stream:
