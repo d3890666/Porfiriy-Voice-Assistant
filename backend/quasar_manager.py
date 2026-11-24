@@ -1095,12 +1095,18 @@ class QuasarManager:
                 await conn.run(f"mkdir -p {STATIOND_DIR}/models", check=False)
                 if server_ip:
                     await conn.run(f"echo '{server_ip}' > /data/opt/porfiriy_host", check=False)
-                async with conn.start_sftp_client() as sftp:
-                    for src, dst, is_exec in files_map:
-                        if os.path.exists(src):
-                            await sftp.put(src, dst)
-                            if is_exec:
-                                await conn.run(f"chmod +x {dst}", check=False)
+                for src, dst, is_exec in files_map:
+                    if os.path.exists(src):
+                        with open(src, "rb") as f:
+                            raw = f.read()
+                        if dst.endswith((".sh", ".py")):
+                            raw = raw.replace(b"\r\n", b"\n")
+                        proc = await conn.create_process(f"cat > {dst}", encoding=None)
+                        proc.stdin.write(raw)
+                        proc.stdin.write_eof()
+                        await asyncio.wait_for(proc.wait(), timeout=20.0)
+                        if is_exec:
+                            await conn.run(f"chmod +x {dst}", check=False)
                 # Если Алиса уже отключена и рантайм стоит — перезапускаем сервис
                 await conn.run(
                     f"if [ -f {DISABLE_ALICE_FLAG} ] && [ -x {STATIOND_DIR}/lib64/ld-linux-aarch64.so.1 ]; then sh {STATIOND_SERVICE_PATH} restart; fi",

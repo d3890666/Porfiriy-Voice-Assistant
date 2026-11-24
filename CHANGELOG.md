@@ -1,5 +1,10 @@
 # Журнал изменений (Changelog)
 
+## 0.0.152
+- **Хотфикс деплоя `porfiriy-stationd` на Dropbear SSH (`backend/quasar_manager.py`)**:
+  - Заменена передача файлов в `deploy_stationd_files` с `start_sftp_client()` (на Dropbear Яндекс Станции 2 отсутствует `sftp-server`, что вызывало `0 bytes read on a total of 4 expected bytes`) на прямой SSH-пайп `cat > ...` с автоматической нормализацией `CRLF -> LF` для `.sh`/`.py` скриптов.
+- Синхронизация версий до `0.0.152`.
+
 ## 0.0.151
 - **Нативный режим Порфирия на Яндекс Станции 2 (локальный `openWakeWord` ONNX, LED-панель и тихие звуки Earcons)**:
   - **Библиотека звуковых сигналов (`backend/audio_utils.py`, `backend/config.py`, `backend/web_server.py`)**:
