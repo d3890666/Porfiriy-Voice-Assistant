@@ -1092,6 +1092,7 @@ class QuasarManager:
             (os.path.join(backend_dir, "porfiriy.onnx"), f"{STATIOND_DIR}/models/porfiriy.onnx", False),
             (os.path.join(backend_dir, "models", "melspectrogram.onnx"), f"{STATIOND_DIR}/models/melspectrogram.onnx", False),
             (os.path.join(backend_dir, "models", "embedding_model.onnx"), f"{STATIOND_DIR}/models/embedding_model.onnx", False),
+            (os.path.join(backend_dir, "models", "silero_vad.onnx"), f"{STATIOND_DIR}/models/silero_vad.onnx", False),
         ]
         try:
             async with await self._open_ssh_connection(ip, port, timeout=8.0) as conn:

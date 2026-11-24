@@ -215,6 +215,7 @@ class GeminiProxyClient:
             tools=tools,
             speech_config=speech_config,
             realtime_input_config=realtime_input_config,
+            input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig()
         )
 

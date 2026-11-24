@@ -1221,6 +1221,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     chunk = await audio_queue.get()
                     if chunk is None:
                         break
+                    if chunk == "__AUDIO_STREAM_END__":
+                        try:
+                            await session.send_realtime_input(audio_stream_end=True)
+                        except Exception as e_end:
+                            logger.debug(f"[YANDEX-WS] audio_stream_end note: {e_end}")
+                        continue
                     if gemini_is_speaking:
                         continue
                     await session.send_realtime_input(
@@ -1392,6 +1398,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             silence = b"\x00" * 1024
                             for _ in range(needed_chunks):
                                 audio_queue.put_nowait(silence)
+                            audio_queue.put_nowait("__AUDIO_STREAM_END__")
 
                             # Защита от 45-секундного молчания, если Gemini не услышал речь
                             _cancel_eos_watchdog()

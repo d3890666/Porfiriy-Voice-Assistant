@@ -456,6 +456,63 @@ class LocalOWW:
         return float(np.squeeze(ww_out))
 
 
+class LocalSileroVAD:
+    """Нейросетевой детектор человеческой речи Silero VAD v5 (ONNX, ~4мс/фрейм @ 16кГц).
+    Отличает реальную речь от стука посуды, воды, хлопков и бытового шума."""
+
+    WINDOW = 512   # 32 ms @ 16 kHz
+    CONTEXT = 64   # 4 ms context (Silero VAD v5)
+    SR = 16000
+
+    def __init__(self, models_dir: str, model_name: str = "silero_vad.onnx", threads: int = 1):
+        self.ready = False
+        self.sess = None
+        path = os.path.join(models_dir, model_name)
+        if not os.path.exists(path):
+            print(f"[STATIOND] Silero VAD not found at {path}, using RMS fallback", flush=True)
+            return
+        try:
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = threads
+            so.inter_op_num_threads = 1
+            so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.sess = ort.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"])
+            self._sr = np.array(self.SR, dtype=np.int64)
+            self.reset()
+            self.ready = True
+            print("[STATIOND] Loaded Silero VAD v5 ONNX (neural speech endpointing)", flush=True)
+        except Exception as e:
+            print(f"[STATIOND] Silero VAD load failed ({e}), using RMS fallback", flush=True)
+
+    def reset(self):
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self.CONTEXT), dtype=np.float32)
+        self._buf = np.empty(0, dtype=np.float32)
+
+    def process_chunk(self, samples_i16: np.ndarray) -> float:
+        """Возвращает максимальную вероятность человеческой речи (0.0..1.0) в текущем чанке."""
+        if not self.ready:
+            return -1.0
+        f32 = samples_i16.astype(np.float32) * (1.0 / 32768.0)
+        if len(self._buf):
+            f32 = np.concatenate([self._buf, f32])
+        max_prob = 0.0
+        pos = 0
+        n = len(f32)
+        while pos + self.WINDOW <= n:
+            chunk = f32[pos : pos + self.WINDOW][None, :]
+            x = np.concatenate([self._context, chunk], axis=1)
+            self._context = x[:, -self.CONTEXT:]
+            out, self._state = self.sess.run(None, {"input": x, "state": self._state, "sr": self._sr})
+            p = float(out[0][0])
+            if p > max_prob:
+                max_prob = p
+            pos += self.WINDOW
+        self._buf = f32[pos:]
+        return max_prob
+
+
 def duck_music(enable: bool):
     if enable and (os.path.exists("/data/opt/disable_ducking") or os.path.exists("/tmp/disable_ducking")):
         return
@@ -510,6 +567,7 @@ async def run_daemon():
     led.start()
     dsp = DSPProcessor()
     oww = LocalOWW(models_dir, ww_model=ww_model, threads=1)
+    vad = LocalSileroVAD(models_dir, threads=1)
 
     state = {
         "mode": "idle",  # idle | listening | thinking | speaking
@@ -630,7 +688,7 @@ async def run_daemon():
                     "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.2",
+                    "firmware": "stationd-1.3",
                     "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
@@ -689,6 +747,7 @@ async def run_daemon():
                                 elif mtype == "wake":
                                     if state["mode"] == "idle":
                                         duck_music(True)
+                                        vad.reset()
                                         state["mode"] = "listening"
                                         state["listen_start"] = time.monotonic()
                                         state["last_speech"] = time.monotonic()
@@ -748,6 +807,7 @@ async def run_daemon():
                                     flush=True,
                                 )
                                 duck_music(True)
+                                vad.reset()
                                 state["mode"] = "listening"
                                 state["listen_start"] = now
                                 state["last_speech"] = now
@@ -767,41 +827,78 @@ async def run_daemon():
                         elif state["mode"] == "listening":
                             await ws.send(pcm_bytes)
                             listen_elapsed = now - state["listen_start"]
-                            speech_thresh = min(2500.0, max(350.0, state["noise_floor_rms"] * 2.2))
 
-                            # Первые 0.40с после вейкворда (хвост слова «Порфирий» и earcon) звук стримим,
-                            # но не засчитываем за user_spoke, чтобы пауза после вейкворда не обрывала запись.
-                            if listen_elapsed >= 0.40:
-                                if rms >= speech_thresh:
-                                    state["speech_frames"] += 1
-                                    if state["speech_frames"] >= 2:
-                                        state["user_spoke"] = True
-                                        state["last_speech"] = now
-                                else:
+                            if vad.ready:
+                                speech_prob = await asyncio.to_thread(vad.process_chunk, pcm_i16)
+                                # Первые 0.35с после вейкворда (хвост слова «Порфирий» и earcon) прогреваем Silero VAD
+                                # и стримим звук в Gemini, но не засчитываем за user_spoke.
+                                if listen_elapsed >= 0.35:
                                     if not state["user_spoke"]:
-                                        state["speech_frames"] = 0
+                                        if speech_prob >= 0.50:
+                                            state["speech_frames"] += 1
+                                            if state["speech_frames"] >= 2:
+                                                state["user_spoke"] = True
+                                                state["last_speech"] = now
+                                        else:
+                                            state["speech_frames"] = 0
+                                    else:
+                                        if speech_prob >= 0.35:
+                                            state["last_speech"] = now
 
-                            if state["user_spoke"] and ((now - state["last_speech"] > 1.0) or (listen_elapsed > 12.0)):
-                                print(
-                                    f"[STATIOND] End of speech (elapsed={listen_elapsed:.2f}s, "
-                                    f"thresh={speech_thresh:.0f}). Switching to thinking.",
-                                    flush=True,
-                                )
-                                state["mode"] = "thinking"
-                                led.set_state("thinking")
-                                await ws.send(json.dumps({"type": "end_of_speech"}))
-                            elif not state["user_spoke"] and listen_elapsed > 5.5:
-                                print(
-                                    f"[STATIOND] No speech detected for {listen_elapsed:.1f}s "
-                                    f"(thresh={speech_thresh:.0f}). Returning to idle.",
-                                    flush=True,
-                                )
-                                duck_music(False)
-                                oww.reset()
-                                state["mode"] = "idle"
-                                state["cooldown_until"] = now + 0.8
-                                led.set_state("idle")
-                                await ws.send(json.dumps({"type": "listen_timeout"}))
+                                if state["user_spoke"] and ((now - state["last_speech"] >= 0.75) or (listen_elapsed > 10.0)):
+                                    print(
+                                        f"[STATIOND] End of speech [Silero VAD] (elapsed={listen_elapsed:.2f}s, "
+                                        f"prob={speech_prob:.2f}). Switching to thinking.",
+                                        flush=True,
+                                    )
+                                    state["mode"] = "thinking"
+                                    led.set_state("thinking")
+                                    await ws.send(json.dumps({"type": "end_of_speech"}))
+                                elif not state["user_spoke"] and listen_elapsed > 4.5:
+                                    print(
+                                        f"[STATIOND] No speech [Silero VAD] for {listen_elapsed:.1f}s "
+                                        f"(prob={speech_prob:.2f}). Returning to idle.",
+                                        flush=True,
+                                    )
+                                    duck_music(False)
+                                    oww.reset()
+                                    state["mode"] = "idle"
+                                    state["cooldown_until"] = now + 0.8
+                                    led.set_state("idle")
+                                    await ws.send(json.dumps({"type": "listen_timeout"}))
+                            else:
+                                speech_thresh = min(2500.0, max(350.0, state["noise_floor_rms"] * 2.2))
+                                if listen_elapsed >= 0.40:
+                                    if rms >= speech_thresh:
+                                        state["speech_frames"] += 1
+                                        if state["speech_frames"] >= 2:
+                                            state["user_spoke"] = True
+                                            state["last_speech"] = now
+                                    else:
+                                        if not state["user_spoke"]:
+                                            state["speech_frames"] = 0
+
+                                if state["user_spoke"] and ((now - state["last_speech"] > 1.0) or (listen_elapsed > 10.0)):
+                                    print(
+                                        f"[STATIOND] End of speech [RMS] (elapsed={listen_elapsed:.2f}s, "
+                                        f"thresh={speech_thresh:.0f}). Switching to thinking.",
+                                        flush=True,
+                                    )
+                                    state["mode"] = "thinking"
+                                    led.set_state("thinking")
+                                    await ws.send(json.dumps({"type": "end_of_speech"}))
+                                elif not state["user_spoke"] and listen_elapsed > 5.0:
+                                    print(
+                                        f"[STATIOND] No speech [RMS] for {listen_elapsed:.1f}s "
+                                        f"(thresh={speech_thresh:.0f}). Returning to idle.",
+                                        flush=True,
+                                    )
+                                    duck_music(False)
+                                    oww.reset()
+                                    state["mode"] = "idle"
+                                    state["cooldown_until"] = now + 0.8
+                                    led.set_state("idle")
+                                    await ws.send(json.dumps({"type": "listen_timeout"}))
                 finally:
                     rx_task.cancel()
                     close_aplay()
