@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.172
+- **Гарантированное отключение Алисы и Quasar Bridge после перезагрузки Станции (`quasar_manager.py`, `porfiriy_stationd_service.sh`)**:
+  - `set_alice_disabled(True)` теперь патчит оба init-скрипта (`/etc/init.d/S99quasar` и `/etc/init.d/S96quasar-bridge` с бэкапами в `/data/opt/backup/`), чтобы при наличии `/data/opt/disable_alice` ни Алиса (`maind`), ни `quasar-bridge` не запускались после ребута.
+  - В `porfiriy_stationd_service.sh` добавлена автоматическая страховка при старте (`killall quasar_launcher2 maind quasar-bridge` при `/data/opt/disable_alice`).
+- Синхронизация версий до `0.0.172`.
+
 ## 0.0.171
 - **Защита пользовательской модели вейкворда от перезатирания и атомарный деплой (`quasar_manager.py`, `web_server.py`, `porfiriy_stationd.py`)**:
   - Загружаемая через Web UI модель `.onnx` теперь сохраняется под уникальным именем (`custom_<name>_<YYYYMMDD_HHMMSS>.onnx`) атомарно через `.tmp` → `mv` (проверка размера > 1 КБ исключает обнуление файла до 0 байт при обрыве связи).

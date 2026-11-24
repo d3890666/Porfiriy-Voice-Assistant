@@ -36,6 +36,9 @@ start() {
         echo "porfiriy-stationd runtime not installed in $base" >&2
         return 1
     fi
+    if [ -f /data/opt/disable_alice ]; then
+        killall quasar_launcher2 maind quasar-bridge 2>/dev/null || true
+    fi
     host=$(resolve_porfiriy_host)
     export PORFIRIY_HOST="$host"
     export PORFIRIY_WS_PORT="8765"

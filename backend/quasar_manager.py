@@ -1052,6 +1052,11 @@ class QuasarManager:
                         f"printf '#!/bin/sh\\n[ \"$1\" = \"start\" ] && [ -f {DISABLE_ALICE_FLAG} ] && exit 0\\n[ -x /system/vendor/quasar/onboot.sh ] && /system/vendor/quasar/onboot.sh \"$@\"\\n' > /etc/init.d/S99quasar; "
                         "chmod +x /etc/init.d/S99quasar; "
                         "fi; "
+                        "[ -f /etc/init.d/S96quasar-bridge ] && [ ! -f /data/opt/backup/S96quasar-bridge.orig ] && cp -f /etc/init.d/S96quasar-bridge /data/opt/backup/S96quasar-bridge.orig 2>/dev/null || true; "
+                        f"if [ -f /etc/init.d/S96quasar-bridge ] && ! grep -q 'disable_alice' /etc/init.d/S96quasar-bridge 2>/dev/null; then "
+                        f"printf '#!/bin/sh\\n[ \"${{1:-start}}\" = \"start\" ] && [ -f {DISABLE_ALICE_FLAG} ] && exit 0\\nexport QUASAR_DATA_DIR=/data/opt/quasar-bridge\\nexec sh \"$QUASAR_DATA_DIR/app/control.sh\" \"${{1:-start}}\"\\n' > /etc/init.d/S96quasar-bridge; "
+                        "chmod +x /etc/init.d/S96quasar-bridge; "
+                        "fi; "
                         f"touch {DISABLE_ALICE_FLAG}; "
                         "killall quasar_launcher2 maind quasar-bridge 2>/dev/null || true; "
                         f"[ -x {ALICE_WATCHER_SERVICE_PATH} ] && sh {ALICE_WATCHER_SERVICE_PATH} stop >/dev/null 2>&1 || true; "
@@ -1064,6 +1069,7 @@ class QuasarManager:
                         f"[ -x {STATIOND_SERVICE_PATH} ] && sh {STATIOND_SERVICE_PATH} stop || true; "
                         f"rm -f {DISABLE_ALICE_FLAG}; "
                         "if [ -f /data/opt/backup/S99quasar.orig ]; then cp -f /data/opt/backup/S99quasar.orig /etc/init.d/S99quasar && chmod +x /etc/init.d/S99quasar; fi; "
+                        "if [ -f /data/opt/backup/S96quasar-bridge.orig ]; then cp -f /data/opt/backup/S96quasar-bridge.orig /etc/init.d/S96quasar-bridge && chmod +x /etc/init.d/S96quasar-bridge; fi; "
                         "sh /etc/init.d/S99quasar start >/dev/null 2>&1 &"
                     )
                     await conn.run(cmd, check=False)
