@@ -1190,9 +1190,11 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             "- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones (after DC-blocker & AEC).\n"
             "- Speech Directive: Output strictly spoken, natural Russian. 1-2 concise spoken sentences."
         )
+        t_start = time.monotonic()
         full_prompt = await build_system_prompt(
             options, ha_api, area_name=area_name, mode="satellite", extra_context=station_ctx
         )
+        t_prompt = time.monotonic() - t_start
 
         vad_silence = int(options.get("vad_silence_duration_ms", 600))
         gemini_client = GeminiProxyClient(
@@ -1221,17 +1223,19 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     chunk = await audio_queue.get()
                     if chunk is None:
                         break
-                    if chunk == "__AUDIO_STREAM_END__":
-                        try:
-                            await session.send_realtime_input(audio_stream_end=True)
-                        except Exception as e_end:
-                            logger.debug(f"[YANDEX-WS] audio_stream_end note: {e_end}")
-                        continue
                     if gemini_is_speaking:
                         continue
+                    is_silence = isinstance(chunk, tuple) and chunk[0] == "silence"
+                    payload = chunk[1] if is_silence else chunk
                     await session.send_realtime_input(
-                        audio=types.Blob(data=chunk, mime_type="audio/pcm;rate=16000")
+                        audio=types.Blob(data=payload, mime_type="audio/pcm;rate=16000")
                     )
+                    # Плавный темп при догонке буфера и отправке тишины, чтобы VAD Gemini
+                    # корректно отсчитал silence_duration_ms, а не получил всё в 1мс-всплеске
+                    if is_silence:
+                        await asyncio.sleep(0.020)
+                    elif audio_queue and audio_queue.qsize() > 1:
+                        await asyncio.sleep(0.015)
             except asyncio.CancelledError:
                 pass
             except Exception as e_stream:
@@ -1321,7 +1325,13 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
         sender_task = None
         try:
+            t_conn = time.monotonic()
             async with gemini_client.connect() as session:
+                q_backlog = audio_queue.qsize() if audio_queue else 0
+                logger.info(
+                    f"[YANDEX-WS] Gemini connected for {client_mac} "
+                    f"(prompt={t_prompt:.2f}s, connect={time.monotonic() - t_conn:.2f}s, backlog={q_backlog} chunks)"
+                )
                 sender_task = asyncio.create_task(_stream_mic_to_gemini(session))
                 await asyncio.wait_for(_receive_from_gemini(session), timeout=45.0)
         except asyncio.CancelledError:
@@ -1397,8 +1407,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             )
                             silence = b"\x00" * 1024
                             for _ in range(needed_chunks):
-                                audio_queue.put_nowait(silence)
-                            audio_queue.put_nowait("__AUDIO_STREAM_END__")
+                                audio_queue.put_nowait(("silence", silence))
 
                             # Защита от 45-секундного молчания, если Gemini не услышал речь
                             _cancel_eos_watchdog()
