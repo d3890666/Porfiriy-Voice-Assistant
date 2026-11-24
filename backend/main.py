@@ -1396,7 +1396,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 full_reply = "".join(output_text_parts).strip()
                                 wants_follow_up = (
                                     not turn_state.get("earcon_played")
-                                    and full_reply.endswith("?")
+                                    and bool(full_reply)
                                     and turn_idx < 4
                                 )
                                 # Если нужен follow-up в той же сессии, дожидаемся реального turn_complete
@@ -1408,7 +1408,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 if wants_follow_up:
                                     turn_should_follow_up = True
                                     logger.info(
-                                        f"[YANDEX-WS] Question detected in reply ('{full_reply[-40:]}'); "
+                                        f"[YANDEX-WS] Voice reply finished ('{full_reply[-40:]}'); "
                                         f"opening 5.0s follow-up window on {client_mac}."
                                     )
                                     await _send_json({"type": "follow_up", "timeout_s": 5.0})
@@ -1544,12 +1544,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             eos_watchdog_task = asyncio.create_task(_eos_watchdog())
                     elif mtype == "listen_timeout":
                         logger.info(f"[YANDEX-WS] No speech timeout on {client_mac}; aborting pending Gemini session.")
+                        session_active = False
                         _cancel_eos_watchdog()
                         _flush_utterance()
                         if session_task and not session_task.done():
                             session_task.cancel()
                         else:
-                            session_active = False
                             device_manager.set_device_state(client_mac, "idle")
                     elif mtype == "ww_telemetry":
                         device_manager.update_ww_score(
