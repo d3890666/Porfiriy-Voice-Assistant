@@ -376,7 +376,10 @@ function renderDevicesGrid() {
                 <div id="st-ww-bar-${dev.mac}" style="width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; height: 100%; background: #34d399; transition: width 0.12s ease;"></div>
                 <div style="position: absolute; top: 0; bottom: 0; left: ${Math.min(100, Math.round(wwThr * 100))}%; width: 2px; background: #f87171;"></div>
               </div>
-              <div style="margin-top: 8px; display: flex; gap: 6px;">
+              <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-sm" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия на Станции без вейкворда (начать слушать)" style="width: 100%; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #ffffff; font-size: 12px; font-weight: 600; padding: 6px 10px; border: none; border-radius: 7px; cursor: pointer; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);">
+                  ⚡ Принудительный вызов
+                </button>
                 <button class="btn btn-secondary btn-sm" onclick="dumpAndPlayStationMic('${dev.mac}')" style="flex: 1; font-size: 11px; padding: 4px 8px;" title="Получить последние 3 секунды очищенного после DSP/AEC аудио с микрофона">
                   🎙️ 3с (после AEC)
                 </button>

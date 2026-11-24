@@ -1,5 +1,10 @@
 # Журнал изменений (Changelog)
 
+## 0.0.174
+- **Кнопка «⚡ Принудительный вызов» на карточке Яндекс Станции 2 (`backend/static/app.js`)**:
+  - Добавлена кнопка ручной активации прослушивания (эмуляция вейкворда через `/api/devices/{mac}/wake` ➔ `porfiriy-stationd`) прямо в карточку нативной Станции.
+- Синхронизация версий до `0.0.174`.
+
 ## 0.0.173
 - **Исправлено `Read-only file system` при записи в `/etc/init.d/` на Яндекс Станции 2 (`quasar_manager.py`)**:
   - В `set_alice_disabled()` и `deploy_stationd_files()` добавлено временное перемонтирование корня `mount -o remount,rw /` → `sync; mount -o remount,ro /`, чтобы патчи `/etc/init.d/S99quasar`, `/etc/init.d/S96quasar-bridge` и установка `/etc/init.d/S99porfiriy-stationd` гарантированно записывались на флеш и сохранялись после перезагрузки.
