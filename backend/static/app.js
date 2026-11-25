@@ -3241,6 +3241,10 @@ function renderBuiltinConfigForm(p) {
   const pid = escapeHtml(p.id);
   if (p.id === 'builtin.telegram_bot') {
     const mode = cfg.mode || 'ha_notify';
+    const targetOpts = [
+      ...porfiriyUsers.map(u => `<option value="${escapeHtml(u.id)}">👤 ${escapeHtml(u.name)}${u.telegram_chat_id ? '' : ' (нет chat_id)'}</option>`),
+      `<option value="family">🏠 Общий чат дома</option>`
+    ].join('');
     return `
       <div class="plugin-config-box">
         <div class="p2-config-grid">
@@ -3260,7 +3264,11 @@ function renderBuiltinConfigForm(p) {
             <input type="password" id="cfg-tgbot-token" value="${escapeHtml(cfg.bot_token || '')}" placeholder="123456:ABC-DEF...">
           </div>
         </div>
-        <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+        <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="cfg-tgbot-test-target" style="padding:5px 8px; font-size:12px;">${targetOpts}</select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="testTelegramBot()">✈️ Отправить тест</button>
+          </div>
           <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить настройки бота</button>
         </div>
       </div>
@@ -3707,3 +3715,26 @@ async function fetchToolsAudit() {
   }
 }
 window.fetchToolsAudit = fetchToolsAudit;
+
+async function testTelegramBot() {
+  const target = document.getElementById('cfg-tgbot-test-target')?.value || 'denis';
+  showToast('Отправляю тестовое сообщение в Telegram...');
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/builtin.telegram_bot/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Отправлено в Telegram (${data.target || target}, mode=${data.mode})`);
+      fetchToolsAudit();
+    } else {
+      showToast(`Ошибка отправки: ${data.error || 'сбой'}`, true);
+      fetchToolsAudit();
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.testTelegramBot = testTelegramBot;

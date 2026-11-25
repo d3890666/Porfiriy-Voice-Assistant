@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.182
+- **Плагин `builtin.telegram_bot` и инструмент `send_to_telegram` (`backend/plugins/telegram_bot.py`, `plugin_registry.py`, `web_server.py`, `app.js`)**:
+  - Реализована отправка сообщений, рецептов, ссылок и списков в личные чаты жильцов и общий чат дома через Home Assistant (`notify.*` / `telegram_bot`) или прямой Telegram Bot API (`https://api.telegram.org/bot.../sendMessage` с авто-фолбэком при наличии `bot_token`).
+  - Добавлено разрешение получателя по `user_id`, русскому имени в падежах («Денису», «Свете»), ключевым словам общего чата (`family`, `дом`, `общий`) и числовому `chat_id`.
+  - Добавлен эндпоинт `POST /api/providers/builtin.telegram_bot/test` и кнопка **`✈️ Отправить тест`** в настройках плагина.
+- Синхронизация версий до `0.0.182`.
+
 ## 0.0.181
 - **Фундамент Porfiriy 2.0: SQLite DB v2, Пользователи, Реестр плагинов / MCP и Web UI (`backend/db.py`, `backend/plugin_registry.py`, `web_server.py`, `index.html`, `app.js`)**:
   - Добавлена единая локальная SQLite БД (`/data/porfiriy.db`, режим WAL + FTS5) с таблицами `users`, `user_channels`, `tool_providers` (`builtin` / `mcp_http` / `mcp_stdio` / `llm_delegate`), `provider_accounts` (с привязкой `owner_user_id`), `memory_items` + `memory_fts`, `memory_cleanup_log`, `scheduled_jobs` и `tool_audit_log`.

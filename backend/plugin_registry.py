@@ -62,6 +62,9 @@ class PluginRegistry:
         self._builtins[pid] = plugin
         logger.info(f"Registered builtin plugin: {pid}")
 
+    def get_builtin(self, provider_id: str) -> Optional[PorfiriyPlugin]:
+        return self._builtins.get((provider_id or "").strip())
+
     def get_active_tool_specs(self) -> List[Dict[str, Any]]:
         specs: List[Dict[str, Any]] = []
         new_map: Dict[str, str] = {}
@@ -203,3 +206,14 @@ class PluginRegistry:
 
 
 plugin_registry_singleton = PluginRegistry(db_singleton)
+
+try:
+    from .plugins import register_builtin_plugins
+except ImportError:
+    try:
+        from plugins import register_builtin_plugins
+    except ImportError:
+        register_builtin_plugins = None
+
+if register_builtin_plugins:
+    register_builtin_plugins(plugin_registry_singleton)

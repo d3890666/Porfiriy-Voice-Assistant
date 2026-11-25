@@ -35,8 +35,10 @@ except ImportError:
 
 try:
     from .db import db_singleton
+    from .plugins.telegram_bot import TelegramBotPlugin
 except ImportError:
     from db import db_singleton
+    from plugins.telegram_bot import TelegramBotPlugin
 
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
@@ -142,6 +144,7 @@ class WebServer:
         self.app.router.add_get("/api/providers", self.handle_get_providers)
         self.app.router.add_post("/api/providers", self.handle_save_provider)
         self.app.router.add_post("/api/providers/{provider_id}/toggle", self.handle_toggle_provider)
+        self.app.router.add_post("/api/providers/builtin.telegram_bot/test", self.handle_test_telegram_bot)
         self.app.router.add_post("/api/providers/{provider_id}/accounts", self.handle_save_provider_account)
         self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
@@ -1379,5 +1382,43 @@ class WebServer:
         except Exception:
             limit = 50
         return web.json_response({"success": True, "items": db_singleton.list_audit_log(limit=limit)})
+
+    async def handle_test_telegram_bot(self, request):
+        import time as _time
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        target = str((data or {}).get("target") or "denis").strip()
+        text = str(
+            (data or {}).get("text")
+            or "Привет! Это тестовое сообщение от Порфирия 2.0. Канал связи работает штатно."
+        ).strip()
+        title = str((data or {}).get("title") or "Порфирий • Тест связи").strip()
+        provider = db_singleton.get_provider("builtin.telegram_bot", mask_secrets=False)
+        t0 = _time.monotonic()
+        res = await TelegramBotPlugin.send_message(
+            db=db_singleton,
+            provider=provider,
+            ha_api=self.ha_api,
+            target=target,
+            text=text,
+            title=title,
+        )
+        dur_ms = int((_time.monotonic() - t0) * 1000)
+        try:
+            db_singleton.log_tool_call(
+                tool_name="send_to_telegram (test)",
+                provider_id="builtin.telegram_bot",
+                speaker_user_id=target,
+                args_preview=f"target={target}",
+                status="ok" if res.get("status") == "ok" else "error",
+                duration_ms=dur_ms,
+                error=str(res.get("error") or ""),
+            )
+        except Exception:
+            pass
+        ok = res.get("status") == "ok"
+        return web.json_response({"success": ok, **res}, status=200 if ok else 400)
 
 
