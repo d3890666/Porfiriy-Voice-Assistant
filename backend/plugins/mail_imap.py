@@ -347,16 +347,19 @@ class MailImapPlugin(PorfiriyPlugin):
         candidate_uids: List[bytes] = []
 
         if q_clean.isascii():
-            safe_q = q_clean.replace('"', "")
-            try:
-                if since:
-                    typ, data = imap.uid("search", None, "SINCE", since, "TEXT", f'"{safe_q}"')
-                else:
-                    typ, data = imap.uid("search", None, "TEXT", f'"{safe_q}"')
-                if typ == "OK" and data and data[0]:
-                    candidate_uids = data[0].split()[-limit:][::-1]
-            except Exception:
-                candidate_uids = []
+            ascii_words = [w.replace('"', "") for w in re.findall(r"[A-Za-z0-9@._-]+", q_clean) if len(w) >= 2]
+            if ascii_words:
+                try:
+                    criteria: List[str] = []
+                    if since:
+                        criteria.extend(["SINCE", since])
+                    for w in ascii_words[:5]:
+                        criteria.extend(["TEXT", f'"{w}"'])
+                    typ, data = imap.uid("search", None, *criteria)
+                    if typ == "OK" and data and data[0]:
+                        candidate_uids = data[0].split()[-limit:][::-1]
+                except Exception:
+                    candidate_uids = []
 
         if not candidate_uids:
             if since:
@@ -404,10 +407,17 @@ class MailImapPlugin(PorfiriyPlugin):
             q_tokens = [t for t in re.findall(r"[0-9a-zа-яё@._-]+", q_clean.lower()) if len(t) >= 2]
 
             if days is None:
-                # Прогрессивный поиск: сначала последние 30 дней, если пусто — весь ящик
+                # Прогрессивный поиск: сначала последние 30 дней; если меньше limit — добираем из всего ящика
                 candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 30, limit)
-                if not candidate_uids:
-                    candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 0, limit)
+                if len(candidate_uids) < limit:
+                    older_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 0, limit)
+                    seen = set(candidate_uids)
+                    for uid_b in older_uids:
+                        if uid_b not in seen:
+                            candidate_uids.append(uid_b)
+                            seen.add(uid_b)
+                            if len(candidate_uids) >= limit:
+                                break
             else:
                 candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, days, limit)
 
@@ -498,7 +508,7 @@ class MailImapPlugin(PorfiriyPlugin):
                 return {"status": "error", "error": "Укажите поисковый запрос query"}
             raw_days = args.get("days")
             days = max(0, min(int(raw_days), 3650)) if raw_days is not None else None
-            limit = max(1, min(int(args.get("limit") or 8), 15))
+            limit = max(1, min(int(args.get("limit") or 10), 15))
             nested = await asyncio.gather(
                 *(asyncio.to_thread(self._sync_search, acc, query, days, limit) for acc in accounts)
             )
