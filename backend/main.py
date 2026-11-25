@@ -38,6 +38,7 @@ from device_manager import DeviceManager
 from mqtt_discovery import MQTTDiscoveryManager
 from web_server import WebServer
 from wakeword_engine import WakeWordEngine
+from telegram_gateway import TelegramBotGateway
 
 phrase_manager = PhraseManager()
 device_manager = DeviceManager()
@@ -1656,9 +1657,11 @@ async def main():
     phrase_manager.load_from_cache()
     asyncio.create_task(phrase_manager.initialize(options))
     
-    # 0. Запуск динамического обнаружения доступных моделей Gemini и умной очистки памяти
+    # 0. Запуск динамического обнаружения доступных моделей Gemini, умной очистки памяти и шлюза Telegram
     asyncio.create_task(refresh_available_models())
     asyncio.create_task(_memory_cleanup_loop())
+    telegram_gateway = TelegramBotGateway(ha_api_singleton, tool_executor, get_options, device_manager=device_manager)
+    asyncio.create_task(telegram_gateway.start())
 
     # 1. Инициализация серверного WakeWordEngine (openWakeWord ONNX)
     global ww_engine

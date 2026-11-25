@@ -3264,6 +3264,16 @@ function renderBuiltinConfigForm(p) {
             <input type="password" id="cfg-tgbot-token" value="${escapeHtml(cfg.bot_token || '')}" placeholder="123456:ABC-DEF...">
           </div>
         </div>
+        <div style="margin-top:10px; display:flex; gap:16px; flex-wrap:wrap;">
+          <label class="checkbox-badge" style="cursor:pointer;">
+            <input type="checkbox" id="cfg-tgbot-polling" ${cfg.polling_enabled !== false ? 'checked' : ''}>
+            <span>📥 Принимать команды из Telegram (текст и голосовые)</span>
+          </label>
+          <label class="checkbox-badge" style="cursor:pointer;">
+            <input type="checkbox" id="cfg-tgbot-voice-reply" ${cfg.reply_voice_to_voice !== false ? 'checked' : ''}>
+            <span>🎙️ Отвечать голосом на голосовые сообщения</span>
+          </label>
+        </div>
         <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
           <div style="display:flex; gap:8px; align-items:center;">
             <select id="cfg-tgbot-test-target" style="padding:5px 8px; font-size:12px;">${targetOpts}</select>
@@ -3424,6 +3434,10 @@ async function saveBuiltinConfig(providerId) {
     config.mode = document.getElementById('cfg-tgbot-mode')?.value || 'ha_notify';
     config.ha_service = (document.getElementById('cfg-tgbot-service')?.value || '').trim();
     config.bot_token = (document.getElementById('cfg-tgbot-token')?.value || '').trim();
+    const pollEl = document.getElementById('cfg-tgbot-polling');
+    if (pollEl) config.polling_enabled = !!pollEl.checked;
+    const voiceEl = document.getElementById('cfg-tgbot-voice-reply');
+    if (voiceEl) config.reply_voice_to_voice = !!voiceEl.checked;
   } else if (providerId === 'builtin.memory') {
     config.auto_cleanup_days = parseInt(document.getElementById('cfg-mem-cleanup')?.value || '30', 10);
     config.archive_days = parseInt(document.getElementById('cfg-mem-archive')?.value || '14', 10);

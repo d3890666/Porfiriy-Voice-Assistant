@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.184
+- **Двусторонний шлюз Telegram (текст и голосовые команды) (`backend/telegram_gateway.py`, `backend/main.py`, `Dockerfile`, `app.js`)**:
+  - Добавлен `TelegramBotGateway` (Long Polling `getUpdates`), обрабатывающий текстовые и голосовые (`.ogg`/Opus -> `ffmpeg` -> 16kHz WAV -> Gemini Live API -> текст и `sendVoice` 24kHz PCM16 -> Opus) команды строго через выбранную модель Gemini Live API с полной поддержкой всех инструментов (умный дом, музыка, таймеры, память, списки, плагины).
+  - Белый список чатов: сообщения принимаются **только** от `telegram_chat_id` активных жильцов и общего чата дома (`user_channels`), посторонние чаты игнорируются; в семейном чате автор определяется по `from.id`.
+  - Контекстная маршрутизация ответа: по умолчанию ответ возвращается в тот же чат, откуда пришёл запрос; отправка в другой чат выполняется через `send_to_telegram` по явному запросу.
+  - В `Dockerfile` добавлен `ffmpeg`, в UI добавлены опции `polling_enabled` и `reply_voice_to_voice`.
+- Синхронизация версий до `0.0.184`.
+
 ## 0.0.183
 - **Плагин `builtin.memory`: долговременная память, списки и умная очистка (`backend/db.py`, `backend/plugins/memory.py`, `backend/main.py`, `web_server.py`, `index.html`, `app.js`)**:
   - Добавлены инструменты Gemini Live: `remember_info` (факты, предпочтения, заметки с дедупликацией и TTL), `recall_memory` (поиск по `FTS5` с поддержкой русской морфологии/префиксов и `py_lower`), `manage_list` (`get`/`add`/`done`/`clear`/`lists` для покупок и дел) и `forget_memory`.
