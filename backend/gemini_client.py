@@ -4,7 +4,45 @@ import aiohttp
 from google import genai
 from google.genai import types
 
+try:
+    from .plugin_registry import plugin_registry_singleton
+except ImportError:
+    try:
+        from plugin_registry import plugin_registry_singleton
+    except ImportError:
+        plugin_registry_singleton = None
+
 logger = logging.getLogger(__name__)
+
+
+def _json_schema_to_genai(schema_dict: Dict[str, Any]) -> types.Schema:
+    """Конвертирует JSON Schema словарь в types.Schema для FunctionDeclaration."""
+    type_map = {
+        "OBJECT": types.Type.OBJECT,
+        "STRING": types.Type.STRING,
+        "INTEGER": types.Type.INTEGER,
+        "NUMBER": types.Type.NUMBER,
+        "BOOLEAN": types.Type.BOOLEAN,
+        "ARRAY": types.Type.ARRAY,
+    }
+    raw_type = str(schema_dict.get("type") or "STRING").upper()
+    g_type = type_map.get(raw_type, types.Type.STRING)
+    kwargs: Dict[str, Any] = {"type": g_type}
+    if schema_dict.get("description"):
+        kwargs["description"] = str(schema_dict["description"])
+    if schema_dict.get("enum"):
+        kwargs["enum"] = [str(x) for x in schema_dict["enum"]]
+    if raw_type == "OBJECT" and isinstance(schema_dict.get("properties"), dict):
+        kwargs["properties"] = {
+            k: _json_schema_to_genai(v)
+            for k, v in schema_dict["properties"].items()
+            if isinstance(v, dict)
+        }
+        if schema_dict.get("required"):
+            kwargs["required"] = list(schema_dict["required"])
+    if raw_type == "ARRAY" and isinstance(schema_dict.get("items"), dict):
+        kwargs["items"] = _json_schema_to_genai(schema_dict["items"])
+    return types.Schema(**kwargs)
 
 DEFAULT_LIVE_MODELS: List[Dict[str, Any]] = [
     {"id": "models/gemini-3.1-flash-live-preview", "name": "Gemini 3.1 Flash Live Preview (Новейшая)", "is_live": True},
@@ -238,7 +276,27 @@ class GeminiProxyClient:
             )
         )
 
-        tool_args = {"function_declarations": [ha_tool, get_state_tool, search_music_tool, play_music_tool, schedule_action_tool, manage_timers_tool]}
+        base_decls = [ha_tool, get_state_tool, search_music_tool, play_music_tool, schedule_action_tool, manage_timers_tool]
+        declared_names = {d.name for d in base_decls}
+        if plugin_registry_singleton:
+            try:
+                for spec in plugin_registry_singleton.get_active_tool_specs():
+                    t_name = (spec.get("name") or "").strip()
+                    if not t_name or t_name in declared_names:
+                        continue
+                    params_dict = spec.get("parameters") or {"type": "OBJECT", "properties": {}}
+                    base_decls.append(
+                        _make_decl(
+                            name=t_name,
+                            description=spec.get("description") or "",
+                            parameters=_json_schema_to_genai(params_dict),
+                        )
+                    )
+                    declared_names.add(t_name)
+            except Exception as e:
+                logger.warning(f"Failed to attach plugin tool declarations: {e}")
+
+        tool_args = {"function_declarations": base_decls}
         if self.enable_google_search:
             tool_args["google_search"] = types.GoogleSearch()
             

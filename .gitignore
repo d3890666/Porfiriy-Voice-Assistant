@@ -24,6 +24,9 @@ logs/
 # HA Add-on specific
 data/
 options.json
+*.db
+*.db-wal
+*.db-shm
 
 # Wake word test scripts (not for production)
 detect_from_microphone.py

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.180">
+  <link rel="stylesheet" href="static/style.css?v=0.0.181">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.158</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.181</span></p>
         </div>
       </div>
       
@@ -49,6 +49,14 @@
       <button class="nav-tab" data-tab="tab-brain">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.3 2 6.1 5 7.4V20a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2.6c3-1.3 5-4.1 5-7.4a8 8 0 0 0-8-8z"/></svg>
         Мозг & Вейкворд
+      </button>
+      <button class="nav-tab" data-tab="tab-users">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Пользователи
+      </button>
+      <button class="nav-tab" data-tab="tab-plugins">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/></svg>
+        Плагины
       </button>
     </nav>
 
@@ -846,6 +854,97 @@ PING:
         </form>
       </div>
     </main>
+
+    <!-- Вкладка 4: Пользователи и каналы связи -->
+    <main id="tab-users" class="tab-content">
+      <div class="card p2-section-card">
+        <div class="p2-section-header">
+          <div>
+            <h2>🏠 Общий чат дома (Telegram)</h2>
+            <p class="section-desc" style="margin-bottom: 0;">Сюда Порфирий отправляет общие списки покупок, рецепты «для всех» и общедомовые уведомления.</p>
+          </div>
+        </div>
+        <div class="p2-inline-form">
+          <div class="form-group" style="flex: 1; margin: 0;">
+            <label for="family-tg-chat-id">Telegram Chat ID общего чата</label>
+            <input type="text" id="family-tg-chat-id" placeholder="-1001234567890 или chat_id группы">
+          </div>
+          <button type="button" class="btn btn-primary" onclick="saveFamilyChannels()" style="align-self: flex-end;">
+            💾 Сохранить
+          </button>
+        </div>
+      </div>
+
+      <div class="toolbar" style="margin-top: 20px;">
+        <div>
+          <h2 style="margin: 0;">👥 Жильцы дома</h2>
+          <p class="section-desc" style="margin: 4px 0 0;">Карточки жильцов автоматически формируют промпт распознавания голоса/пола для Gemini Live и задают личные каналы отправки.</p>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn btn-primary" onclick="openUserModal()">+ Добавить пользователя</button>
+          <button type="button" class="btn btn-secondary" onclick="fetchUsers()">Обновить</button>
+        </div>
+      </div>
+
+      <div id="users-grid" class="users-grid">
+        <div class="empty-state"><p>Загрузка пользователей...</p></div>
+      </div>
+
+      <div class="p2-info-banner">
+        💡 <strong>Как устроен доступ:</strong> почта, Telegram Userbot и другие аккаунты привязываются к жильцам во вкладке <strong>«Плагины»</strong>. Все жильцы дома имеют полный доступ к общим и личным ресурсам друг друга (например, Денис может попросить продиктовать код из почты Светы).
+      </div>
+    </main>
+
+    <!-- Вкладка 5: Плагины, MCP-серверы и Инструменты -->
+    <main id="tab-plugins" class="tab-content">
+      <div class="toolbar">
+        <div>
+          <h2 style="margin: 0;">🧩 Встроенные плагины</h2>
+          <p class="section-desc" style="margin: 4px 0 0;">Включайте нужные возможности и привязывайте аккаунты с указанием владельца («Дом» или конкретный жилец).</p>
+        </div>
+        <button type="button" class="btn btn-secondary" onclick="fetchProviders()">Обновить</button>
+      </div>
+
+      <div id="builtin-plugins-list" class="plugins-list">
+        <div class="empty-state"><p>Загрузка плагинов...</p></div>
+      </div>
+
+      <div class="toolbar" style="margin-top: 28px;">
+        <div>
+          <h2 style="margin: 0;">🌐 Внешние MCP-серверы и LLM-делегаты</h2>
+          <p class="section-desc" style="margin: 4px 0 0;">Подключение сторонних инструментов по протоколу MCP (HTTP / Stdio) и делегирование сложных задач внешним LLM.</p>
+        </div>
+        <button type="button" class="btn btn-primary" onclick="openExternalProviderModal()">+ Добавить MCP / LLM</button>
+      </div>
+
+      <div id="external-providers-list" class="plugins-list">
+        <div class="empty-state"><p>Внешние провайдеры пока не добавлены.</p></div>
+      </div>
+
+      <details id="tools-audit-details" class="card p2-audit-card" style="margin-top: 28px;">
+        <summary class="p2-audit-summary">
+          <span>📜 Журнал вызовов инструментов (последние 50)</span>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="event.preventDefault(); fetchToolsAudit();">🔄 Обновить</button>
+        </summary>
+        <div class="p2-audit-table-wrap">
+          <table class="p2-audit-table">
+            <thead>
+              <tr>
+                <th>Время</th>
+                <th>Инструмент</th>
+                <th>Провайдер</th>
+                <th>Статус</th>
+                <th>мс</th>
+                <th>Аргументы / Ошибка</th>
+              </tr>
+            </thead>
+            <tbody id="tools-audit-body">
+              <tr><td colspan="6" style="text-align:center; color:#8b949e;">Нажмите «Обновить» для загрузки журнала</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </main>
   </div>
 
   <!-- Модальное окно: Добавление Яндекс Станции -->
@@ -1008,8 +1107,127 @@ PING:
     </div>
   </div>
 
+  <!-- Modal: Редактирование / Добавление пользователя -->
+  <div id="modal-user-edit" class="modal-backdrop p2-modal-backdrop" style="display: none;">
+    <div class="p2-modal-dialog">
+      <div class="p2-modal-header">
+        <h3 id="user-modal-title">👤 Новый пользователь</h3>
+        <button type="button" class="p2-modal-close" onclick="closeUserModal()">×</button>
+      </div>
+      <div class="p2-modal-body">
+        <input type="hidden" id="user-edit-id">
+        <div class="form-group" style="margin: 0;">
+          <label for="user-edit-name">Имя</label>
+          <input type="text" id="user-edit-name" placeholder="Например: Денис">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="user-edit-gender">Пол (для определения голоса и грамматического рода)</label>
+          <select id="user-edit-gender">
+            <option value="male">♂ Мужской</option>
+            <option value="female">♀ Женский</option>
+            <option value="unknown">• Не указан</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="user-edit-voice">Голосовые приметы</label>
+          <input type="text" id="user-edit-voice" placeholder="Например: мужской голос, низкий тембр">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="user-edit-persona">Заметки и контекст для Порфирия</label>
+          <textarea id="user-edit-persona" rows="2" placeholder="Например: хозяин дома, IT-разработчик"></textarea>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="user-edit-tg">Личный Telegram Chat ID (куда слать рецепты/ссылки)</label>
+          <input type="text" id="user-edit-tg" placeholder="Например: 123456789">
+        </div>
+      </div>
+      <div class="p2-modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeUserModal()">Отмена</button>
+        <button type="button" class="btn btn-primary" onclick="submitUserModal()">💾 Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Добавление / Редактирование аккаунта плагина -->
+  <div id="modal-provider-account" class="modal-backdrop p2-modal-backdrop" style="display: none;">
+    <div class="p2-modal-dialog">
+      <div class="p2-modal-header">
+        <h3 id="acc-modal-title">🔑 Подключить аккаунт</h3>
+        <button type="button" class="p2-modal-close" onclick="closeProviderAccountModal()">×</button>
+      </div>
+      <div class="p2-modal-body">
+        <input type="hidden" id="acc-provider-id">
+        <input type="hidden" id="acc-edit-id">
+        <div class="form-group" style="margin: 0;">
+          <label for="acc-label">Название аккаунта</label>
+          <input type="text" id="acc-label" placeholder="Например: Яндекс Почта Светы">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="acc-owner">Владелец</label>
+          <select id="acc-owner">
+            <option value="">🏠 Общий (Дом)</option>
+          </select>
+          <small class="field-hint">Определяет контекст по умолчанию («моя почта»). Доступ открыт всем жильцам дома.</small>
+        </div>
+        <div id="acc-creds-fields" style="display: flex; flex-direction: column; gap: 12px;"></div>
+      </div>
+      <div class="p2-modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeProviderAccountModal()">Отмена</button>
+        <button type="button" class="btn btn-primary" onclick="submitProviderAccountModal()">💾 Сохранить аккаунт</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Добавление внешнего MCP-сервера / LLM-делегата -->
+  <div id="modal-external-provider" class="modal-backdrop p2-modal-backdrop" style="display: none;">
+    <div class="p2-modal-dialog">
+      <div class="p2-modal-header">
+        <h3>🌐 Добавить MCP-сервер или LLM-делегат</h3>
+        <button type="button" class="p2-modal-close" onclick="closeExternalProviderModal()">×</button>
+      </div>
+      <div class="p2-modal-body">
+        <div class="form-group" style="margin: 0;">
+          <label for="ext-prov-kind">Тип провайдера</label>
+          <select id="ext-prov-kind" onchange="updateExternalProviderPlaceholders()">
+            <option value="mcp_http">🌐 MCP HTTP (SSE / Streamable HTTP)</option>
+            <option value="mcp_stdio">💻 MCP Stdio (локальный процесс)</option>
+            <option value="llm_delegate">🧠 LLM Делегат (OpenAI / Gemini / др.)</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="ext-prov-id">Идентификатор (опционально)</label>
+          <input type="text" id="ext-prov-id" placeholder="Например: mcp.ozon">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="ext-prov-title">Название</label>
+          <input type="text" id="ext-prov-title" placeholder="Например: Ozon MCP">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="ext-prov-desc">Описание</label>
+          <input type="text" id="ext-prov-desc" placeholder="Поиск товаров и отслеживание заказов">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label id="ext-prov-endpoint-label" for="ext-prov-endpoint">URL сервера</label>
+          <input type="text" id="ext-prov-endpoint" placeholder="https://mcp.example.com/sse">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="ext-prov-token">API-ключ / Bearer Token (опционально)</label>
+          <input type="password" id="ext-prov-token" placeholder="Оставьте пустым, если не требуется">
+        </div>
+        <div class="form-group" style="margin: 0;">
+          <label for="ext-prov-whitelist">Whitelist инструментов (через запятую, опционально)</label>
+          <input type="text" id="ext-prov-whitelist" placeholder="Оставьте пустым, чтобы разрешить все инструменты">
+        </div>
+      </div>
+      <div class="p2-modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeExternalProviderModal()">Отмена</button>
+        <button type="button" class="btn btn-primary" onclick="submitExternalProviderModal()">💾 Добавить</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.180"></script>
+  <script src="static/app.js?v=0.0.181"></script>
 </body>
 </html>

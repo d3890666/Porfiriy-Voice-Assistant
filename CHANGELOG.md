@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.181
+- **Фундамент Porfiriy 2.0: SQLite DB v2, Пользователи, Реестр плагинов / MCP и Web UI (`backend/db.py`, `backend/plugin_registry.py`, `web_server.py`, `index.html`, `app.js`)**:
+  - Добавлена единая локальная SQLite БД (`/data/porfiriy.db`, режим WAL + FTS5) с таблицами `users`, `user_channels`, `tool_providers` (`builtin` / `mcp_http` / `mcp_stdio` / `llm_delegate`), `provider_accounts` (с привязкой `owner_user_id`), `memory_items` + `memory_fts`, `memory_cleanup_log`, `scheduled_jobs` и `tool_audit_log`.
+  - Реализована автогенерация секции жильцов (`db.build_users_prompt_section()`) в `prompt_builder.py` для определения говорящего по голосу/полу и передачи контекста семьи в Gemini Live API.
+  - Создан `PluginRegistry` и базовый `PorfiriyPlugin` с интеграцией в `gemini_client.py` (с сохранением `behavior=BLOCKING` на `gemini-3.8*`) и `tool_executor.py`.
+  - Добавлены новые вкладки Web UI **`👥 Пользователи`** (карточки жильцов + общий чат дома в Telegram) и **`🧩 Плагины`** (управление встроенными плагинами, аккаунтами с выбором владельца, внешними MCP-серверами / LLM-делегатами и журналом вызовов).
+- Синхронизация версий до `0.0.181`.
+
 ## 0.0.180
 - **Галка `💬 Follow-up (диалог)` (по умолчанию выкл.) и кнопка `⏹ Стоп` на карточке Станции (`main.py`, `web_server.py`, `porfiriy_stationd.py`, `app.js`)**:
   - 5-секундное окно продолжения беседы теперь управляется галкой `follow_up_enabled` на карточке Станции (по умолчанию выключено, чтобы колонка не завязывала беседу с телевизором).

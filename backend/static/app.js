@@ -45,6 +45,13 @@ function setupTabs() {
             stopWwMonitorPolling();
           }
         }
+        if (tabId === 'tab-users') {
+          if (typeof fetchUsers === 'function') fetchUsers();
+        } else if (tabId === 'tab-plugins') {
+          if (typeof fetchProviders === 'function') fetchProviders();
+          if (typeof fetchUsers === 'function' && (!window._porfiriyUsersLoaded)) fetchUsers();
+          if (typeof fetchToolsAudit === 'function') fetchToolsAudit();
+        }
       }
     });
   });
@@ -3039,3 +3046,664 @@ async function deleteStationWifi(mac, ssid) {
   }
 }
 window.deleteStationWifi = deleteStationWifi;
+
+// =========================================================================
+// Porfiriy 2.0: Пользователи, Плагины / MCP и Журнал вызовов инструментов
+// =========================================================================
+let porfiriyUsers = [];
+let porfiriyFamilyChannels = {};
+let porfiriyProviders = [];
+window._porfiriyUsersLoaded = false;
+
+async function fetchUsers() {
+  try {
+    const res = await fetch(`${API_BASE}/api/users`);
+    if (!res.ok) return;
+    const data = await res.json();
+    porfiriyUsers = data.users || [];
+    porfiriyFamilyChannels = data.family_channels || {};
+    window._porfiriyUsersLoaded = true;
+    const famInput = document.getElementById('family-tg-chat-id');
+    if (famInput) famInput.value = porfiriyFamilyChannels.telegram_chat || '';
+    renderUsersGrid();
+  } catch (e) {
+    console.error('Error fetching users:', e);
+  }
+}
+window.fetchUsers = fetchUsers;
+
+function renderUsersGrid() {
+  const grid = document.getElementById('users-grid');
+  if (!grid) return;
+  if (!porfiriyUsers.length) {
+    grid.innerHTML = '<div class="empty-state"><p>Пользователей пока нет. Нажмите «+ Добавить пользователя».</p></div>';
+    return;
+  }
+  const genderMap = {
+    male: { label: '♂ Мужской', cls: 'gender-male' },
+    female: { label: '♀ Женский', cls: 'gender-female' },
+    unknown: { label: '• Не указан', cls: 'gender-unknown' },
+  };
+  grid.innerHTML = porfiriyUsers.map(u => {
+    const g = genderMap[u.gender] || genderMap.unknown;
+    const tgText = u.telegram_chat_id
+      ? `<span class="p2-chip p2-chip-ok">✈️ TG: <code>${escapeHtml(u.telegram_chat_id)}</code></span>`
+      : `<span class="p2-chip p2-chip-muted">✈️ TG не задан</span>`;
+    return `
+      <div class="card user-card">
+        <div class="user-card-head">
+          <div>
+            <div class="user-card-name">${escapeHtml(u.name)} <code class="user-card-id">${escapeHtml(u.id)}</code></div>
+            <span class="gender-badge ${g.cls}">${g.label}</span>
+          </div>
+          <div style="display:flex; gap:6px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openUserModal('${escapeHtml(u.id)}')" title="Редактировать">✏️</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="deleteUser('${escapeHtml(u.id)}', '${escapeHtml(u.name).replace(/'/g, "\\'")}')" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить">🗑️</button>
+          </div>
+        </div>
+        ${u.voice_notes ? `<div class="user-card-meta"><strong>🎙️ Голос:</strong> ${escapeHtml(u.voice_notes)}</div>` : ''}
+        ${u.persona_notes ? `<div class="user-card-meta"><strong>📝 Заметки:</strong> ${escapeHtml(u.persona_notes)}</div>` : ''}
+        <div class="user-card-chips">
+          ${tgText}
+          <span class="p2-chip">🔌 Аккаунтов: ${Number(u.linked_accounts_count || 0)}</span>
+          <span class="p2-chip">🧠 В памяти: ${Number(u.memory_items_count || 0)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function saveFamilyChannels() {
+  const tgVal = (document.getElementById('family-tg-chat-id')?.value || '').trim();
+  try {
+    const res = await fetch(`${API_BASE}/api/family/channels`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegram_chat: tgVal })
+    });
+    const data = await res.json();
+    if (data.success) {
+      porfiriyFamilyChannels = data.family_channels || {};
+      showToast('Общий чат дома сохранён');
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.saveFamilyChannels = saveFamilyChannels;
+
+function openUserModal(userId) {
+  const modal = document.getElementById('modal-user-edit');
+  if (!modal) return;
+  const existing = userId ? porfiriyUsers.find(u => u.id === userId) : null;
+  document.getElementById('user-modal-title').textContent = existing ? `✏️ Редактировать: ${existing.name}` : '👤 Новый пользователь';
+  document.getElementById('user-edit-id').value = existing ? existing.id : '';
+  document.getElementById('user-edit-name').value = existing ? existing.name : '';
+  document.getElementById('user-edit-gender').value = existing ? (existing.gender || 'unknown') : 'male';
+  document.getElementById('user-edit-voice').value = existing ? (existing.voice_notes || '') : '';
+  document.getElementById('user-edit-persona').value = existing ? (existing.persona_notes || '') : '';
+  document.getElementById('user-edit-tg').value = existing ? (existing.telegram_chat_id || '') : '';
+  modal.style.display = 'flex';
+}
+window.openUserModal = openUserModal;
+
+function closeUserModal() {
+  const modal = document.getElementById('modal-user-edit');
+  if (modal) modal.style.display = 'none';
+}
+window.closeUserModal = closeUserModal;
+
+async function submitUserModal() {
+  const id = (document.getElementById('user-edit-id')?.value || '').trim();
+  const name = (document.getElementById('user-edit-name')?.value || '').trim();
+  const gender = document.getElementById('user-edit-gender')?.value || 'unknown';
+  const voice_notes = (document.getElementById('user-edit-voice')?.value || '').trim();
+  const persona_notes = (document.getElementById('user-edit-persona')?.value || '').trim();
+  const telegram_chat_id = (document.getElementById('user-edit-tg')?.value || '').trim();
+  if (!name) {
+    showToast('Укажите имя пользователя', true);
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id || undefined, name, gender, voice_notes, persona_notes, telegram_chat_id })
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeUserModal();
+      showToast(`Пользователь «${name}» сохранён`);
+      fetchUsers();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.submitUserModal = submitUserModal;
+
+async function deleteUser(userId, userName) {
+  if (!confirm(`Удалить пользователя «${userName}»? Привязанные аккаунты и память станут общими (Дом).`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Пользователь «${userName}» удалён`);
+      fetchUsers();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.deleteUser = deleteUser;
+
+// -------------------------------------------------------------------------
+// Plugins & MCP Providers
+// -------------------------------------------------------------------------
+async function fetchProviders() {
+  try {
+    const res = await fetch(`${API_BASE}/api/providers`);
+    if (!res.ok) return;
+    const data = await res.json();
+    porfiriyProviders = data.providers || [];
+    renderProviders();
+  } catch (e) {
+    console.error('Error fetching providers:', e);
+  }
+}
+window.fetchProviders = fetchProviders;
+
+function renderProviders() {
+  const builtinEl = document.getElementById('builtin-plugins-list');
+  const extEl = document.getElementById('external-providers-list');
+  if (!builtinEl || !extEl) return;
+
+  const builtins = porfiriyProviders.filter(p => p.kind === 'builtin');
+  const externals = porfiriyProviders.filter(p => p.kind !== 'builtin');
+
+  builtinEl.innerHTML = builtins.length
+    ? builtins.map(renderBuiltinPluginCard).join('')
+    : '<div class="empty-state"><p>Встроенные плагины не найдены.</p></div>';
+
+  extEl.innerHTML = externals.length
+    ? externals.map(renderExternalProviderCard).join('')
+    : '<div class="empty-state"><p>Внешние MCP-серверы и LLM-делегаты пока не добавлены.</p></div>';
+}
+
+function renderBuiltinConfigForm(p) {
+  const cfg = p.config || {};
+  const pid = escapeHtml(p.id);
+  if (p.id === 'builtin.telegram_bot') {
+    const mode = cfg.mode || 'ha_notify';
+    return `
+      <div class="plugin-config-box">
+        <div class="p2-config-grid">
+          <div class="form-group" style="margin:0;">
+            <label>Режим отправки</label>
+            <select id="cfg-tgbot-mode">
+              <option value="ha_notify" ${mode === 'ha_notify' ? 'selected' : ''}>Home Assistant (notify.*)</option>
+              <option value="direct_bot" ${mode === 'direct_bot' ? 'selected' : ''}>Прямой Telegram Bot API</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>HA сервис (для HA notify)</label>
+            <input type="text" id="cfg-tgbot-service" value="${escapeHtml(cfg.ha_service || 'notify.telegram')}" placeholder="notify.telegram">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Bot Token (для прямого API)</label>
+            <input type="password" id="cfg-tgbot-token" value="${escapeHtml(cfg.bot_token || '')}" placeholder="123456:ABC-DEF...">
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить настройки бота</button>
+        </div>
+      </div>
+    `;
+  }
+  if (p.id === 'builtin.memory') {
+    return `
+      <div class="plugin-config-box">
+        <div class="p2-config-grid">
+          <div class="form-group" style="margin:0;">
+            <label>Авто-очистка (дней)</label>
+            <input type="number" id="cfg-mem-cleanup" value="${Number(cfg.auto_cleanup_days ?? 30)}" min="1" max="365">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Архивация выполненного (дней)</label>
+            <input type="number" id="cfg-mem-archive" value="${Number(cfg.archive_days ?? 14)}" min="1" max="365">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Лимит активных записей</label>
+            <input type="number" id="cfg-mem-limit" value="${Number(cfg.max_active_items ?? 500)}" min="50" max="5000">
+          </div>
+        </div>
+        <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить лимиты</button>
+        </div>
+      </div>
+    `;
+  }
+  return '';
+}
+
+function renderAccountsBlock(p) {
+  if (p.id !== 'builtin.mail_imap' && p.id !== 'builtin.telegram_userbot') return '';
+  const pid = escapeHtml(p.id);
+  const accounts = p.accounts || [];
+  const rows = accounts.length
+    ? accounts.map(a => {
+        const ownerBadge = a.owner_user_id
+          ? `<span class="owner-badge owner-personal">👤 ${escapeHtml(a.owner_user_name)}</span>`
+          : `<span class="owner-badge owner-home">🏠 Общий (Дом)</span>`;
+        const hint = a.credentials?.email || a.credentials?.phone || a.credentials?.host || '';
+        return `
+          <div class="account-row">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <strong>${escapeHtml(a.label)}</strong>
+              ${ownerBadge}
+              ${hint ? `<span style="font-size:12px; color:#8b949e; font-family:monospace;">${escapeHtml(hint)}</span>` : ''}
+            </div>
+            <div style="display:flex; gap:6px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openProviderAccountModal('${pid}', '${escapeHtml(a.id)}')" title="Редактировать">✏️</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="deleteProviderAccount('${escapeHtml(a.id)}', '${escapeHtml(a.label).replace(/'/g, "\\'")}')" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить">🗑️</button>
+            </div>
+          </div>
+        `;
+      }).join('')
+    : '<div style="font-size:12px; color:#8b949e;">Аккаунты пока не подключены.</div>';
+
+  return `
+    <div class="plugin-accounts-box">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <span style="font-size:12px; font-weight:600; color:#c9d1d9;">Подключённые аккаунты (${accounts.length})</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="openProviderAccountModal('${pid}')">+ Добавить аккаунт</button>
+      </div>
+      <div class="accounts-list">${rows}</div>
+    </div>
+  `;
+}
+
+function renderBuiltinPluginCard(p) {
+  const pid = escapeHtml(p.id);
+  return `
+    <div class="card plugin-card ${p.enabled ? 'plugin-enabled' : ''}">
+      <div class="plugin-card-head">
+        <div>
+          <div class="plugin-title">${escapeHtml(p.title)} <code class="user-card-id">${pid}</code></div>
+          <div class="plugin-desc">${escapeHtml(p.description || '')}</div>
+        </div>
+        <label class="switch" style="margin:0; flex-shrink:0;" title="Включить / выключить плагин">
+          <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="toggleProvider('${pid}', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      ${renderBuiltinConfigForm(p)}
+      ${renderAccountsBlock(p)}
+    </div>
+  `;
+}
+
+function renderExternalProviderCard(p) {
+  const pid = escapeHtml(p.id);
+  const cfg = p.config || {};
+  const kindLabels = {
+    mcp_http: '🌐 MCP HTTP',
+    mcp_stdio: '💻 MCP Stdio',
+    llm_delegate: '🧠 LLM Делегат',
+  };
+  const endpoint = cfg.url || cfg.command || '';
+  const wl = Array.isArray(cfg.enabled_tools) ? cfg.enabled_tools.join(', ') : (cfg.enabled_tools || '');
+  return `
+    <div class="card plugin-card ${p.enabled ? 'plugin-enabled' : ''}">
+      <div class="plugin-card-head">
+        <div>
+          <div class="plugin-title">
+            <span class="p2-kind-badge">${kindLabels[p.kind] || escapeHtml(p.kind)}</span>
+            ${escapeHtml(p.title)} <code class="user-card-id">${pid}</code>
+          </div>
+          ${p.description ? `<div class="plugin-desc">${escapeHtml(p.description)}</div>` : ''}
+          ${endpoint ? `<div style="font-size:12px; color:#94a3b8; font-family:monospace; margin-top:4px;">${escapeHtml(endpoint)}</div>` : ''}
+          ${wl ? `<div style="font-size:11px; color:#8b949e; margin-top:4px;">Whitelist: <code>${escapeHtml(wl)}</code></div>` : ''}
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
+          <label class="switch" style="margin:0;">
+            <input type="checkbox" ${p.enabled ? 'checked' : ''} onchange="toggleProvider('${pid}', this.checked)">
+            <span class="slider"></span>
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="deleteProvider('${pid}', '${escapeHtml(p.title).replace(/'/g, "\\'")}')" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить провайдер">🗑️</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function toggleProvider(providerId, enabled) {
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/${encodeURIComponent(providerId)}/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enabled })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(enabled ? 'Провайдер включён' : 'Провайдер отключён');
+      fetchProviders();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+      fetchProviders();
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.toggleProvider = toggleProvider;
+
+async function saveBuiltinConfig(providerId) {
+  const prov = porfiriyProviders.find(p => p.id === providerId);
+  if (!prov) return;
+  let config = { ...(prov.config || {}) };
+  if (providerId === 'builtin.telegram_bot') {
+    config.mode = document.getElementById('cfg-tgbot-mode')?.value || 'ha_notify';
+    config.ha_service = (document.getElementById('cfg-tgbot-service')?.value || '').trim();
+    config.bot_token = (document.getElementById('cfg-tgbot-token')?.value || '').trim();
+  } else if (providerId === 'builtin.memory') {
+    config.auto_cleanup_days = parseInt(document.getElementById('cfg-mem-cleanup')?.value || '30', 10);
+    config.archive_days = parseInt(document.getElementById('cfg-mem-archive')?.value || '14', 10);
+    config.max_active_items = parseInt(document.getElementById('cfg-mem-limit')?.value || '500', 10);
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/providers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: prov.id,
+        kind: prov.kind,
+        title: prov.title,
+        description: prov.description,
+        enabled: prov.enabled,
+        config
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Настройки плагина сохранены');
+      fetchProviders();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.saveBuiltinConfig = saveBuiltinConfig;
+
+async function deleteProvider(providerId, title) {
+  if (!confirm(`Удалить провайдер «${title}»?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/${encodeURIComponent(providerId)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Провайдер «${title}» удалён`);
+      fetchProviders();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.deleteProvider = deleteProvider;
+
+function openProviderAccountModal(providerId, accountId) {
+  const modal = document.getElementById('modal-provider-account');
+  if (!modal) return;
+  const prov = porfiriyProviders.find(p => p.id === providerId);
+  const acc = (prov && accountId) ? (prov.accounts || []).find(a => a.id === accountId) : null;
+  document.getElementById('acc-provider-id').value = providerId;
+  document.getElementById('acc-edit-id').value = acc ? acc.id : '';
+  document.getElementById('acc-modal-title').textContent = acc ? `✏️ Аккаунт: ${acc.label}` : `🔑 Добавить аккаунт (${prov ? prov.title : providerId})`;
+  document.getElementById('acc-label').value = acc ? acc.label : '';
+
+  const ownerSel = document.getElementById('acc-owner');
+  ownerSel.innerHTML = `<option value="">🏠 Общий (Дом)</option>` + porfiriyUsers.map(u =>
+    `<option value="${escapeHtml(u.id)}">👤 ${escapeHtml(u.name)}</option>`
+  ).join('');
+  ownerSel.value = (acc && acc.owner_user_id) ? acc.owner_user_id : '';
+
+  const creds = (acc && acc.credentials) || {};
+  const fieldsEl = document.getElementById('acc-creds-fields');
+  if (providerId === 'builtin.mail_imap') {
+    fieldsEl.innerHTML = `
+      <div class="p2-config-grid" style="grid-template-columns: 2fr 1fr;">
+        <div class="form-group" style="margin:0;">
+          <label>IMAP сервер</label>
+          <input type="text" id="acc-cred-host" value="${escapeHtml(creds.host || 'imap.yandex.ru')}" placeholder="imap.yandex.ru">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label>Порт (SSL)</label>
+          <input type="number" id="acc-cred-port" value="${Number(creds.port || 993)}">
+        </div>
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Email / Логин</label>
+        <input type="text" id="acc-cred-email" value="${escapeHtml(creds.email || '')}" placeholder="name@yandex.ru">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Пароль приложения (App Password)</label>
+        <input type="password" id="acc-cred-password" value="${escapeHtml(creds.password || '')}" placeholder="Пароль приложения IMAP">
+      </div>
+    `;
+  } else if (providerId === 'builtin.telegram_userbot') {
+    fieldsEl.innerHTML = `
+      <div class="form-group" style="margin:0;">
+        <label>Telegram API ID (my.telegram.org)</label>
+        <input type="text" id="acc-cred-api-id" value="${escapeHtml(creds.api_id || '')}" placeholder="12345678">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Telegram API Hash</label>
+        <input type="password" id="acc-cred-api-hash" value="${escapeHtml(creds.api_hash || '')}" placeholder="32-символьный api_hash">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Номер телефона</label>
+        <input type="text" id="acc-cred-phone" value="${escapeHtml(creds.phone || '')}" placeholder="+79991234567">
+      </div>
+    `;
+  } else {
+    fieldsEl.innerHTML = `
+      <div class="form-group" style="margin:0;">
+        <label>API-ключ / Токен</label>
+        <input type="password" id="acc-cred-token" value="${escapeHtml(creds.token || '')}" placeholder="Опционально">
+      </div>
+    `;
+  }
+  modal.style.display = 'flex';
+}
+window.openProviderAccountModal = openProviderAccountModal;
+
+function closeProviderAccountModal() {
+  const modal = document.getElementById('modal-provider-account');
+  if (modal) modal.style.display = 'none';
+}
+window.closeProviderAccountModal = closeProviderAccountModal;
+
+async function submitProviderAccountModal() {
+  const providerId = document.getElementById('acc-provider-id')?.value || '';
+  const accountId = (document.getElementById('acc-edit-id')?.value || '').trim();
+  const label = (document.getElementById('acc-label')?.value || '').trim();
+  const owner_user_id = (document.getElementById('acc-owner')?.value || '').trim() || null;
+  if (!label) {
+    showToast('Укажите название аккаунта', true);
+    return;
+  }
+  let credentials = {};
+  if (providerId === 'builtin.mail_imap') {
+    credentials = {
+      host: (document.getElementById('acc-cred-host')?.value || '').trim(),
+      port: parseInt(document.getElementById('acc-cred-port')?.value || '993', 10),
+      email: (document.getElementById('acc-cred-email')?.value || '').trim(),
+      password: (document.getElementById('acc-cred-password')?.value || '').trim(),
+    };
+  } else if (providerId === 'builtin.telegram_userbot') {
+    credentials = {
+      api_id: (document.getElementById('acc-cred-api-id')?.value || '').trim(),
+      api_hash: (document.getElementById('acc-cred-api-hash')?.value || '').trim(),
+      phone: (document.getElementById('acc-cred-phone')?.value || '').trim(),
+    };
+  } else {
+    credentials = {
+      token: (document.getElementById('acc-cred-token')?.value || '').trim(),
+    };
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/${encodeURIComponent(providerId)}/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: accountId || undefined, label, owner_user_id, credentials })
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeProviderAccountModal();
+      showToast(`Аккаунт «${label}» сохранён`);
+      fetchProviders();
+      fetchUsers();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.submitProviderAccountModal = submitProviderAccountModal;
+
+async function deleteProviderAccount(accountId, label) {
+  if (!confirm(`Удалить аккаунт «${label}»?`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Аккаунт «${label}» удалён`);
+      fetchProviders();
+      fetchUsers();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.deleteProviderAccount = deleteProviderAccount;
+
+function openExternalProviderModal() {
+  const modal = document.getElementById('modal-external-provider');
+  if (!modal) return;
+  document.getElementById('ext-prov-kind').value = 'mcp_http';
+  document.getElementById('ext-prov-id').value = '';
+  document.getElementById('ext-prov-title').value = '';
+  document.getElementById('ext-prov-desc').value = '';
+  document.getElementById('ext-prov-endpoint').value = '';
+  document.getElementById('ext-prov-token').value = '';
+  document.getElementById('ext-prov-whitelist').value = '';
+  updateExternalProviderPlaceholders();
+  modal.style.display = 'flex';
+}
+window.openExternalProviderModal = openExternalProviderModal;
+
+function closeExternalProviderModal() {
+  const modal = document.getElementById('modal-external-provider');
+  if (modal) modal.style.display = 'none';
+}
+window.closeExternalProviderModal = closeExternalProviderModal;
+
+function updateExternalProviderPlaceholders() {
+  const kind = document.getElementById('ext-prov-kind')?.value || 'mcp_http';
+  const lbl = document.getElementById('ext-prov-endpoint-label');
+  const inp = document.getElementById('ext-prov-endpoint');
+  if (!lbl || !inp) return;
+  if (kind === 'mcp_stdio') {
+    lbl.textContent = 'Команда запуска (Stdio)';
+    inp.placeholder = 'npx -y @modelcontextprotocol/server-filesystem /share';
+  } else if (kind === 'llm_delegate') {
+    lbl.textContent = 'Base URL / Модель';
+    inp.placeholder = 'https://api.openai.com/v1';
+  } else {
+    lbl.textContent = 'URL сервера (HTTP/SSE)';
+    inp.placeholder = 'https://mcp.example.com/sse';
+  }
+}
+window.updateExternalProviderPlaceholders = updateExternalProviderPlaceholders;
+
+async function submitExternalProviderModal() {
+  const kind = document.getElementById('ext-prov-kind')?.value || 'mcp_http';
+  const id = (document.getElementById('ext-prov-id')?.value || '').trim();
+  const title = (document.getElementById('ext-prov-title')?.value || '').trim();
+  const description = (document.getElementById('ext-prov-desc')?.value || '').trim();
+  const endpoint = (document.getElementById('ext-prov-endpoint')?.value || '').trim();
+  const api_token = (document.getElementById('ext-prov-token')?.value || '').trim();
+  const wlRaw = (document.getElementById('ext-prov-whitelist')?.value || '').trim();
+  if (!title) {
+    showToast('Укажите название провайдера', true);
+    return;
+  }
+  const enabled_tools = wlRaw ? wlRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const config = kind === 'mcp_stdio'
+    ? { command: endpoint, api_token, enabled_tools }
+    : { url: endpoint, api_token, enabled_tools };
+
+  try {
+    const res = await fetch(`${API_BASE}/api/providers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id || undefined, kind, title, description, enabled: true, config })
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeExternalProviderModal();
+      showToast(`Провайдер «${title}» добавлен`);
+      fetchProviders();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.submitExternalProviderModal = submitExternalProviderModal;
+
+async function fetchToolsAudit() {
+  const body = document.getElementById('tools-audit-body');
+  if (!body) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/tools/audit?limit=50`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#8b949e;">Вызовов инструментов плагинов пока не было.</td></tr>';
+      return;
+    }
+    body.innerHTML = items.map(it => {
+      const ok = it.status === 'ok';
+      const tsShort = (it.ts || '').replace('T', ' ').slice(0, 19);
+      const detail = it.error ? `<span style="color:#f87171;">${escapeHtml(it.error)}</span>` : `<code>${escapeHtml(it.args_preview || '')}</code>`;
+      return `
+        <tr>
+          <td style="white-space:nowrap; font-family:monospace; font-size:11px;">${escapeHtml(tsShort)}</td>
+          <td><code>${escapeHtml(it.tool_name)}</code></td>
+          <td style="font-size:12px; color:#8b949e;">${escapeHtml(it.provider_id || '')}</td>
+          <td><span class="p2-status-pill ${ok ? 'ok' : 'err'}">${escapeHtml(it.status)}</span></td>
+          <td style="font-family:monospace;">${Number(it.duration_ms || 0)}</td>
+          <td style="font-size:11px; max-width:260px; overflow:hidden; text-overflow:ellipsis;">${detail}</td>
+        </tr>
+      `;
+    }).join('');
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" style="color:#f87171;">Ошибка загрузки: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+window.fetchToolsAudit = fetchToolsAudit;

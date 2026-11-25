@@ -33,6 +33,11 @@ try:
 except ImportError:
     from station_ducking import StationDuckingManager
 
+try:
+    from .db import db_singleton
+except ImportError:
+    from db import db_singleton
+
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
         self.device_manager = device_manager
@@ -129,6 +134,18 @@ class WebServer:
         self.app.router.add_get("/api/station/{mac}/wifi", self.handle_station_wifi_get)
         self.app.router.add_post("/api/station/{mac}/wifi", self.handle_station_wifi_save)
         self.app.router.add_delete("/api/station/{mac}/wifi", self.handle_station_wifi_delete)
+        # Пользователи, семейные каналы, плагины/MCP и аудит вызовов (Porfiriy 2.0)
+        self.app.router.add_get("/api/users", self.handle_get_users)
+        self.app.router.add_post("/api/users", self.handle_save_user)
+        self.app.router.add_delete("/api/users/{user_id}", self.handle_delete_user)
+        self.app.router.add_post("/api/family/channels", self.handle_save_family_channels)
+        self.app.router.add_get("/api/providers", self.handle_get_providers)
+        self.app.router.add_post("/api/providers", self.handle_save_provider)
+        self.app.router.add_post("/api/providers/{provider_id}/toggle", self.handle_toggle_provider)
+        self.app.router.add_post("/api/providers/{provider_id}/accounts", self.handle_save_provider_account)
+        self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
+        self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
+        self.app.router.add_get("/api/tools/audit", self.handle_get_tools_audit)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -1215,4 +1232,152 @@ class WebServer:
             return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
         res = await self.quasar_manager.delete_station_wifi_network(ip, ssid=str(data.get("ssid", "")), port=port)
         return web.json_response(res)
+
+    # ------------------------------------------------------------------
+    # Porfiriy 2.0: Пользователи, семейные каналы, плагины/MCP, аудит
+    # ------------------------------------------------------------------
+    async def handle_get_users(self, request):
+        return web.json_response({
+            "success": True,
+            "users": db_singleton.list_users(),
+            "family_channels": db_singleton.get_family_channels(),
+        })
+
+    async def handle_save_user(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            user = db_singleton.upsert_user(
+                user_id=data.get("id"),
+                name=str(data.get("name") or ""),
+                gender=str(data.get("gender") or "unknown"),
+                voice_notes=str(data.get("voice_notes") or ""),
+                persona_notes=str(data.get("persona_notes") or ""),
+                telegram_chat_id=data.get("telegram_chat_id"),
+                is_active=bool(data.get("is_active", True)),
+            )
+            return web.json_response({"success": True, "user": user})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_delete_user(self, request):
+        uid = request.match_info.get("user_id", "").strip()
+        try:
+            deleted = db_singleton.delete_user(uid)
+            if not deleted:
+                return web.json_response({"success": False, "error": "Пользователь не найден"}, status=404)
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_save_family_channels(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            if isinstance(data, dict):
+                for ctype, val in data.items():
+                    if ctype in ("telegram_chat",):
+                        db_singleton.set_family_channel(ctype, str(val or ""), label="Общий чат дома")
+            return web.json_response({"success": True, "family_channels": db_singleton.get_family_channels()})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_get_providers(self, request):
+        return web.json_response({
+            "success": True,
+            "providers": db_singleton.list_providers(mask_secrets=True),
+        })
+
+    async def handle_save_provider(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            prov = db_singleton.upsert_provider(
+                provider_id=data.get("id"),
+                kind=str(data.get("kind") or "mcp_http"),
+                title=str(data.get("title") or ""),
+                description=str(data.get("description") or ""),
+                enabled=data.get("enabled"),
+                config=data.get("config") if isinstance(data.get("config"), dict) else None,
+                cached_tools=data.get("cached_tools") if isinstance(data.get("cached_tools"), list) else None,
+            )
+            return web.json_response({"success": True, "provider": prov})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_toggle_provider(self, request):
+        pid = request.match_info.get("provider_id", "").strip()
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        enabled = bool(data.get("enabled", False))
+        ok = db_singleton.set_provider_enabled(pid, enabled)
+        if not ok:
+            return web.json_response({"success": False, "error": "Провайдер не найден"}, status=404)
+        return web.json_response({"success": True, "enabled": enabled})
+
+    async def handle_delete_provider(self, request):
+        pid = request.match_info.get("provider_id", "").strip()
+        try:
+            deleted = db_singleton.delete_provider(pid)
+            if not deleted:
+                return web.json_response({"success": False, "error": "Провайдер не найден"}, status=404)
+            return web.json_response({"success": True})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_save_provider_account(self, request):
+        pid = request.match_info.get("provider_id", "").strip()
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            owner_raw = data.get("owner_user_id")
+            owner = str(owner_raw).strip() if owner_raw else None
+            acc = db_singleton.upsert_provider_account(
+                provider_id=pid,
+                label=str(data.get("label") or ""),
+                owner_user_id=owner,
+                credentials=data.get("credentials") if isinstance(data.get("credentials"), dict) else {},
+                settings=data.get("settings") if isinstance(data.get("settings"), dict) else {},
+                account_id=data.get("id"),
+                enabled=bool(data.get("enabled", True)),
+            )
+            return web.json_response({"success": True, "account": acc})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_delete_provider_account(self, request):
+        aid = request.match_info.get("account_id", "").strip()
+        try:
+            deleted = db_singleton.delete_provider_account(aid)
+            if not deleted:
+                return web.json_response({"success": False, "error": "Аккаунт не найден"}, status=404)
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_get_tools_audit(self, request):
+        try:
+            limit = int(request.query.get("limit", "50"))
+        except Exception:
+            limit = 50
+        return web.json_response({"success": True, "items": db_singleton.list_audit_log(limit=limit)})
+
 

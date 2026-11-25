@@ -9,6 +9,14 @@ from audio_utils import get_earcon_pcm, is_simple_smarthome_action
 from net_utils import get_device_ip
 from prompt_builder import resolve_target_player
 
+try:
+    from .plugin_registry import plugin_registry_singleton
+except ImportError:
+    try:
+        from plugin_registry import plugin_registry_singleton
+    except ImportError:
+        plugin_registry_singleton = None
+
 tool_logger = logging.getLogger("tools")
 
 
@@ -284,6 +292,22 @@ class ToolExecutor:
                     }
 
                 return {"status": "error", "error": f"Unknown manage_timers action: {action}"}
+
+            if plugin_registry_singleton and plugin_registry_singleton.handles_tool(name):
+                res = await plugin_registry_singleton.execute_tool(
+                    name,
+                    args,
+                    {
+                        "options": options,
+                        "dev": dev,
+                        "ha_api": self.ha_api,
+                        "turn_state": turn_state,
+                        "device_manager": self.device_manager,
+                    },
+                )
+                if turn_state is not None:
+                    turn_state["tool_executed"] = True
+                return res
 
             tool_logger.warning(f"Unknown tool called: {name}")
             return {"status": "unknown_tool", "error": f"Unknown tool: {name}"}

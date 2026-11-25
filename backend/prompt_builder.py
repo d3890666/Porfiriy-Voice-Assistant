@@ -2,6 +2,17 @@ import datetime
 import logging
 from typing import Any, Dict, Optional
 
+try:
+    from .db import db_singleton
+    from .plugin_registry import plugin_registry_singleton
+except ImportError:
+    try:
+        from db import db_singleton
+        from plugin_registry import plugin_registry_singleton
+    except ImportError:
+        db_singleton = None
+        plugin_registry_singleton = None
+
 logger = logging.getLogger("prompt_builder")
 
 
@@ -30,7 +41,13 @@ async def build_system_prompt(
 ) -> str:
     """Единая сборка системного промпта Порфирия для всех клиентов (ESP32, PC Streamer, Яндекс Станция)."""
     persona = options.get("prompt_persona", "") or options.get("system_prompt", "")
-    users = options.get("prompt_users", "")
+    db_users = ""
+    if db_singleton:
+        try:
+            db_users = db_singleton.build_users_prompt_section()
+        except Exception as e:
+            logger.warning(f"Failed to build users prompt from DB: {e}")
+    users = db_users or options.get("prompt_users", "")
     smart_home = options.get("prompt_smart_home", "")
     general = options.get("prompt_general", "")
     resolved_area = area_name or ((dev or {}).get("area_name") if isinstance(dev, dict) else None) or "Не указана"
@@ -78,7 +95,7 @@ async def build_system_prompt(
             ("prompt_smart_home", "SMART HOME EXECUTION RULES"),
             ("prompt_general", "GENERAL DIALOGUE, SEARCH & MEDIA"),
         ):
-            val = options.get(key, "")
+            val = db_users if (key == "prompt_users" and db_users) else options.get(key, "")
             if val and val.strip():
                 modular_parts.append(f"### {title}\n{val.strip()}")
 
@@ -109,6 +126,14 @@ async def build_system_prompt(
                 f"When handling ambiguous smart home requests (e.g. 'turn on light', 'close curtains'), "
                 f"ALWAYS prioritize devices located in '{area_name}'."
             )
+
+    if plugin_registry_singleton:
+        try:
+            plugin_sections = plugin_registry_singleton.get_active_prompt_sections(options)
+            if plugin_sections and plugin_sections.strip():
+                parts.append(plugin_sections.strip())
+        except Exception as e:
+            logger.warning(f"Failed to build plugin prompt sections: {e}")
 
     if extra_context and extra_context.strip():
         parts.append(extra_context.strip())
