@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.185
+- **Исправлена ошибка `1008` при обработке голосовых сообщений в Telegram (`backend/telegram_gateway.py`)**:
+  - Перекодировка входящей голосовой заметки переведена с потокового `ffmpeg -f wav pipe:1` (записывавшего `0xFFFFFFFF` в RIFF-заголовок из-за несикаемого pipe) на сырой PCM (`-f s16le`) + `pcm16_to_wav(raw_pcm, sample_rate=16000)` с валидным 44-байтным заголовком, идентичным Станции.
+  - Краткая история диалога перенесена в `extra_context`, чтобы `send_client_content` для `gemini-3.8-live` всегда получал чистый одиночный ход `[current_turn]`.
+  - Лог неизвестного `chat_id` переведён на уровень `INFO`.
+- Синхронизация версий до `0.0.185`.
+
 ## 0.0.184
 - **Двусторонний шлюз Telegram (текст и голосовые команды) (`backend/telegram_gateway.py`, `backend/main.py`, `Dockerfile`, `app.js`)**:
   - Добавлен `TelegramBotGateway` (Long Polling `getUpdates`), обрабатывающий текстовые и голосовые (`.ogg`/Opus -> `ffmpeg` -> 16kHz WAV -> Gemini Live API -> текст и `sendVoice` 24kHz PCM16 -> Opus) команды строго через выбранную модель Gemini Live API с полной поддержкой всех инструментов (умный дом, музыка, таймеры, память, списки, плагины).

@@ -12,6 +12,7 @@ try:
 except ImportError:
     types = None
 
+from audio_utils import pcm16_to_wav
 from config import DEFAULT_GEMINI_MODEL, get_active_api_key
 from db import db_singleton
 try:
@@ -89,23 +90,22 @@ class TelegramBotGateway:
             }
         return allowed, sender_map
 
-    def _get_turns_for_chat(self, chat_id: str, ttl_s: float = 600.0) -> List[Any]:
+    def _get_history_for_chat(self, chat_id: str, ttl_s: float = 600.0) -> List[Tuple[str, str]]:
         cached = self._dialogue_history.get(chat_id)
         if not cached:
             return []
         if time.time() - cached.get("timestamp", 0.0) > ttl_s:
             return []
-        return list(cached.get("turns", []))
+        return list(cached.get("pairs", []))
 
     def _save_turn(self, chat_id: str, user_text: str, reply_text: str) -> None:
         if not chat_id or not user_text or not reply_text:
             return
-        turns = self._get_turns_for_chat(chat_id, ttl_s=600.0)
-        turns.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
-        turns.append(types.Content(role="model", parts=[types.Part.from_text(text=reply_text)]))
-        if len(turns) > 6:
-            turns = turns[-6:]
-        self._dialogue_history[chat_id] = {"timestamp": time.time(), "turns": turns}
+        pairs = self._get_history_for_chat(chat_id, ttl_s=600.0)
+        pairs.append((user_text[:400], reply_text[:500]))
+        if len(pairs) > 4:
+            pairs = pairs[-4:]
+        self._dialogue_history[chat_id] = {"timestamp": time.time(), "pairs": pairs}
 
     async def start(self) -> None:
         self._running = True
@@ -185,7 +185,7 @@ class TelegramBotGateway:
         allowed, sender_map = self.get_allowed_chats(db_singleton)
         chat_meta = allowed.get(chat_id)
         if not chat_meta:
-            logger.debug(f"[TG-GW] Ignored message from unauthorized chat_id={chat_id}")
+            logger.info(f"[TG-GW] Ignored message from unauthorized chat_id={chat_id}")
             return
 
         # Определяем конкретного жильца (актуально для общего группового чата)
@@ -325,13 +325,18 @@ class TelegramBotGateway:
                 if not raw_audio:
                     await self._send_tg_text(http_sess, bot_token, chat_id, "Не удалось скачать голосовое сообщение из Telegram.")
                     return
-                wav_bytes = await self._run_ffmpeg(
-                    ["-y", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le", "-f", "wav", "pipe:1"],
+                raw_pcm = await self._run_ffmpeg(
+                    ["-y", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "s16le", "pipe:1"],
                     raw_audio,
                 )
-                if not wav_bytes:
+                if not raw_pcm:
                     await self._send_tg_text(http_sess, bot_token, chat_id, "Не удалось декодировать голосовое сообщение (ffmpeg).")
                     return
+                wav_bytes = pcm16_to_wav(raw_pcm, sample_rate=16000)
+                logger.info(
+                    f"[TG-GW] Decoded voice for chat_id={chat_id}: {len(raw_pcm)} bytes PCM "
+                    f"({len(raw_pcm)/32000.0:.2f}s), {len(wav_bytes)} bytes WAV"
+                )
             else:
                 await self._send_chat_action(http_sess, bot_token, chat_id, "typing")
 
@@ -345,6 +350,12 @@ class TelegramBotGateway:
                 if chat_meta.get("is_family")
                 else f"Personal Telegram chat with {chat_meta.get('user_name')} (user_id='{chat_meta.get('user_id')}', chat_id='{chat_id}')"
             )
+            history_pairs = self._get_history_for_chat(chat_id)
+            history_block = ""
+            if history_pairs:
+                hist_lines = "\n".join(f"- User: {u}\n  Porfiriy: {a}" for u, a in history_pairs)
+                history_block = f"\n\n### RECENT TELEGRAM DIALOGUE (same chat):\n{hist_lines}"
+
             extra_context = (
                 f"### CHANNEL CONTEXT (TELEGRAM):\n"
                 f"- Source: {chat_desc}.\n"
@@ -354,6 +365,7 @@ class TelegramBotGateway:
                 f"Call `send_to_telegram` ONLY if the user explicitly asks to forward/send something to a DIFFERENT recipient or chat "
                 f"(e.g., 'отправь Свете', 'скинь в общий чат').\n"
                 f"- Execute any smart home, music, timer, memory, list, or plugin requests normally just as if spoken to a smart speaker."
+                f"{history_block}"
             )
 
             dev_ctx = {"mac": f"tg_{chat_id}", "name": f"Telegram ({speaker_name})", "area_name": ""}
@@ -379,7 +391,6 @@ class TelegramBotGateway:
                 manual_vad=True,
             )
 
-            turns = self._get_turns_for_chat(chat_id)
             if is_voice and wav_bytes:
                 user_parts = [types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav")]
                 if text_in:
@@ -388,7 +399,7 @@ class TelegramBotGateway:
             else:
                 current_turn = types.Content(role="user", parts=[types.Part.from_text(text=text_in)])
 
-            payload_turns = turns + [current_turn]
+            payload_turns = [current_turn]
             input_transcript_parts: List[str] = []
             output_text_parts: List[str] = []
             pcm_chunks: List[bytes] = []
