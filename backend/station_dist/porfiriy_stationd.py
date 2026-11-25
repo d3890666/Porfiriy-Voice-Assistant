@@ -50,6 +50,8 @@ WIFI_SERVERS_PATH = os.path.join(STATIOND_BASE, "wifi_servers.json")
 PERSISTED_KEYS = (
     "ww_model",
     "ww_threshold",
+    "ww_capture_enabled",
+    "ww_capture_threshold",
     "pdm_gain",
     "mic_gain",
     "dc_blocker_enabled",
@@ -676,6 +678,14 @@ async def run_daemon():
     state = {
         "mode": "idle",  # idle | listening | thinking | speaking
         "ww_threshold": 0.90,
+        "ww_capture_enabled": False,
+        "ww_capture_threshold": 0.55,
+        "capture_cooldown_until": 0.0,
+        "nm_active": False,
+        "nm_peak_score": 0.0,
+        "nm_peak_rms": -60.0,
+        "nm_start_time": 0.0,
+        "nm_mode": "idle",
         "pdm_gain": 40,
         "barge_in_enabled": False,
         "cooldown_until": 0.0,
@@ -694,6 +704,8 @@ async def run_daemon():
     local_cfg = {
         "ww_model": chosen_ww_model,
         "ww_threshold": 0.90,
+        "ww_capture_enabled": False,
+        "ww_capture_threshold": 0.55,
         "pdm_gain": 40,
         "mic_gain": 4.0,
         "dc_blocker_enabled": True,
@@ -714,6 +726,15 @@ async def run_daemon():
         if "ww_threshold" in cfg and cfg["ww_threshold"] is not None:
             state["ww_threshold"] = float(cfg["ww_threshold"])
             local_cfg["ww_threshold"] = state["ww_threshold"]
+        if "ww_capture_enabled" in cfg and cfg["ww_capture_enabled"] is not None:
+            state["ww_capture_enabled"] = bool(cfg["ww_capture_enabled"])
+            local_cfg["ww_capture_enabled"] = state["ww_capture_enabled"]
+            if not state["ww_capture_enabled"]:
+                state["nm_active"] = False
+        if "ww_capture_threshold" in cfg and cfg["ww_capture_threshold"] is not None:
+            cap_thr = max(0.05, min(0.99, float(cfg["ww_capture_threshold"])))
+            state["ww_capture_threshold"] = cap_thr
+            local_cfg["ww_capture_threshold"] = cap_thr
         if "dc_blocker_enabled" in cfg and cfg["dc_blocker_enabled"] is not None:
             dsp.dc_blocker_enabled = bool(cfg["dc_blocker_enabled"])
             local_cfg["dc_blocker_enabled"] = dsp.dc_blocker_enabled
@@ -801,10 +822,38 @@ async def run_daemon():
                     "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.4",
+                    "firmware": "stationd-1.5",
                     "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
+
+                def _schedule_ww_capture(kind: str, cap_score: float, cap_rms: float, cap_mode: str):
+                    if not state["ww_capture_enabled"]:
+                        return
+                    pcm_snap = b"".join(debug_ring)
+                    if not pcm_snap:
+                        return
+                    thr_snap = state["ww_threshold"]
+                    cap_thr_snap = state["ww_capture_threshold"]
+
+                    async def _upload():
+                        try:
+                            wav_b = await asyncio.to_thread(pcm16_to_wav_bytes, pcm_snap, 16000)
+                            await ws.send(json.dumps({
+                                "type": "ww_trigger_clip",
+                                "wav_b64": base64.b64encode(wav_b).decode("ascii"),
+                                "score": round(cap_score, 4),
+                                "threshold": round(thr_snap, 4),
+                                "capture_threshold": round(cap_thr_snap, 4),
+                                "rms_dbfs": cap_rms,
+                                "model": chosen_ww_model,
+                                "kind": kind,
+                                "mode": cap_mode,
+                            }))
+                        except Exception as e_cap:
+                            print(f"[STATIOND] WW capture upload error: {e_cap}", flush=True)
+
+                    asyncio.create_task(_upload())
 
                 arecord_proc = await asyncio.create_subprocess_exec(
                     "arecord", "-D", "hw:0,2", "-r", "48000", "-f", "S16_LE", "-c", "16", "-t", "raw", "-q",
@@ -918,6 +967,8 @@ async def run_daemon():
                                 }))
 
                             if score >= state["ww_threshold"]:
+                                state["nm_active"] = False
+                                _schedule_ww_capture("trigger", score, dbfs, "idle")
                                 print(
                                     f"[STATIOND] WAKE DETECTED! score={score:.3f} infer={infer_ms:.1f}ms "
                                     f"rms={dbfs}dBFS noise_floor={state['noise_floor_rms']:.0f}",
@@ -941,6 +992,26 @@ async def run_daemon():
                                 for pr in list(preroll):
                                     await ws.send(pr)
                                 preroll.clear()
+                            elif state["ww_capture_enabled"] and state["ww_capture_threshold"] < state["ww_threshold"]:
+                                cap_thr = state["ww_capture_threshold"]
+                                if score >= cap_thr and now >= state["capture_cooldown_until"]:
+                                    if not state["nm_active"]:
+                                        state["nm_active"] = True
+                                        state["nm_peak_score"] = score
+                                        state["nm_peak_rms"] = dbfs
+                                        state["nm_start_time"] = now
+                                        state["nm_mode"] = "idle"
+                                    elif score > state["nm_peak_score"]:
+                                        state["nm_peak_score"] = score
+                                        state["nm_peak_rms"] = dbfs
+                                    if now - state["nm_start_time"] >= 0.8:
+                                        _schedule_ww_capture("near_miss", state["nm_peak_score"], state["nm_peak_rms"], state["nm_mode"])
+                                        state["nm_active"] = False
+                                        state["capture_cooldown_until"] = now + 5.0
+                                elif state["nm_active"]:
+                                    _schedule_ww_capture("near_miss", state["nm_peak_score"], state["nm_peak_rms"], state["nm_mode"])
+                                    state["nm_active"] = False
+                                    state["capture_cooldown_until"] = now + 5.0
 
                         elif state["mode"] == "speaking" and state["barge_in_enabled"]:
                             if now >= state["cooldown_until"]:
@@ -960,6 +1031,8 @@ async def run_daemon():
                                         "infer_ms": round(infer_ms, 1),
                                     }))
                                 if score >= state["ww_threshold"]:
+                                    state["nm_active"] = False
+                                    _schedule_ww_capture("barge_in", score, dbfs, "speaking")
                                     print(
                                         f"[STATIOND] BARGE-IN WAKE DETECTED! score={score:.3f} "
                                         f"infer={infer_ms:.1f}ms rms={dbfs}dBFS",
@@ -984,6 +1057,26 @@ async def run_daemon():
                                     for pr in list(preroll):
                                         await ws.send(pr)
                                     preroll.clear()
+                                elif state["ww_capture_enabled"] and state["ww_capture_threshold"] < state["ww_threshold"]:
+                                    cap_thr = state["ww_capture_threshold"]
+                                    if score >= cap_thr and now >= state["capture_cooldown_until"]:
+                                        if not state["nm_active"]:
+                                            state["nm_active"] = True
+                                            state["nm_peak_score"] = score
+                                            state["nm_peak_rms"] = dbfs
+                                            state["nm_start_time"] = now
+                                            state["nm_mode"] = "speaking"
+                                        elif score > state["nm_peak_score"]:
+                                            state["nm_peak_score"] = score
+                                            state["nm_peak_rms"] = dbfs
+                                        if now - state["nm_start_time"] >= 0.8:
+                                            _schedule_ww_capture("near_miss", state["nm_peak_score"], state["nm_peak_rms"], state["nm_mode"])
+                                            state["nm_active"] = False
+                                            state["capture_cooldown_until"] = now + 5.0
+                                    elif state["nm_active"]:
+                                        _schedule_ww_capture("near_miss", state["nm_peak_score"], state["nm_peak_rms"], state["nm_mode"])
+                                        state["nm_active"] = False
+                                        state["capture_cooldown_until"] = now + 5.0
 
                         elif state["mode"] == "listening":
                             await ws.send(pcm_bytes)

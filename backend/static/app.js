@@ -216,6 +216,8 @@ function renderDevicesGrid() {
           const targetVer = dev.target_firmware || window.BUNDLED_QUASAR_VERSION || '1.2.4-porfiriy.20';
           const hasUpdate = dev.has_update !== false && (!currentVer || currentVer !== targetVer);
           const wwThr = cfg.ww_threshold !== undefined ? cfg.ww_threshold : 0.90;
+          const wwCaptureOn = Boolean(cfg.ww_capture_enabled);
+          const wwCapThr = cfg.ww_capture_threshold !== undefined ? cfg.ww_capture_threshold : 0.55;
           const micGain = cfg.mic_gain !== undefined ? cfg.mic_gain : 4.0;
           const pdmGain = cfg.pdm_gain !== undefined ? cfg.pdm_gain : 40;
           const dcOn = cfg.dc_blocker_enabled !== false;
@@ -394,7 +396,8 @@ function renderDevicesGrid() {
               </div>
               <div style="position: relative; width: 100%; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden;">
                 <div id="st-ww-bar-${dev.mac}" style="width: ${Math.min(100, Math.round((dev.ww_score || 0) * 100))}%; height: 100%; background: #34d399; transition: width 0.12s ease;"></div>
-                <div style="position: absolute; top: 0; bottom: 0; left: ${Math.min(100, Math.round(wwThr * 100))}%; width: 2px; background: #f87171;"></div>
+                ${wwCaptureOn ? `<div title="Порог захвата: ${Number(wwCapThr).toFixed(2)}" style="position: absolute; top: 0; bottom: 0; left: ${Math.min(100, Math.round(wwCapThr * 100))}%; width: 2px; background: #fbbf24;"></div>` : ''}
+                <div title="Порог срабатывания: ${Number(wwThr).toFixed(2)}" style="position: absolute; top: 0; bottom: 0; left: ${Math.min(100, Math.round(wwThr * 100))}%; width: 2px; background: #f87171;"></div>
               </div>
               <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
                 <div style="width: 100%; display: flex; gap: 6px;">
@@ -480,6 +483,46 @@ function renderDevicesGrid() {
                   <button type="button" class="btn btn-secondary btn-sm" onclick="saveStationWifi('${dev.mac}')" style="font-size: 11px; padding: 5px 10px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
                     💾 Сохранить сеть на Станцию
                   </button>
+                </div>
+              </div>
+            </details>
+
+            <!-- Сбор звуков срабатываний вейкворда (для дообучения openWakeWord) -->
+            <details style="background: rgba(251, 191, 36, 0.04); border: 1px solid ${wwCaptureOn ? 'rgba(251, 191, 36, 0.45)' : 'rgba(255,255,255,0.08)'}; border-radius: 8px; padding: 6px 10px;" ontoggle="if(this.open) loadWwCaptures('${dev.mac}')">
+              <summary style="cursor: pointer; font-size: 12px; font-weight: 600; color: #fbbf24; display: flex; align-items: center; justify-content: space-between;">
+                <span>🧪 Сбор звуков вейкворда (для обучения)</span>
+                ${wwCaptureOn ? '<span style="font-size: 10px; background: rgba(239,68,68,0.22); color: #fca5a5; border: 1px solid rgba(239,68,68,0.45); padding: 1px 6px; border-radius: 10px; margin-left: 6px;">● ЗАПИСЬ</span>' : ''}
+              </summary>
+              <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px; font-size: 12px;">
+                <label style="display:flex; align-items:center; gap:7px; cursor:pointer; margin:0; color:#f1f5f9;">
+                  <input type="checkbox" ${wwCaptureOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_capture_enabled', this.checked)">
+                  <span>🎙️ Записывать 3с клипы (после AEC) на сервер HA</span>
+                </label>
+
+                <div class="slider-row">
+                  <span>🎚️ Порог захвата:</span>
+                  <input type="range" min="0.10" max="0.99" step="0.01" value="${wwCapThr}"
+                    oninput="this.nextElementSibling.innerText = parseFloat(this.value).toFixed(2)"
+                    onchange="updateSingleDeviceConfig('${dev.mac}', 'ww_capture_threshold', parseFloat(this.value))"
+                    title="Отдельная шкала захвата: клипы с score от этого порога до порога WW сохраняются как почти-срабатывания (near-miss), а ≥ порога WW — как срабатывания">
+                  <span style="min-width: 40px; font-family: monospace; font-size: 12px; font-weight: 600; color: #fbbf24;">${Number(wwCapThr).toFixed(2)}</span>
+                </div>
+                <div style="font-size: 11px; color: #94a3b8; line-height: 1.35;">
+                  <span style="color:#f87171;">≥ ${Number(wwThr).toFixed(2)}</span> — реальные срабатывания;
+                  <span style="color:#fbbf24;">${Number(wwCapThr).toFixed(2)}…${Number(wwThr).toFixed(2)}</span> — почти-срабатывания (near-miss, кулдаун 5с).
+                </div>
+
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.08);">
+                  <span id="ww-cap-stats-${dev.mac}" style="font-size: 11px; color: #cbd5e1; font-family: monospace;">Собрано: —</span>
+                  <div style="display: flex; gap: 4px;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="loadWwCaptures('${dev.mac}')" style="font-size: 11px; padding: 3px 7px;" title="Обновить список">🔄</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="downloadWwCapturesArchive('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; color: #34d399; border-color: rgba(52, 211, 153, 0.4);" title="Скачать ZIP-архив (wav/ + metadata.csv)">📦 Архив (.zip)</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="clearWwCaptures('${dev.mac}')" style="font-size: 11px; padding: 3px 8px; color: #fca5a5; border-color: rgba(239, 68, 68, 0.35);" title="Удалить все собранные записи этой колонки">🗑️</button>
+                  </div>
+                </div>
+
+                <div id="ww-cap-list-${dev.mac}" style="max-height: 190px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 6px;">
+                  <span style="color: #8b949e; font-size: 11px;">Загрузка записей...</span>
                 </div>
               </div>
             </details>
@@ -4165,3 +4208,104 @@ async function testBigModelRow(idx) {
   }
 }
 window.testBigModelRow = testBigModelRow;
+
+// =========================================================================
+// Сбор звуков срабатываний вейкворда (Яндекс Станция 2)
+// =========================================================================
+let _wwCapAudio = null;
+
+async function loadWwCaptures(mac) {
+  const statsEl = document.getElementById(`ww-cap-stats-${mac}`);
+  const listEl = document.getElementById(`ww-cap-list-${mac}`);
+  if (!listEl) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/ww_captures?mac=${encodeURIComponent(mac)}&limit=30`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'load failed');
+    const mb = ((data.total_bytes || 0) / (1024 * 1024)).toFixed(2);
+    if (statsEl) {
+      statsEl.textContent = `Собрано: ${data.total_count || 0} / ${data.max_files || 200} (${mb} МБ)`;
+    }
+    const clips = data.clips || [];
+    if (clips.length === 0) {
+      listEl.innerHTML = `<span style="color: #8b949e; font-size: 11px;">Записей пока нет. Включите галку выше, чтобы начать сбор.</span>`;
+      return;
+    }
+    listEl.innerHTML = clips.map(c => {
+      const timeStr = (c.timestamp || '').slice(11, 19) || c.timestamp || '';
+      const kindBadge = c.kind === 'near_miss'
+        ? `<span style="color:#fbbf24; font-weight:600;">🟡 Почти</span>`
+        : c.kind === 'barge_in'
+          ? `<span style="color:#f472b6; font-weight:600;">🔴 Перебил</span>`
+          : `<span style="color:#34d399; font-weight:600;">⚡ Триггер</span>`;
+      let outcomeHtml = '';
+      if (c.outcome === 'listen_timeout') {
+        outcomeHtml = `<span style="color:#fca5a5;" title="После срабатывания была тишина — вероятный ложняк">🔇 Тишина</span>`;
+      } else if (c.outcome === 'speech') {
+        const tr = c.transcript ? ` «${escapeHtml(c.transcript.slice(0, 28))}${c.transcript.length > 28 ? '…' : ''}»` : '';
+        outcomeHtml = `<span style="color:#93c5fd;" title="${escapeHtml(c.transcript || 'Речь распознана')}">💬${tr || ' Речь'}</span>`;
+      } else if (c.kind !== 'near_miss') {
+        outcomeHtml = `<span style="color:#64748b;">⏳</span>`;
+      }
+      return `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; padding:3px 5px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:11px;">
+          <div style="display:flex; align-items:center; gap:6px; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;">
+            <span style="color:#64748b; font-family:monospace;">${escapeHtml(timeStr)}</span>
+            ${kindBadge}
+            <span style="font-family:monospace; color:#e2e8f0;">${Number(c.score || 0).toFixed(2)}</span>
+            ${outcomeHtml}
+          </div>
+          <div style="display:flex; gap:4px; flex-shrink:0;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="playWwCaptureClip('${escapeHtml(c.filename)}')" style="padding:1px 6px; font-size:10px;" title="Прослушать 3с клип">▶</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="deleteWwCaptureClip('${mac}', '${escapeHtml(c.filename)}')" style="padding:1px 5px; font-size:10px; color:#fca5a5;" title="Удалить запись">×</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    listEl.innerHTML = `<span style="color: #f87171; font-size: 11px;">Ошибка загрузки: ${escapeHtml(err.message)}</span>`;
+  }
+}
+window.loadWwCaptures = loadWwCaptures;
+
+function playWwCaptureClip(filename) {
+  if (_wwCapAudio) {
+    try { _wwCapAudio.pause(); } catch (_) {}
+  }
+  const url = `${API_BASE}/api/ww_captures/clip/${encodeURIComponent(filename)}?t=${Date.now()}`;
+  _wwCapAudio = new Audio(url);
+  _wwCapAudio.play().catch(err => showToast(`Ошибка воспроизведения: ${err.message}`, true));
+}
+window.playWwCaptureClip = playWwCaptureClip;
+
+async function deleteWwCaptureClip(mac, filename) {
+  try {
+    const res = await fetch(`${API_BASE}/api/ww_captures/clip/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+    if (res.ok) {
+      loadWwCaptures(mac);
+    }
+  } catch (err) {
+    showToast(`Ошибка удаления: ${err.message}`, true);
+  }
+}
+window.deleteWwCaptureClip = deleteWwCaptureClip;
+
+async function clearWwCaptures(mac) {
+  if (!confirm('Удалить все собранные записи вейкворда для этой колонки?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/ww_captures?mac=${encodeURIComponent(mac)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Удалено записей: ${data.removed || 0}`);
+      loadWwCaptures(mac);
+    }
+  } catch (err) {
+    showToast(`Ошибка очистки: ${err.message}`, true);
+  }
+}
+window.clearWwCaptures = clearWwCaptures;
+
+function downloadWwCapturesArchive(mac) {
+  window.location.href = `${API_BASE}/api/ww_captures/archive?mac=${encodeURIComponent(mac)}`;
+}
+window.downloadWwCapturesArchive = downloadWwCapturesArchive;

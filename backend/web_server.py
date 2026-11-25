@@ -36,12 +36,14 @@ except ImportError:
 try:
     from .db import db_singleton
     from .big_models import big_model_pool_singleton
+    from .ww_capture import ww_capture_store
     from .plugins.telegram_bot import TelegramBotPlugin
     from .plugins.telegram_userbot import TelegramUserbotPlugin
     from .plugins.mail_imap import MailImapPlugin
 except ImportError:
     from db import db_singleton
     from big_models import big_model_pool_singleton
+    from ww_capture import ww_capture_store
     from plugins.telegram_bot import TelegramBotPlugin
     from plugins.telegram_userbot import TelegramUserbotPlugin
     from plugins.mail_imap import MailImapPlugin
@@ -125,6 +127,11 @@ class WebServer:
         self.app.router.add_get("/api/devices/{mac}/last_utterance/status", self.handle_last_utterance_status)
         self.app.router.add_get("/api/events", self.handle_events)
         self.app.router.add_get("/api/ww_monitor", self.handle_ww_monitor)
+        self.app.router.add_get("/api/ww_captures", self.handle_get_ww_captures)
+        self.app.router.add_get("/api/ww_captures/archive", self.handle_download_ww_captures_archive)
+        self.app.router.add_get("/api/ww_captures/clip/{filename}", self.handle_get_ww_capture_clip)
+        self.app.router.add_delete("/api/ww_captures/clip/{filename}", self.handle_delete_ww_capture_clip)
+        self.app.router.add_delete("/api/ww_captures", self.handle_clear_ww_captures)
         self.app.router.add_get("/static/{filename:.*}", self.handle_static)
         # Виртуальные стримеры (pc_streamer)
         self.app.router.add_get("/api/virtual/{mac}/response.wav", self.handle_virtual_response_wav)
@@ -1567,5 +1574,47 @@ class WebServer:
         opts = self.options_callback() if self.options_callback else {}
         res = await big_model_pool_singleton.test_model(model_id, opts.get("gemini_api_key", ""))
         return web.json_response(res, status=200 if res.get("success") else 400)
+
+    async def handle_get_ww_captures(self, request):
+        mac = request.query.get("mac", "").strip() or None
+        try:
+            limit = int(request.query.get("limit", "50"))
+        except Exception:
+            limit = 50
+        data = ww_capture_store.list_clips(mac=mac, limit=limit)
+        return web.json_response({"success": True, **data})
+
+    async def handle_get_ww_capture_clip(self, request):
+        filename = request.match_info.get("filename", "")
+        full_path = ww_capture_store.get_clip_path(filename)
+        if not full_path:
+            return web.json_response({"success": False, "error": "Clip not found"}, status=404)
+        return web.FileResponse(full_path, headers={"Content-Type": "audio/wav", "Cache-Control": "no-store"})
+
+    async def handle_delete_ww_capture_clip(self, request):
+        filename = request.match_info.get("filename", "")
+        ok = ww_capture_store.delete_clip(filename)
+        return web.json_response({"success": ok})
+
+    async def handle_clear_ww_captures(self, request):
+        mac = request.query.get("mac", "").strip() or None
+        removed = ww_capture_store.clear_clips(mac=mac)
+        return web.json_response({"success": True, "removed": removed})
+
+    async def handle_download_ww_captures_archive(self, request):
+        from datetime import datetime
+        mac = request.query.get("mac", "").strip() or None
+        zip_bytes = await asyncio.to_thread(ww_capture_store.build_zip_bytes, mac)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"porfiriy_ww_captures_{ts}.zip"
+        return web.Response(
+            body=zip_bytes,
+            headers={
+                "Content-Type": "application/zip",
+                "Content-Disposition": f'attachment; filename="{fname}"',
+                "Cache-Control": "no-store",
+            },
+        )
+
 
 

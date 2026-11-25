@@ -1142,6 +1142,11 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     session_task: Optional[asyncio.Task] = None
     eos_watchdog_task: Optional[asyncio.Task] = None
     gemini_responded = False
+    active_capture_id: Optional[str] = None
+    active_capture_transcript: list[str] = []
+    last_wake_ts: float = 0.0
+
+    from ww_capture import ww_capture_store
 
     def _flush_utterance():
         nonlocal utterance_saved
@@ -1391,7 +1396,15 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 if getattr(sc, "input_transcription", None) and getattr(sc.input_transcription, "text", None):
                                     attempt_responded = True
                                     turn_responded = True
-                                    logger.info(f"[YANDEX-WS] User Speech Recognized ({client_mac}): {sc.input_transcription.text}")
+                                    in_txt = sc.input_transcription.text
+                                    if active_capture_id and turn_idx == 0:
+                                        active_capture_transcript.append(in_txt)
+                                        ww_capture_store.update_outcome(
+                                            active_capture_id,
+                                            "speech",
+                                            "".join(active_capture_transcript).strip(),
+                                        )
+                                    logger.info(f"[YANDEX-WS] User Speech Recognized ({client_mac}): {in_txt}")
                                 if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
                                     out_txt = sc.output_transcription.text
                                     output_text_parts.append(out_txt)
@@ -1512,6 +1525,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             await _send_json({"type": "turn_complete"})
         finally:
             if my_sid == session_seq:
+                if active_capture_id:
+                    tr_joined = "".join(active_capture_transcript).strip()
+                    if gemini_responded or tr_joined:
+                        ww_capture_store.update_outcome(active_capture_id, "speech", tr_joined)
+                    else:
+                        ww_capture_store.update_outcome(active_capture_id, "listen_timeout", "")
                 _cancel_eos_watchdog()
                 _flush_utterance()
                 session_active = False
@@ -1556,6 +1575,9 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             gemini_responded = False
                             utterance_chunks = []
                             utterance_saved = False
+                            active_capture_id = None
+                            active_capture_transcript = []
+                            last_wake_ts = time.monotonic()
                             _cancel_eos_watchdog()
                             audio_queue = asyncio.Queue()
                             session_task = asyncio.create_task(_run_gemini_session(session_seq))
@@ -1573,12 +1595,41 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                         gemini_responded = False
                         utterance_chunks = []
                         utterance_saved = False
+                        active_capture_id = None
+                        active_capture_transcript = []
+                        last_wake_ts = time.monotonic()
                         audio_queue = asyncio.Queue()
                         if old_q:
                             old_q.put_nowait(None)
                         if old_task and not old_task.done():
                             old_task.cancel()
                         session_task = asyncio.create_task(_run_gemini_session(session_seq))
+                    elif mtype == "ww_trigger_clip":
+                        wav_b64 = data.get("wav_b64", "")
+                        if wav_b64:
+                            try:
+                                raw_wav = base64.b64decode(wav_b64)
+                                dev_info = device_manager.get_device(client_mac) or {}
+                                kind = str(data.get("kind") or "trigger")
+                                rec = ww_capture_store.save_clip(
+                                    mac=client_mac,
+                                    device_name=dev_info.get("name") or client_mac,
+                                    wav_bytes=raw_wav,
+                                    score=float(data.get("score", 0.0)),
+                                    threshold=float(data.get("threshold", 0.90)),
+                                    capture_threshold=float(data.get("capture_threshold", 0.55)),
+                                    rms_dbfs=float(data.get("rms_dbfs", -60.0)),
+                                    model=str(data.get("model") or "porfiriy.onnx"),
+                                    kind=kind,
+                                    mode=str(data.get("mode") or "idle"),
+                                )
+                                if kind in ("trigger", "barge_in") and (session_active or (time.monotonic() - last_wake_ts) < 3.0):
+                                    active_capture_id = rec["id"]
+                                    tr_joined = "".join(active_capture_transcript).strip()
+                                    if tr_joined:
+                                        ww_capture_store.update_outcome(active_capture_id, "speech", tr_joined)
+                            except Exception as e_cap:
+                                logger.warning(f"[YANDEX-WS] Failed to save ww_trigger_clip: {e_cap}")
                     elif mtype == "end_of_speech":
                         if session_active and audio_queue is not None:
                             _flush_utterance()
