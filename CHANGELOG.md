@@ -1,5 +1,11 @@
 # Журнал изменений (Changelog)
 
+## 0.0.195
+- **Инструмент `web_search` через пул больших моделей (`backend/big_models.py`, `backend/gemini_client.py`, `backend/tool_executor.py`)**:
+  - В `BigModelPool` добавлена поддержка `enable_google_search=True` (`GoogleSearch` grounding на текстовых моделях пула с ротацией ключей и приоритетами).
+  - При включённом пуле больших моделей Live-модель получает инструмент `web_search(query)`, что позволяет искать в интернете даже на `3+` Live-моделях, где нативный Live Search Grounding имеет нулевую квоту.
+- Синхронизация версий до `0.0.195`.
+
 ## 0.0.194
 - **Голосовое подтверждение ожидания на колонках при поиске и работе большой модели (`backend/main.py`, `backend/plugin_registry.py`)**:
   - При вызове тяжёлых read-инструментов (`mail_search`, `tg_read_messages`, `tg_search_messages`, `ask_big_model`) колонки (Яндекс Станция 2 и ESP32) теперь сразу проигрывают кешированную фразу раздумья Порфирия (`phrase_manager.get_phrase("thinking")`), чтобы не было паузы тишины.

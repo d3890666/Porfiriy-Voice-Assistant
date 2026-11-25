@@ -64,17 +64,24 @@ class BigModelPool:
         prompt: str,
         *,
         system_instruction: str = "",
+        enable_google_search: bool = False,
         timeout_s: float = 45.0,
     ) -> str:
         if genai is None:
             raise RuntimeError("google-genai SDK is not available")
         client = genai.Client(api_key=api_key)
         cfg = None
-        if system_instruction and types is not None and hasattr(types, "GenerateContentConfig"):
-            try:
-                cfg = types.GenerateContentConfig(system_instruction=system_instruction)
-            except Exception:
-                cfg = None
+        if types is not None and hasattr(types, "GenerateContentConfig"):
+            cfg_kwargs: Dict[str, Any] = {}
+            if system_instruction:
+                cfg_kwargs["system_instruction"] = system_instruction
+            if enable_google_search and hasattr(types, "Tool") and hasattr(types, "GoogleSearch"):
+                cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+            if cfg_kwargs:
+                try:
+                    cfg = types.GenerateContentConfig(**cfg_kwargs)
+                except Exception:
+                    cfg = None
 
         coro = client.aio.models.generate_content(
             model=model_id,
@@ -150,6 +157,7 @@ class BigModelPool:
         options: Dict[str, Any],
         *,
         system_instruction: str = "",
+        enable_google_search: bool = False,
         timeout_s: float = 45.0,
     ) -> Dict[str, Any]:
         pool_raw = options.get("big_models_pool") or []
@@ -181,6 +189,7 @@ class BigModelPool:
                         key,
                         prompt,
                         system_instruction=system_instruction,
+                        enable_google_search=enable_google_search,
                         timeout_s=timeout_s,
                     )
                     dur = int((time.monotonic() - t0) * 1000)

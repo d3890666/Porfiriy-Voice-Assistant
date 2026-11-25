@@ -295,6 +295,34 @@ class ToolExecutor:
 
                 return {"status": "error", "error": f"Unknown manage_timers action: {action}"}
 
+            if name == "web_search":
+                try:
+                    from big_models import big_model_pool_singleton
+                except ImportError:
+                    from .big_models import big_model_pool_singleton
+                if on_progress:
+                    try:
+                        await on_progress("🔍 Ищу актуальную информацию в интернете...")
+                    except Exception:
+                        pass
+                q_txt = str(args.get("query") or "").strip()
+                if not q_txt:
+                    return {"status": "error", "error": "Укажите поисковый запрос query"}
+                search_prompt = (
+                    f"Найди актуальную информацию в интернете и дай точный, краткий ответ на русском языке "
+                    f"(с датами, цифрами и фактами без воды):\n{q_txt}"
+                )
+                big_res = await big_model_pool_singleton.run_text_task(
+                    search_prompt,
+                    options,
+                    enable_google_search=True,
+                )
+                if turn_state is not None:
+                    turn_state["tool_executed"] = True
+                if big_res.get("success"):
+                    return {"status": "ok", "model": big_res["model"], "answer": big_res["text"]}
+                return {"status": "error", "error": big_res.get("error") or "Web search failed"}
+
             if name == "ask_big_model":
                 try:
                     from big_models import big_model_pool_singleton

@@ -301,6 +301,23 @@ class GeminiProxyClient:
                 )
                 base_decls.append(big_tool)
                 declared_names.add("ask_big_model")
+
+                web_search_tool = _make_decl(
+                    name="web_search",
+                    description=(
+                        "Search the live Internet via Google Search using the big-model pool "
+                        "(use for fresh news, release dates, albums, prices, weather, facts, or anything post-training)."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "query": types.Schema(type=types.Type.STRING, description="Clear search query or question."),
+                        },
+                        required=["query"],
+                    ),
+                )
+                base_decls.append(web_search_tool)
+                declared_names.add("web_search")
         except Exception:
             pass
 
