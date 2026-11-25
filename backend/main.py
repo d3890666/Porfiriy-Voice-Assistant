@@ -1627,6 +1627,26 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         device_manager.set_device_offline(client_mac, ws=websocket)
 
 
+async def _memory_cleanup_loop():
+    """Фоновая умная очистка памяти и списков каждые 6 часов."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            from db import db_singleton
+            prov = db_singleton.get_provider("builtin.memory", mask_secrets=False)
+            if prov and prov.get("enabled"):
+                cfg = prov.get("config") or {}
+                res = db_singleton.run_memory_cleanup(
+                    auto_cleanup_days=int(cfg.get("auto_cleanup_days") or 30),
+                    archive_days=int(cfg.get("archive_days") or 14),
+                    max_active_items=int(cfg.get("max_active_items") or 500),
+                )
+                logger.info(f"[MEMORY] Scheduled smart cleanup: {res.get('summary')}")
+        except Exception as e:
+            logger.warning(f"[MEMORY] Cleanup loop error: {e}")
+        await asyncio.sleep(6 * 3600)
+
+
 async def main():
     port = 8765
     logger.info(f"Porfiriy Backend Server starting on ws://0.0.0.0:{port} ...")
@@ -1636,8 +1656,9 @@ async def main():
     phrase_manager.load_from_cache()
     asyncio.create_task(phrase_manager.initialize(options))
     
-    # 0. Запуск динамического обнаружения доступных моделей Gemini
+    # 0. Запуск динамического обнаружения доступных моделей Gemini и умной очистки памяти
     asyncio.create_task(refresh_available_models())
+    asyncio.create_task(_memory_cleanup_loop())
 
     # 1. Инициализация серверного WakeWordEngine (openWakeWord ONNX)
     global ww_engine

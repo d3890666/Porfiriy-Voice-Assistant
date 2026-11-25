@@ -3291,7 +3291,11 @@ function renderBuiltinConfigForm(p) {
             <input type="number" id="cfg-mem-limit" value="${Number(cfg.max_active_items ?? 500)}" min="50" max="5000">
           </div>
         </div>
-        <div style="margin-top:10px; display:flex; justify-content:flex-end;">
+        <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openMemoryModal()">🧠 Открыть память и списки</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="runMemoryCleanup(false)">🧹 Очистить сейчас</button>
+          </div>
           <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить лимиты</button>
         </div>
       </div>
@@ -3738,3 +3742,162 @@ async function testTelegramBot() {
   }
 }
 window.testTelegramBot = testTelegramBot;
+
+let _memDebounceTimer = null;
+function debounceFetchMemory() {
+  clearTimeout(_memDebounceTimer);
+  _memDebounceTimer = setTimeout(fetchMemoryItems, 250);
+}
+window.debounceFetchMemory = debounceFetchMemory;
+
+function openMemoryModal() {
+  const modal = document.getElementById('modal-memory-manager');
+  if (!modal) return;
+  const ownerSel = document.getElementById('mem-add-owner');
+  if (ownerSel) {
+    ownerSel.innerHTML = `<option value="">🏠 Общий (Дом)</option>` + porfiriyUsers.map(u =>
+      `<option value="${escapeHtml(u.id)}">👤 ${escapeHtml(u.name)}</option>`
+    ).join('');
+  }
+  modal.style.display = 'flex';
+  fetchMemoryItems();
+}
+window.openMemoryModal = openMemoryModal;
+
+function closeMemoryModal() {
+  const modal = document.getElementById('modal-memory-manager');
+  if (modal) modal.style.display = 'none';
+}
+window.closeMemoryModal = closeMemoryModal;
+
+async function fetchMemoryItems() {
+  const listEl = document.getElementById('mem-items-list');
+  const statsEl = document.getElementById('mem-stats-bar');
+  if (!listEl) return;
+  const q = encodeURIComponent((document.getElementById('mem-search-input')?.value || '').trim());
+  const kind = encodeURIComponent(document.getElementById('mem-filter-kind')?.value || '');
+  const status = encodeURIComponent(document.getElementById('mem-filter-status')?.value || 'active');
+  try {
+    const res = await fetch(`${API_BASE}/api/memory?q=${q}&kind=${kind}&status=${status}&limit=100`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const st = data.stats || {};
+    if (statsEl) {
+      statsEl.innerHTML = `
+        <span>Активных: <strong>${st.active || 0}</strong></span>
+        <span>Закреплённых: <strong>${st.pinned || 0}</strong></span>
+        <span>Выполнено: <strong>${st.done || 0}</strong></span>
+        <span>В архиве: <strong>${st.archived || 0}</strong></span>
+      `;
+    }
+    const items = data.items || [];
+    if (!items.length) {
+      listEl.innerHTML = '<div style="font-size:12px; color:#8b949e; padding:12px; text-align:center;">Записей не найдено.</div>';
+      return;
+    }
+    const kindEmoji = { fact: '📌', preference: '⭐', note: '📝', list_item: '🛒' };
+    listEl.innerHTML = items.map(it => {
+      const ownerBadge = it.owner_user_id
+        ? `<span class="owner-badge owner-personal">👤 ${escapeHtml(it.owner_user_name)}</span>`
+        : `<span class="owner-badge owner-home">🏠 Дом</span>`;
+      const listTag = it.list_name ? `<span class="p2-chip">${escapeHtml(it.list_name)}</span>` : '';
+      const nextStatus = it.status === 'active' ? 'done' : 'active';
+      return `
+        <div class="account-row">
+          <div style="display:flex; flex-direction:column; gap:4px; min-width:0;">
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span>${kindEmoji[it.kind] || '•'}</span>
+              ${it.title ? `<strong>${escapeHtml(it.title)}:</strong>` : ''}
+              <span style="${it.status === 'done' ? 'text-decoration:line-through; color:#8b949e;' : ''}">${escapeHtml(it.content)}</span>
+              ${listTag}
+              ${ownerBadge}
+              ${it.is_pinned ? '<span class="p2-chip p2-chip-ok">Закреплено</span>' : ''}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; flex-shrink:0;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleMemoryPin(${it.id}, ${!it.is_pinned})" title="${it.is_pinned ? 'Открепить' : 'Закрепить навечно'}">${it.is_pinned ? '📍' : '📌'}</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleMemoryStatus(${it.id}, '${nextStatus}')" title="Переключить статус">${it.status === 'active' ? '✅' : '↩️'}</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="deleteMemoryItem(${it.id})" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить">🗑️</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    listEl.innerHTML = `<div style="color:#f87171;">Ошибка: ${escapeHtml(e.message)}</div>`;
+  }
+}
+window.fetchMemoryItems = fetchMemoryItems;
+
+async function addMemoryManual() {
+  const kind = document.getElementById('mem-add-kind')?.value || 'fact';
+  const content = (document.getElementById('mem-add-content')?.value || '').trim();
+  const list_name = (document.getElementById('mem-add-list')?.value || '').trim();
+  const owner_user_id = (document.getElementById('mem-add-owner')?.value || '').trim() || null;
+  if (!content) {
+    showToast('Введите текст записи', true);
+    return;
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/memory`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, content, list_name, owner_user_id, is_pinned: kind === 'fact' })
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('mem-add-content').value = '';
+      showToast('Запись добавлена');
+      fetchMemoryItems();
+      fetchUsers();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.addMemoryManual = addMemoryManual;
+
+async function toggleMemoryPin(id, isPinned) {
+  await fetch(`${API_BASE}/api/memory/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_pinned: isPinned })
+  });
+  fetchMemoryItems();
+}
+window.toggleMemoryPin = toggleMemoryPin;
+
+async function toggleMemoryStatus(id, status) {
+  await fetch(`${API_BASE}/api/memory/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status })
+  });
+  fetchMemoryItems();
+}
+window.toggleMemoryStatus = toggleMemoryStatus;
+
+async function deleteMemoryItem(id) {
+  await fetch(`${API_BASE}/api/memory/${id}`, { method: 'DELETE' });
+  fetchMemoryItems();
+  fetchUsers();
+}
+window.deleteMemoryItem = deleteMemoryItem;
+
+async function runMemoryCleanup(refreshModal) {
+  try {
+    const res = await fetch(`${API_BASE}/api/memory/cleanup`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Очистка завершена: ${data.summary || 'ок'}`);
+      if (refreshModal) fetchMemoryItems();
+      fetchUsers();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.runMemoryCleanup = runMemoryCleanup;

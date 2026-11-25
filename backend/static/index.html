@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.182">
+  <link rel="stylesheet" href="static/style.css?v=0.0.183">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.182</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.183</span></p>
         </div>
       </div>
       
@@ -1226,8 +1226,57 @@ PING:
     </div>
   </div>
 
+  <!-- Modal: Просмотр и управление памятью / списками -->
+  <div id="modal-memory-manager" class="modal-backdrop p2-modal-backdrop" style="display: none;">
+    <div class="p2-modal-dialog" style="max-width: 760px;">
+      <div class="p2-modal-header">
+        <h3>🧠 Память и списки Порфирия</h3>
+        <button type="button" class="p2-modal-close" onclick="closeMemoryModal()">×</button>
+      </div>
+      <div class="p2-modal-body">
+        <div id="mem-stats-bar" style="font-size:12px; color:#8b949e; display:flex; gap:12px; flex-wrap:wrap;"></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <input type="text" id="mem-search-input" placeholder="Поиск по памяти и спискам..." style="flex:1; min-width:180px;" oninput="debounceFetchMemory()">
+          <select id="mem-filter-kind" onchange="fetchMemoryItems()">
+            <option value="">Все типы</option>
+            <option value="list_item">🛒 Списки</option>
+            <option value="fact">📌 Факты</option>
+            <option value="preference">⭐ Предпочтения</option>
+            <option value="note">📝 Заметки</option>
+          </select>
+          <select id="mem-filter-status" onchange="fetchMemoryItems()">
+            <option value="active">Активные</option>
+            <option value="done">Выполненные</option>
+            <option value="archived">Архив</option>
+            <option value="all">Все</option>
+          </select>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="runMemoryCleanup(true)">🧹 Очистить</button>
+        </div>
+
+        <div class="plugin-config-box" style="display:grid; grid-template-columns: 110px 1fr 120px 120px auto; gap:8px; align-items:center;">
+          <select id="mem-add-kind" onchange="document.getElementById('mem-add-list').style.display = this.value === 'list_item' ? 'block' : 'none'">
+            <option value="fact">📌 Факт</option>
+            <option value="list_item">🛒 Список</option>
+            <option value="note">📝 Заметка</option>
+          </select>
+          <input type="text" id="mem-add-content" placeholder="Например: Код домофона 1234 или Молоко">
+          <input type="text" id="mem-add-list" placeholder="покупки" value="покупки" style="display:none;">
+          <select id="mem-add-owner">
+            <option value="">🏠 Общий (Дом)</option>
+          </select>
+          <button type="button" class="btn btn-primary btn-sm" onclick="addMemoryManual()">+ Добавить</button>
+        </div>
+
+        <div id="mem-items-list" class="accounts-list" style="max-height: 360px; overflow-y: auto;"></div>
+      </div>
+      <div class="p2-modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeMemoryModal()">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.182"></script>
+  <script src="static/app.js?v=0.0.183"></script>
 </body>
 </html>

@@ -1,5 +1,13 @@
 # Журнал изменений (Changelog)
 
+## 0.0.183
+- **Плагин `builtin.memory`: долговременная память, списки и умная очистка (`backend/db.py`, `backend/plugins/memory.py`, `backend/main.py`, `web_server.py`, `index.html`, `app.js`)**:
+  - Добавлены инструменты Gemini Live: `remember_info` (факты, предпочтения, заметки с дедупликацией и TTL), `recall_memory` (поиск по `FTS5` с поддержкой русской морфологии/префиксов и `py_lower`), `manage_list` (`get`/`add`/`done`/`clear`/`lists` для покупок и дел) и `forget_memory`.
+  - В `get_prompt_snippet` подмешиваются активные списки и до 8 закреплённых (`is_pinned=1`) фактов дома.
+  - Реализована умная авто-очистка `run_memory_cleanup` (просроченный TTL, затухание неиспользуемых заметок, удаление старых `done`-элементов, лимит активных записей при полной сохранности `is_pinned=1`) + фоновый цикл каждые 6 часов в `main.py`.
+  - Добавлены REST API `/api/memory*` и модальное окно **`🧠 Память и списки`** во вкладке «Плагины».
+- Синхронизация версий до `0.0.183`.
+
 ## 0.0.182
 - **Плагин `builtin.telegram_bot` и инструмент `send_to_telegram` (`backend/plugins/telegram_bot.py`, `plugin_registry.py`, `web_server.py`, `app.js`)**:
   - Реализована отправка сообщений, рецептов, ссылок и списков в личные чаты жильцов и общий чат дома через Home Assistant (`notify.*` / `telegram_bot`) или прямой Telegram Bot API (`https://api.telegram.org/bot.../sendMessage` с авто-фолбэком при наличии `bot_token`).

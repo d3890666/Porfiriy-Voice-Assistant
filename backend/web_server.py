@@ -149,6 +149,11 @@ class WebServer:
         self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
         self.app.router.add_get("/api/tools/audit", self.handle_get_tools_audit)
+        self.app.router.add_get("/api/memory", self.handle_get_memory)
+        self.app.router.add_post("/api/memory", self.handle_add_memory)
+        self.app.router.add_post("/api/memory/cleanup", self.handle_cleanup_memory)
+        self.app.router.add_patch("/api/memory/{item_id}", self.handle_patch_memory)
+        self.app.router.add_delete("/api/memory/{item_id}", self.handle_delete_memory)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -1420,5 +1425,85 @@ class WebServer:
             pass
         ok = res.get("status") == "ok"
         return web.json_response({"success": ok, **res}, status=200 if ok else 400)
+
+    async def handle_get_memory(self, request):
+        q = request.query.get("q", "").strip()
+        kind = request.query.get("kind", "").strip() or None
+        list_name = request.query.get("list_name", "").strip() or None
+        status = request.query.get("status", "active").strip()
+        if status == "all":
+            status = None
+        try:
+            limit = int(request.query.get("limit", "100"))
+        except Exception:
+            limit = 100
+        items = db_singleton.search_memory(
+            query=q,
+            kind=kind,
+            list_name=list_name,
+            status=status,
+            limit=limit,
+            touch_access=False,
+        )
+        return web.json_response({
+            "success": True,
+            "items": items,
+            "lists": db_singleton.list_memory_lists(),
+            "stats": db_singleton.get_memory_stats(),
+        })
+
+    async def handle_add_memory(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            ttl_raw = data.get("ttl_days")
+            item = db_singleton.add_memory_item(
+                kind=str(data.get("kind") or "fact"),
+                content=str(data.get("content") or ""),
+                owner_user_id=(str(data.get("owner_user_id")).strip() if data.get("owner_user_id") else None),
+                list_name=str(data.get("list_name") or ""),
+                title=str(data.get("title") or ""),
+                tags=str(data.get("tags") or ""),
+                is_pinned=bool(data.get("is_pinned", False)),
+                ttl_days=int(ttl_raw) if ttl_raw else None,
+            )
+            return web.json_response({"success": True, "item": item})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_patch_memory(self, request):
+        try:
+            item_id = int(request.match_info.get("item_id", "0"))
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid request"}, status=400)
+        updated = db_singleton.update_memory_item(item_id, **(data if isinstance(data, dict) else {}))
+        if not updated:
+            return web.json_response({"success": False, "error": "Запись не найдена"}, status=404)
+        return web.json_response({"success": True, "item": updated})
+
+    async def handle_delete_memory(self, request):
+        try:
+            item_id = int(request.match_info.get("item_id", "0"))
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid id"}, status=400)
+        deleted = db_singleton.delete_memory_item(item_id)
+        if not deleted:
+            return web.json_response({"success": False, "error": "Запись не найдена"}, status=404)
+        return web.json_response({"success": True})
+
+    async def handle_cleanup_memory(self, request):
+        prov = db_singleton.get_provider("builtin.memory", mask_secrets=False) or {}
+        cfg = prov.get("config") or {}
+        res = db_singleton.run_memory_cleanup(
+            auto_cleanup_days=int(cfg.get("auto_cleanup_days") or 30),
+            archive_days=int(cfg.get("archive_days") or 14),
+            max_active_items=int(cfg.get("max_active_items") or 500),
+        )
+        return web.json_response({"success": True, **res, "stats": db_singleton.get_memory_stats()})
 
 

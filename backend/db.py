@@ -88,6 +88,7 @@ class PorfiriyDB:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.create_function("py_lower", 1, lambda s: str(s).lower() if s is not None else "")
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
@@ -879,6 +880,545 @@ class PorfiriyDB:
                     (safe_limit,),
                 ).fetchall()
                 return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # Memory & Lists (SQLite + FTS5 + Smart Cleanup)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _row_to_memory(row: sqlite3.Row) -> Dict[str, Any]:
+        return {
+            "id": int(row["id"]),
+            "owner_user_id": row["owner_user_id"],
+            "owner_user_name": row["owner_user_name"] if "owner_user_name" in row.keys() and row["owner_user_name"] else "Общий (Дом)",
+            "kind": row["kind"],
+            "list_name": row["list_name"] or "",
+            "title": row["title"] or "",
+            "content": row["content"] or "",
+            "tags": row["tags"] or "",
+            "priority": int(row["priority"] or 1),
+            "is_pinned": bool(row["is_pinned"]),
+            "status": row["status"] or "active",
+            "expires_at": row["expires_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_accessed_at": row["last_accessed_at"],
+            "access_count": int(row["access_count"] or 0),
+        }
+
+    def add_memory_item(
+        self,
+        *,
+        kind: str,
+        content: str,
+        owner_user_id: Optional[str] = None,
+        list_name: str = "",
+        title: str = "",
+        tags: str = "",
+        priority: int = 1,
+        is_pinned: bool = False,
+        ttl_days: Optional[int] = None,
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        clean_kind = (kind or "fact").strip().lower()
+        if clean_kind not in ("fact", "note", "list_item", "preference"):
+            raise ValueError(f"Unsupported memory kind: {clean_kind}")
+        clean_content = (content or "").strip()
+        if not clean_content:
+            raise ValueError("Содержимое памяти не может быть пустым")
+
+        owner = (owner_user_id or "").strip().lower() or None
+        clean_list = (list_name or "").strip().lower() if clean_kind == "list_item" else (list_name or "").strip()
+        if clean_kind == "list_item" and not clean_list:
+            clean_list = "покупки"
+        clean_title = (title or "").strip()
+        clean_tags = (tags or "").strip()
+        now_dt = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        now = now_dt.isoformat()
+
+        calc_expires = expires_at
+        if not calc_expires and ttl_days and int(ttl_days) > 0:
+            calc_expires = (now_dt + datetime.timedelta(days=int(ttl_days))).isoformat()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                if owner:
+                    u = conn.execute("SELECT id FROM users WHERE id = ?", (owner,)).fetchone()
+                    if not u:
+                        owner = None
+
+                # Дедупликация для элементов списков
+                if clean_kind == "list_item":
+                    dup = conn.execute(
+                        """
+                        SELECT m.*, u.name AS owner_user_name
+                        FROM memory_items m
+                        LEFT JOIN users u ON u.id = m.owner_user_id
+                        WHERE m.kind = 'list_item' AND m.status = 'active'
+                          AND py_lower(m.list_name) = ? AND py_lower(trim(m.content)) = ?
+                        LIMIT 1
+                        """,
+                        (clean_list.lower(), clean_content.lower()),
+                    ).fetchone()
+                    if dup:
+                        conn.execute(
+                            "UPDATE memory_items SET updated_at = ?, last_accessed_at = ? WHERE id = ?",
+                            (now, now, dup["id"]),
+                        )
+                        conn.commit()
+                        row = conn.execute(
+                            """
+                            SELECT m.*, u.name AS owner_user_name
+                            FROM memory_items m LEFT JOIN users u ON u.id = m.owner_user_id
+                            WHERE m.id = ?
+                            """,
+                            (dup["id"],),
+                        ).fetchone()
+                        res = self._row_to_memory(row)
+                        res["deduplicated"] = True
+                        return res
+
+                # Обновление факта/предпочтения с тем же title у того же владельца
+                if clean_kind in ("fact", "preference") and clean_title:
+                    existing = conn.execute(
+                        """
+                        SELECT id FROM memory_items
+                        WHERE kind = ? AND status = 'active'
+                          AND COALESCE(owner_user_id, '') = COALESCE(?, '')
+                          AND py_lower(trim(title)) = ?
+                        LIMIT 1
+                        """,
+                        (clean_kind, owner, clean_title.lower()),
+                    ).fetchone()
+                    if existing:
+                        conn.execute(
+                            """
+                            UPDATE memory_items
+                            SET content = ?, tags = ?, priority = ?, is_pinned = ?, expires_at = ?, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (
+                                clean_content,
+                                clean_tags,
+                                int(priority or 1),
+                                int(bool(is_pinned)),
+                                calc_expires,
+                                now,
+                                existing["id"],
+                            ),
+                        )
+                        conn.commit()
+                        row = conn.execute(
+                            """
+                            SELECT m.*, u.name AS owner_user_name
+                            FROM memory_items m LEFT JOIN users u ON u.id = m.owner_user_id
+                            WHERE m.id = ?
+                            """,
+                            (existing["id"],),
+                        ).fetchone()
+                        res = self._row_to_memory(row)
+                        res["updated"] = True
+                        return res
+
+                cur = conn.execute(
+                    """
+                    INSERT INTO memory_items(
+                        owner_user_id, kind, list_name, title, content, tags, priority, is_pinned, status,
+                        expires_at, created_at, updated_at, last_accessed_at, access_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        owner,
+                        clean_kind,
+                        clean_list,
+                        clean_title,
+                        clean_content,
+                        clean_tags,
+                        int(priority or 1),
+                        int(bool(is_pinned)),
+                        calc_expires,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+                new_id = cur.lastrowid
+                conn.commit()
+                row = conn.execute(
+                    """
+                    SELECT m.*, u.name AS owner_user_name
+                    FROM memory_items m LEFT JOIN users u ON u.id = m.owner_user_id
+                    WHERE m.id = ?
+                    """,
+                    (new_id,),
+                ).fetchone()
+                return self._row_to_memory(row)
+            finally:
+                conn.close()
+
+    @staticmethod
+    def _build_fts_query(raw_query: str) -> str:
+        tokens = re.findall(r"[0-9A-Za-zА-Яа-яЁё_]+", raw_query or "")
+        parts = []
+        for tok in tokens:
+            t = tok.strip()
+            if len(t) >= 2:
+                parts.append(f'"{t}"*')
+        return " OR ".join(parts)
+
+    def search_memory(
+        self,
+        *,
+        query: str = "",
+        kind: Optional[str] = None,
+        list_name: Optional[str] = None,
+        owner_user_id: Optional[str] = None,
+        include_shared: bool = True,
+        status: Optional[str] = "active",
+        limit: int = 20,
+        touch_access: bool = True,
+    ) -> List[Dict[str, Any]]:
+        safe_limit = max(1, min(int(limit or 20), 200))
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if status:
+            where_clauses.append("m.status = ?")
+            params.append(status)
+        if kind:
+            where_clauses.append("m.kind = ?")
+            params.append(kind.strip().lower())
+        if list_name:
+            where_clauses.append("py_lower(m.list_name) = ?")
+            params.append(list_name.strip().lower())
+        if owner_user_id:
+            if include_shared:
+                where_clauses.append("(m.owner_user_id = ? OR m.owner_user_id IS NULL)")
+            else:
+                where_clauses.append("m.owner_user_id = ?")
+            params.append(owner_user_id.strip().lower())
+
+        where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        clean_query = (query or "").strip()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows: List[sqlite3.Row] = []
+                if clean_query:
+                    fts_q = self._build_fts_query(clean_query)
+                    if fts_q:
+                        try:
+                            fts_where = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
+                            sql = f"""
+                                SELECT m.*, u.name AS owner_user_name
+                                FROM memory_fts
+                                JOIN memory_items m ON m.id = memory_fts.rowid
+                                LEFT JOIN users u ON u.id = m.owner_user_id
+                                WHERE memory_fts MATCH ? {fts_where}
+                                ORDER BY m.is_pinned DESC, bm25(memory_fts) ASC, m.updated_at DESC
+                                LIMIT ?
+                            """
+                            rows = conn.execute(sql, [fts_q, *params, safe_limit]).fetchall()
+                        except Exception as fe:
+                            logger.debug(f"FTS5 search fallback to LIKE: {fe}")
+                            rows = []
+
+                    if not rows:
+                        like_val = f"%{clean_query.lower()}%"
+                        like_cond = "(py_lower(m.title) LIKE ? OR py_lower(m.content) LIKE ? OR py_lower(m.tags) LIKE ? OR py_lower(m.list_name) LIKE ?)"
+                        all_conds = [like_cond] + where_clauses
+                        sql = f"""
+                            SELECT m.*, u.name AS owner_user_name
+                            FROM memory_items m
+                            LEFT JOIN users u ON u.id = m.owner_user_id
+                            WHERE {' AND '.join(all_conds)}
+                            ORDER BY m.is_pinned DESC, m.priority DESC, m.updated_at DESC
+                            LIMIT ?
+                        """
+                        rows = conn.execute(sql, [like_val, like_val, like_val, like_val, *params, safe_limit]).fetchall()
+                else:
+                    sql = f"""
+                        SELECT m.*, u.name AS owner_user_name
+                        FROM memory_items m
+                        LEFT JOIN users u ON u.id = m.owner_user_id
+                        {where_sql}
+                        ORDER BY m.is_pinned DESC, m.priority DESC, m.updated_at DESC
+                        LIMIT ?
+                    """
+                    rows = conn.execute(sql, [*params, safe_limit]).fetchall()
+
+                items = [self._row_to_memory(r) for r in rows]
+                if touch_access and items:
+                    now = _now_iso()
+                    ids = [it["id"] for it in items]
+                    placeholders = ",".join("?" for _ in ids)
+                    conn.execute(
+                        f"UPDATE memory_items SET last_accessed_at = ?, access_count = access_count + 1 WHERE id IN ({placeholders})",
+                        [now, *ids],
+                    )
+                    conn.commit()
+                return items
+            finally:
+                conn.close()
+
+    def list_memory_lists(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        py_lower(list_name) AS list_key,
+                        MAX(list_name) AS list_name,
+                        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_count,
+                        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count
+                    FROM memory_items
+                    WHERE kind = 'list_item' AND trim(list_name) != ''
+                    GROUP BY py_lower(list_name)
+                    ORDER BY active_count DESC, list_name ASC
+                    """
+                ).fetchall()
+                return [
+                    {
+                        "list_name": r["list_name"] or r["list_key"],
+                        "active_count": int(r["active_count"] or 0),
+                        "done_count": int(r["done_count"] or 0),
+                    }
+                    for r in rows
+                ]
+            finally:
+                conn.close()
+
+    def update_memory_item(self, item_id: int, **fields: Any) -> Optional[Dict[str, Any]]:
+        allowed = {"status", "is_pinned", "content", "title", "list_name", "owner_user_id", "priority", "tags", "expires_at"}
+        updates: List[str] = []
+        params: List[Any] = []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k == "is_pinned":
+                v = int(bool(v))
+            elif k == "owner_user_id":
+                v = (str(v).strip().lower() if v else None)
+            elif k == "priority":
+                v = int(v or 1)
+            updates.append(f"{k} = ?")
+            params.append(v)
+
+        if not updates:
+            return None
+        updates.append("updated_at = ?")
+        params.append(_now_iso())
+        params.append(int(item_id))
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(f"UPDATE memory_items SET {', '.join(updates)} WHERE id = ?", params)
+                if cur.rowcount == 0:
+                    return None
+                conn.commit()
+                row = conn.execute(
+                    """
+                    SELECT m.*, u.name AS owner_user_name
+                    FROM memory_items m LEFT JOIN users u ON u.id = m.owner_user_id
+                    WHERE m.id = ?
+                    """,
+                    (int(item_id),),
+                ).fetchone()
+                return self._row_to_memory(row) if row else None
+            finally:
+                conn.close()
+
+    def complete_list_items(
+        self,
+        *,
+        list_name: str = "",
+        item_query: str = "",
+        item_id: Optional[int] = None,
+        clear_all: bool = False,
+    ) -> Dict[str, Any]:
+        now = _now_iso()
+        clean_list = (list_name or "").strip().lower()
+        clean_q = (item_query or "").strip().lower()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                if item_id is not None:
+                    rows = conn.execute(
+                        "SELECT id, content, list_name FROM memory_items WHERE id = ? AND status = 'active'",
+                        (int(item_id),),
+                    ).fetchall()
+                elif clear_all:
+                    if clean_list:
+                        rows = conn.execute(
+                            "SELECT id, content, list_name FROM memory_items WHERE kind = 'list_item' AND status = 'active' AND py_lower(list_name) = ?",
+                            (clean_list,),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT id, content, list_name FROM memory_items WHERE kind = 'list_item' AND status = 'active'"
+                        ).fetchall()
+                else:
+                    conds = ["kind = 'list_item'", "status = 'active'"]
+                    params: List[Any] = []
+                    if clean_list:
+                        conds.append("py_lower(list_name) = ?")
+                        params.append(clean_list)
+                    if clean_q:
+                        conds.append("(py_lower(content) LIKE ? OR py_lower(title) LIKE ?)")
+                        params.extend([f"%{clean_q}%", f"%{clean_q}%"])
+                    rows = conn.execute(
+                        f"SELECT id, content, list_name FROM memory_items WHERE {' AND '.join(conds)}",
+                        params,
+                    ).fetchall()
+
+                if not rows:
+                    return {"updated_count": 0, "items": []}
+
+                ids = [int(r["id"]) for r in rows]
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"UPDATE memory_items SET status = 'done', updated_at = ? WHERE id IN ({placeholders})",
+                    [now, *ids],
+                )
+                conn.commit()
+                return {
+                    "updated_count": len(ids),
+                    "items": [{"id": int(r["id"]), "content": r["content"], "list_name": r["list_name"]} for r in rows],
+                }
+            finally:
+                conn.close()
+
+    def delete_memory_item(self, item_id: int) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute("DELETE FROM memory_items WHERE id = ?", (int(item_id),))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def run_memory_cleanup(
+        self,
+        *,
+        auto_cleanup_days: int = 30,
+        archive_days: int = 14,
+        max_active_items: int = 500,
+    ) -> Dict[str, Any]:
+        now_dt = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        now = now_dt.isoformat()
+        decay_cutoff = (now_dt - datetime.timedelta(days=max(1, int(auto_cleanup_days)))).isoformat()
+        done_cutoff = (now_dt - datetime.timedelta(days=max(1, int(archive_days)))).isoformat()
+        purge_cutoff = (now_dt - datetime.timedelta(days=max(2, int(archive_days) * 2))).isoformat()
+        max_active = max(20, int(max_active_items or 500))
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                # 1. Просроченные по TTL
+                c_exp = conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status = 'archived', updated_at = ?
+                    WHERE status = 'active' AND is_pinned = 0 AND expires_at IS NOT NULL AND expires_at <= ?
+                    """,
+                    (now, now),
+                ).rowcount
+
+                # 2. Выполненные старше archive_days
+                c_done = conn.execute(
+                    "DELETE FROM memory_items WHERE status = 'done' AND is_pinned = 0 AND updated_at <= ?",
+                    (done_cutoff,),
+                ).rowcount
+
+                # 3. Затухание старых неиспользуемых заметок/списков
+                c_decay = conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status = 'archived', updated_at = ?
+                    WHERE status = 'active' AND is_pinned = 0 AND priority <= 1
+                      AND kind IN ('note', 'list_item')
+                      AND COALESCE(last_accessed_at, updated_at) <= ?
+                    """,
+                    (now, decay_cutoff),
+                ).rowcount
+
+                # 4. Ограничение общего количества незакреплённых активных записей
+                over_rows = conn.execute(
+                    """
+                    SELECT id FROM memory_items
+                    WHERE status = 'active' AND is_pinned = 0
+                    ORDER BY priority DESC, COALESCE(last_accessed_at, updated_at) DESC
+                    LIMIT -1 OFFSET ?
+                    """,
+                    (max_active,),
+                ).fetchall()
+                c_cap = 0
+                if over_rows:
+                    over_ids = [int(r["id"]) for r in over_rows]
+                    ph = ",".join("?" for _ in over_ids)
+                    c_cap = conn.execute(
+                        f"UPDATE memory_items SET status = 'archived', updated_at = ? WHERE id IN ({ph})",
+                        [now, *over_ids],
+                    ).rowcount
+
+                # 5. Удаление старого архива
+                c_purged = conn.execute(
+                    "DELETE FROM memory_items WHERE status = 'archived' AND is_pinned = 0 AND updated_at <= ?",
+                    (purge_cutoff,),
+                ).rowcount
+
+                archived_total = int(c_decay + c_cap)
+                summary = f"expired={c_exp}, archived={archived_total}, deleted_done={c_done}, purged_archive={c_purged}"
+                conn.execute(
+                    """
+                    INSERT INTO memory_cleanup_log(run_at, expired_count, archived_count, merged_count, summary)
+                    VALUES (?, ?, ?, 0, ?)
+                    """,
+                    (now, int(c_exp), archived_total, summary),
+                )
+                conn.commit()
+                return {
+                    "run_at": now,
+                    "expired_count": int(c_exp),
+                    "decayed_count": int(c_decay),
+                    "capped_count": int(c_cap),
+                    "archived_count": archived_total,
+                    "deleted_done_count": int(c_done),
+                    "purged_archive_count": int(c_purged),
+                    "summary": summary,
+                }
+            finally:
+                conn.close()
+
+    def get_memory_stats(self) -> Dict[str, Any]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) AS cnt FROM memory_items GROUP BY status"
+                ).fetchall()
+                by_status = {r["status"]: int(r["cnt"]) for r in rows}
+                pinned = conn.execute(
+                    "SELECT COUNT(*) FROM memory_items WHERE is_pinned = 1 AND status = 'active'"
+                ).fetchone()[0]
+                last_cleanup = conn.execute(
+                    "SELECT * FROM memory_cleanup_log ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                return {
+                    "active": by_status.get("active", 0),
+                    "done": by_status.get("done", 0),
+                    "archived": by_status.get("archived", 0),
+                    "pinned": int(pinned),
+                    "total": sum(by_status.values()),
+                    "last_cleanup": dict(last_cleanup) if last_cleanup else None,
+                }
             finally:
                 conn.close()
 
