@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import datetime
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -59,14 +61,19 @@ class TelegramUserbotPlugin(PorfiriyPlugin):
             {
                 "name": "tg_read_messages",
                 "description": (
-                    "Read the latest messages from a specific Telegram chat, contact, group, or channel on a connected account."
+                    "Read messages from a specific Telegram chat, contact, group, or channel on a connected account. "
+                    "Prefer specifying `days` when the user asks for a time period (e.g. 'за сегодня' -> days=1, 'за 3 дня' -> days=3, 'за неделю' -> days=7, 'за месяц' -> days=30)."
                 ),
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
                         "chat_query": {
                             "type": "STRING",
-                            "description": "Chat name, person's first/last name, or @username (e.g. 'Мама', 'Работа', 'news_channel').",
+                            "description": "Chat name, person's first/last name, or @username (e.g. 'Мама', 'Вольный общий', 'news_channel').",
+                        },
+                        "days": {
+                            "type": "INTEGER",
+                            "description": "Optional number of recent days to read (1=today/24h, 3=last 3 days, 7=week, 30=month; max 60). Leave unset if user just asks for latest messages.",
                         },
                         "owner": {
                             "type": "STRING",
@@ -74,7 +81,7 @@ class TelegramUserbotPlugin(PorfiriyPlugin):
                         },
                         "limit": {
                             "type": "INTEGER",
-                            "description": "Number of recent messages to fetch (default 15, max 30).",
+                            "description": "Optional max messages safety cap (default 30 without days, up to 250 with days).",
                         },
                     },
                     "required": ["chat_query"],
@@ -302,19 +309,35 @@ class TelegramUserbotPlugin(PorfiriyPlugin):
                 pass
 
     @staticmethod
-    async def _find_dialog(client: Any, chat_query: str):
+    def _dialog_matches(title: str, uname: str, q: str, q_tokens: List[str]) -> int:
+        """Возвращает ранг совпадения: 3 (точное), 2 (подстрока), 1 (все токены), 0 (нет)."""
+        if q == uname or q == title:
+            return 3
+        if q in title or (uname and q in uname):
+            return 2
+        if q_tokens:
+            hay = f"{title} {uname}"
+            if all(tok in hay for tok in q_tokens):
+                return 1
+        return 0
+
+    @classmethod
+    async def _find_dialog(cls, client: Any, chat_query: str):
         q = (chat_query or "").strip().lower().lstrip("@")
         if not q:
             return None
+        q_tokens = [t for t in re.findall(r"[0-9a-zа-яё]+", q) if len(t) >= 2]
         best = None
-        async for d in client.iter_dialogs(limit=120):
+        best_rank = 0
+        async for d in client.iter_dialogs(limit=150):
             title = (d.name or "").strip().lower()
             uname = (getattr(d.entity, "username", None) or "").strip().lower()
-            if q == uname or q == title:
+            rank = cls._dialog_matches(title, uname, q, q_tokens)
+            if rank == 3:
                 return d
-            if q in title or q in uname:
-                if best is None:
-                    best = d
+            if rank > best_rank:
+                best = d
+                best_rank = rank
         return best
 
     async def execute_tool(self, tool_name: str, args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -361,7 +384,15 @@ class TelegramUserbotPlugin(PorfiriyPlugin):
 
         if tool_name == "tg_read_messages":
             chat_query = str(args.get("chat_query") or "").strip()
-            limit = max(1, min(int(args.get("limit") or 15), 30))
+            raw_days = args.get("days")
+            days = max(0, min(int(raw_days), 60)) if raw_days else 0
+            if days > 0:
+                fetch_limit = max(1, min(int(args.get("limit") or 250), 250))
+                since_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+            else:
+                fetch_limit = max(1, min(int(args.get("limit") or 30), 150))
+                since_dt = None
+
             if not chat_query:
                 return {"status": "error", "error": "Укажите chat_query"}
 
@@ -370,8 +401,12 @@ class TelegramUserbotPlugin(PorfiriyPlugin):
                     dialog = await self._find_dialog(client, chat_query)
                     if not dialog:
                         return None
-                    msgs = []
-                    async for m in client.iter_messages(dialog.entity, limit=limit):
+                    raw_msgs = []
+                    async for m in client.iter_messages(dialog.entity, limit=fetch_limit):
+                        if since_dt and m.date:
+                            m_dt = m.date if m.date.tzinfo else m.date.replace(tzinfo=datetime.timezone.utc)
+                            if m_dt < since_dt:
+                                break
                         sender_name = ""
                         if m.out:
                             sender_name = acc.get("owner_user_name") or "Я"
@@ -380,18 +415,28 @@ class TelegramUserbotPlugin(PorfiriyPlugin):
                             s_ln = getattr(m.sender, "last_name", "") or ""
                             sender_name = (f"{s_fn} {s_ln}").strip() or getattr(m.sender, "title", "") or ""
                         text = (m.message or "").strip() or "[медиа/вложение]"
-                        msgs.append({
+                        raw_msgs.append({
                             "date": m.date.strftime("%Y-%m-%d %H:%M") if m.date else "",
                             "from": sender_name,
-                            "text": text[:500],
+                            "text": text,
                         })
-                    msgs.reverse()
+                    raw_msgs.reverse()
+                    max_len = 220 if len(raw_msgs) > 50 else 350
+                    for item in raw_msgs:
+                        if len(item["text"]) > max_len:
+                            item["text"] = item["text"][:max_len] + "…"
+                    logger.info(
+                        f"[TG-UB] Read {len(raw_msgs)} messages from '{dialog.name}' "
+                        f"(days={days or 'latest'}, limit={fetch_limit}, owner={acc.get('owner_user_name')})"
+                    )
                     return {
                         "status": "ok",
                         "account": acc["label"],
                         "owner": acc.get("owner_user_name"),
                         "chat": dialog.name,
-                        "messages": msgs,
+                        "days": days or None,
+                        "message_count": len(raw_msgs),
+                        "messages": raw_msgs,
                     }
 
                 res = await self._with_client(acc, db, _job)

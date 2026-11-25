@@ -158,6 +158,7 @@ class PluginRegistry:
         t0 = time.monotonic()
         status = "ok"
         error_text = ""
+        res_summary = ""
         try:
             if not pid or not prov or not prov.get("enabled"):
                 status = "error"
@@ -174,9 +175,14 @@ class PluginRegistry:
                     error_text = f"Builtin plugin '{pid}' is not registered"
                     return {"status": "error", "error": error_text}
                 res = await plugin.execute_tool(tool_name, clean_args, ctx_dict)
-                if isinstance(res, dict) and res.get("status") == "error":
-                    status = "error"
-                    error_text = str(res.get("error") or "")
+                if isinstance(res, dict):
+                    if res.get("status") == "error":
+                        status = "error"
+                        error_text = str(res.get("error") or "")
+                    for cnt_key in ("message_count", "count", "added_count", "updated_count", "deleted_count"):
+                        if cnt_key in res and res[cnt_key] is not None:
+                            res_summary = f" -> {cnt_key}={res[cnt_key]}"
+                            break
                 return res if isinstance(res, dict) else {"status": "ok", "result": res}
 
             status = "not_implemented"
@@ -191,12 +197,13 @@ class PluginRegistry:
         finally:
             dur_ms = int((time.monotonic() - t0) * 1000)
             try:
+                preview = (_safe_args_preview(clean_args) + res_summary)[:240]
                 self.db.log_tool_call(
                     tool_name=tool_name,
                     provider_id=pid,
                     speaker_user_id=speaker,
                     device_mac=mac,
-                    args_preview=_safe_args_preview(clean_args),
+                    args_preview=preview,
                     status=status,
                     duration_ms=dur_ms,
                     error=error_text,

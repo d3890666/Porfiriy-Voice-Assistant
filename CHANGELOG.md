@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.187
+- **Умное чтение чатов по дням (`days`) и токен-поиск диалогов (`backend/plugins/telegram_userbot.py`, `backend/plugin_registry.py`)**:
+  - В `tg_read_messages` добавлен параметр `days` (1 — сегодня, 3 — три дня, 7 — неделя, до 60 дней; потолок сообщений с `days` расширен до 250). Модель сама выбирает нужное число дней из контекста запроса.
+  - В `_find_dialog` добавлен токен-поиск по словам (например, запрос `"Вольный общий"` сразу находит `"Вольный | Общий"` без лишнего вызова `tg_list_dialogs`).
+  - В `PluginRegistry` и `logger.info` добавлено логирование количества прочитанных сообщений (`message_count`).
+- Синхронизация версий до `0.0.187`.
+
 ## 0.0.186
 - **Стерео-голос в Telegram, расшифровка пересланных голосовух и плагин `builtin.telegram_userbot` (`backend/telegram_gateway.py`, `backend/plugins/telegram_userbot.py`, `backend/gemini_client.py`, `backend/db.py`, `web_server.py`, `app.js`, `requirements.txt`)**:
   - Ответные голосовые сообщения в Telegram теперь кодируются в стерео (`-ac 2`, `48k` Opus), чтобы звук шёл равномерно в оба наушника.
