@@ -598,7 +598,7 @@ class TelegramBotGateway:
                             if not got_any:
                                 break
 
-                    await asyncio.wait_for(_consume(), timeout=75.0)
+                    await asyncio.wait_for(_consume(), timeout=100.0)
 
             except Exception as e:
                 await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)

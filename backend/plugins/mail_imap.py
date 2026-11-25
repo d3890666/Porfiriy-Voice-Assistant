@@ -9,7 +9,7 @@ import html
 import imaplib
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from ..plugin_registry import PorfiriyPlugin
@@ -341,27 +341,90 @@ class MailImapPlugin(PorfiriyPlugin):
                 except Exception:
                     pass
 
+    @staticmethod
+    def _list_searchable_folders(imap: imaplib.IMAP4_SSL) -> List[str]:
+        """Возвращает список папок для поиска: INBOX первой, далее Archive/All Mail/пользовательские (без Спама/Корзины/Черновиков)."""
+        folders: List[Tuple[int, str]] = []
+        try:
+            typ, data = imap.list()
+            if typ != "OK" or not data:
+                return ["INBOX"]
+            for raw_line in data:
+                if not isinstance(raw_line, bytes):
+                    continue
+                m = re.match(rb'^\(([^)]*)\)\s+(?:"[^"]*"|NIL)\s+(.+)$', raw_line.strip())
+                if not m:
+                    continue
+                flags_low = m.group(1).decode("ascii", errors="ignore").lower()
+                if any(bad in flags_low for bad in ("\\noselect", "\\junk", "\\trash", "\\drafts")):
+                    continue
+                mailbox_raw = m.group(2).decode("ascii", errors="ignore").strip()
+                if not mailbox_raw:
+                    continue
+                unquoted = mailbox_raw.strip('"')
+                low_name = unquoted.lower()
+                if any(bad in low_name for bad in ("spam", "trash", "junk", "draft", "спам", "корзин", "черновик")):
+                    continue
+                # Приоритет: INBOX (0), Archive/All (1), Sent (3), остальное (2)
+                if low_name == "inbox":
+                    prio = 0
+                elif any(k in flags_low for k in ("\\archive", "\\all")) or any(k in low_name for k in ("archive", "архив", "all")):
+                    prio = 1
+                elif "\\sent" in flags_low or "sent" in low_name or "отправлен" in low_name:
+                    prio = 3
+                else:
+                    prio = 2
+                quoted = mailbox_raw if (mailbox_raw.startswith('"') and mailbox_raw.endswith('"')) else f'"{unquoted}"'
+                folders.append((prio, quoted))
+        except Exception as e:
+            logger.debug(f"[MAIL] imap.list() failed: {e}")
+            return ["INBOX"]
+
+        folders.sort(key=lambda x: x[0])
+        seen = set()
+        ordered: List[str] = []
+        for _, name in folders:
+            key = name.strip('"').lower()
+            if key not in seen:
+                seen.add(key)
+                ordered.append(name)
+        return ordered[:10] or ["INBOX"]
+
     @classmethod
     def _run_imap_search_pass(cls, imap: imaplib.IMAP4_SSL, q_clean: str, q_tokens: List[str], days: int, limit: int) -> List[bytes]:
         since = _format_imap_date(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)) if days > 0 else None
         candidate_uids: List[bytes] = []
+        server_search_ok = False
 
-        if q_clean.isascii():
-            ascii_words = [w.replace('"', "") for w in re.findall(r"[A-Za-z0-9@._-]+", q_clean) if len(w) >= 2]
-            if ascii_words:
+        words = [w.replace('"', "") for w in re.findall(r"[0-9A-Za-zА-Яа-яЁё@._-]+", q_clean) if len(w) >= 2]
+        if words:
+            if q_clean.isascii():
                 try:
-                    criteria: List[str] = []
-                    if since:
-                        criteria.extend(["SINCE", since])
-                    for w in ascii_words[:5]:
+                    criteria: List[str] = ["SINCE", since] if since else []
+                    for w in words[:5]:
                         criteria.extend(["TEXT", f'"{w}"'])
                     typ, data = imap.uid("search", None, *criteria)
-                    if typ == "OK" and data and data[0]:
-                        candidate_uids = data[0].split()[-limit:][::-1]
+                    if typ == "OK":
+                        server_search_ok = True
+                        if data and data[0]:
+                            candidate_uids = data[0].split()[-limit:][::-1]
                 except Exception:
-                    candidate_uids = []
+                    server_search_ok = False
+            else:
+                try:
+                    imap._encoding = "utf-8"
+                    criteria = ["SINCE", since] if since else []
+                    for w in words[:5]:
+                        criteria.extend(["TEXT", f'"{w}"'])
+                    typ, data = imap.uid("search", "UTF-8", *criteria)
+                    if typ == "OK":
+                        server_search_ok = True
+                        if data and data[0]:
+                            candidate_uids = data[0].split()[-limit:][::-1]
+                except Exception:
+                    server_search_ok = False
 
-        if not candidate_uids:
+        if not server_search_ok and not candidate_uids:
             if since:
                 typ, data = imap.uid("search", None, "SINCE", since)
             else:
@@ -381,7 +444,7 @@ class MailImapPlugin(PorfiriyPlugin):
                     hdr_matched.append(uid_b)
                     if len(hdr_matched) >= limit:
                         break
-                elif len(body_fallback_pool) < 18:
+                elif len(body_fallback_pool) < 15:
                     body_fallback_pool.append(uid_b)
 
             candidate_uids = hdr_matched
@@ -405,38 +468,50 @@ class MailImapPlugin(PorfiriyPlugin):
             imap = cls._open_imap(acc)
             q_clean = (query or "").strip()
             q_tokens = [t for t in re.findall(r"[0-9a-zа-яё@._-]+", q_clean.lower()) if len(t) >= 2]
-
-            if days is None:
-                # Прогрессивный поиск: сначала последние 30 дней; если меньше limit — добираем из всего ящика
-                candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 30, limit)
-                if len(candidate_uids) < limit:
-                    older_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 0, limit)
-                    seen = set(candidate_uids)
-                    for uid_b in older_uids:
-                        if uid_b not in seen:
-                            candidate_uids.append(uid_b)
-                            seen.add(uid_b)
-                            if len(candidate_uids) >= limit:
-                                break
-            else:
-                candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, days, limit)
-
+            folders = cls._list_searchable_folders(imap)
             results: List[Dict[str, Any]] = []
-            for uid_b in candidate_uids[:limit]:
-                ftyp, fdata = imap.uid("fetch", uid_b, "(BODY.PEEK[])")
-                if ftyp != "OK":
+
+            for folder in folders:
+                if len(results) >= limit:
+                    break
+                try:
+                    sel_typ, _ = imap.select(folder, readonly=True)
+                    if sel_typ != "OK":
+                        continue
+                except Exception:
                     continue
-                msg = email.message_from_bytes(_extract_bytes_from_fetch(fdata))
-                results.append({
-                    "uid": uid_b.decode("ascii", errors="ignore"),
-                    "account_id": acc["id"],
-                    "account": acc["label"],
-                    "owner": acc.get("owner_user_name"),
-                    "from": _decode_mime_header(msg.get("From")),
-                    "subject": _decode_mime_header(msg.get("Subject")) or "(без темы)",
-                    "date": _format_msg_date(msg.get("Date")),
-                    "snippet": _extract_text_body(msg, max_len=2500),
-                })
+
+                rem = limit - len(results)
+                if days is None:
+                    candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 30, rem)
+                    if len(candidate_uids) < rem:
+                        older_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 0, rem)
+                        seen = set(candidate_uids)
+                        for uid_b in older_uids:
+                            if uid_b not in seen:
+                                candidate_uids.append(uid_b)
+                                seen.add(uid_b)
+                                if len(candidate_uids) >= rem:
+                                    break
+                else:
+                    candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, days, rem)
+
+                for uid_b in candidate_uids[:rem]:
+                    ftyp, fdata = imap.uid("fetch", uid_b, "(BODY.PEEK[])")
+                    if ftyp != "OK":
+                        continue
+                    msg = email.message_from_bytes(_extract_bytes_from_fetch(fdata))
+                    results.append({
+                        "uid": uid_b.decode("ascii", errors="ignore"),
+                        "folder": folder.strip('"'),
+                        "account_id": acc["id"],
+                        "account": acc["label"],
+                        "owner": acc.get("owner_user_name"),
+                        "from": _decode_mime_header(msg.get("From")),
+                        "subject": _decode_mime_header(msg.get("Subject")) or "(без темы)",
+                        "date": _format_msg_date(msg.get("Date")),
+                        "snippet": _extract_text_body(msg, max_len=2500),
+                    })
             return results
         except Exception as e:
             logger.warning(f"[MAIL] Search error in {acc.get('label')}: {e}")
