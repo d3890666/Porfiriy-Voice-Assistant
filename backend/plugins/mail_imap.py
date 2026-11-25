@@ -168,11 +168,11 @@ class MailImapPlugin(PorfiriyPlugin):
                         },
                         "days": {
                             "type": "INTEGER",
-                            "description": "How many recent days to search (default 14; pass 0 to search ALL time without date limit, e.g. for old passwords or registrations).",
+                            "description": "Optional recent days filter (default 0 = search ALL time; pass e.g. 7 or 30 only if user asks for recent mail).",
                         },
                         "limit": {
                             "type": "INTEGER",
-                            "description": "Max matching emails to return with text snippets (default 6, max 12).",
+                            "description": "Max matching emails to return with body text (default 8, max 15).",
                         },
                     },
                     "required": ["query"],
@@ -413,7 +413,7 @@ class MailImapPlugin(PorfiriyPlugin):
                     "from": _decode_mime_header(msg.get("From")),
                     "subject": _decode_mime_header(msg.get("Subject")) or "(без темы)",
                     "date": _format_msg_date(msg.get("Date")),
-                    "snippet": _extract_text_body(msg, max_len=650),
+                    "snippet": _extract_text_body(msg, max_len=2500),
                 })
             return results
         except Exception as e:
@@ -485,8 +485,8 @@ class MailImapPlugin(PorfiriyPlugin):
             if not query:
                 return {"status": "error", "error": "Укажите поисковый запрос query"}
             raw_days = args.get("days")
-            days = max(0, min(int(raw_days), 3650)) if raw_days is not None else 14
-            limit = max(1, min(int(args.get("limit") or 6), 15))
+            days = max(0, min(int(raw_days), 3650)) if raw_days is not None else 0
+            limit = max(1, min(int(args.get("limit") or 8), 15))
             nested = await asyncio.gather(
                 *(asyncio.to_thread(self._sync_search, acc, query, days, limit) for acc in accounts)
             )
