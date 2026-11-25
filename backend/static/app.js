@@ -4,6 +4,8 @@ const API_BASE = window.location.pathname.replace(/\/index\.html.*$/i, '').repla
 let devices = [];
 let globalOptions = {};
 let availableModels = [];
+let bigModelsHealth = {};
+let bigModelsPoolState = [];
 let availableMediaPlayers = [];
 let CANONICAL_PROMPTS = window.CANONICAL_PROMPTS || {};
 
@@ -83,6 +85,7 @@ async function fetchGlobalOptions() {
       const data = await res.json();
       globalOptions = data.options || {};
       availableModels = data.models || [];
+      bigModelsHealth = data.big_models_health || {};
       availableMediaPlayers = data.media_players || [];
       if (data.canonical_prompts) {
         CANONICAL_PROMPTS = data.canonical_prompts;
@@ -1484,6 +1487,7 @@ async function refreshModelsList() {
       const select = document.getElementById('cfg-model');
       const currentVal = select ? select.value : globalOptions.gemini_model;
       populateModelsDropdown(currentVal);
+      if (typeof renderBigModelsPool === 'function') renderBigModelsPool();
       const liveCount = availableModels.filter(m => m.is_live).length;
       showToast(`Модели обновлены! Найдено ${availableModels.length} моделей (${liveCount} Live Audio).`);
     } else {
@@ -1530,6 +1534,15 @@ function populateGlobalSettingsForm() {
   }
 
   populateModelsDropdown(globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview');
+
+  const bmChk = document.getElementById('cfg-big-models-enabled');
+  if (bmChk) bmChk.checked = !!globalOptions.big_models_enabled;
+  setVal('cfg-big-models-threshold', globalOptions.big_models_threshold_chars || 4000);
+  bigModelsPoolState = Array.isArray(globalOptions.big_models_pool)
+    ? globalOptions.big_models_pool.map(item => ({ ...item }))
+    : [];
+  renderBigModelsPool();
+
   setVal('cfg-voice', globalOptions.voice_name || 'Charon');
   setVal('cfg-temperature', globalOptions.temperature !== undefined ? globalOptions.temperature : 0.7);
   const valTemp = document.getElementById('val-temp');
@@ -1804,6 +1817,9 @@ async function saveGlobalSettings(e) {
 
     const payload = {
       gemini_model: selectedModel,
+      big_models_enabled: document.getElementById('cfg-big-models-enabled')?.checked || false,
+      big_models_threshold_chars: parseInt(document.getElementById('cfg-big-models-threshold')?.value || 4000, 10),
+      big_models_pool: bigModelsPoolState,
       voice_name: document.getElementById('cfg-voice')?.value,
       temperature: parseFloat(document.getElementById('cfg-temperature')?.value || 0.7),
       thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 7),
@@ -4025,3 +4041,127 @@ async function testMailImapAccount(accountId) {
   }
 }
 window.testMailImapAccount = testMailImapAccount;
+
+// -------------------------------------------------------------------------
+// Пул больших моделей (BigModelPool)
+// -------------------------------------------------------------------------
+function renderBigModelsPool() {
+  const listEl = document.getElementById('big-models-list');
+  if (!listEl) return;
+
+  if (!bigModelsPoolState.length) {
+    listEl.innerHTML = '<div style="font-size:12px; color:#8b949e; padding:6px 0;">Модели ещё не добавлены. Нажмите «+ Добавить модель» и сохраните настройки.</div>';
+    return;
+  }
+
+  const allModels = Array.isArray(availableModels) ? availableModels : [];
+  const textModels = allModels.filter(m => m && !m.is_live);
+  const liveModels = allModels.filter(m => m && m.is_live);
+
+  listEl.innerHTML = bigModelsPoolState.map((row, idx) => {
+    const mid = row.model || '';
+    const prio = row.priority !== undefined ? row.priority : (idx + 1);
+    const enabled = row.enabled !== false;
+    const h = bigModelsHealth[mid];
+    let statusBadge = '<span class="p2-chip p2-chip-muted">⚪ Не проверялась</span>';
+    if (h) {
+      if (h.status === 'ok') {
+        statusBadge = `<span class="p2-chip p2-chip-ok">🟢 Работает (${Number(h.last_latency_ms || 0)} мс)</span>`;
+      } else {
+        statusBadge = `<span class="p2-chip" style="color:#f87171;" title="${escapeHtml(h.last_error || '')}">🔴 Ошибка</span>`;
+      }
+    }
+
+    const inList = allModels.some(m => m && m.id === mid);
+    let optsHtml = '';
+    if (textModels.length) {
+      optsHtml += '<optgroup label="Текстовые / Большие модели">';
+      textModels.forEach(m => {
+        optsHtml += `<option value="${escapeHtml(m.id)}" ${m.id === mid ? 'selected' : ''}>${escapeHtml(m.name || m.id)}</option>`;
+      });
+      optsHtml += '</optgroup>';
+    }
+    if (liveModels.length) {
+      optsHtml += '<optgroup label="Live модели">';
+      liveModels.forEach(m => {
+        optsHtml += `<option value="${escapeHtml(m.id)}" ${m.id === mid ? 'selected' : ''}>${escapeHtml(m.name || m.id)}</option>`;
+      });
+      optsHtml += '</optgroup>';
+    }
+    if (!inList && mid) {
+      optsHtml += `<option value="${escapeHtml(mid)}" selected>${escapeHtml(mid)}</option>`;
+    }
+    if (!optsHtml) {
+      optsHtml = `<option value="models/gemini-2.5-pro" ${mid === 'models/gemini-2.5-pro' ? 'selected' : ''}>models/gemini-2.5-pro</option><option value="models/gemini-2.5-flash" ${mid === 'models/gemini-2.5-flash' ? 'selected' : ''}>models/gemini-2.5-flash</option>`;
+    }
+
+    return `
+      <div class="account-row" style="gap:8px; flex-wrap:wrap;">
+        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="updateBigModelRow(${idx}, 'enabled', this.checked)" title="Вкл/Выкл в пуле">
+        <select style="flex:1; min-width:210px; padding:5px 8px; font-size:12px;" onchange="updateBigModelRow(${idx}, 'model', this.value)">${optsHtml}</select>
+        <div style="display:flex; align-items:center; gap:4px;">
+          <span style="font-size:11px; color:#8b949e;">Приоритет:</span>
+          <input type="number" min="1" max="99" value="${Number(prio)}" style="width:58px; padding:4px 6px; font-size:12px;" onchange="updateBigModelRow(${idx}, 'priority', parseInt(this.value || '1', 10))">
+        </div>
+        ${statusBadge}
+        <button type="button" class="btn btn-secondary btn-sm" onclick="testBigModelRow(${idx})" title="Проверить модель прямо сейчас">🧪 Тест</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="removeBigModelRow(${idx})" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить">🗑️</button>
+      </div>
+    `;
+  }).join('');
+}
+window.renderBigModelsPool = renderBigModelsPool;
+
+function addBigModelRow() {
+  const nonLive = (availableModels || []).filter(m => m && !m.is_live);
+  const used = new Set(bigModelsPoolState.map(r => r.model));
+  const preferred = nonLive.find(m => /2\.5-pro|pro/i.test(m.id) && !used.has(m.id))
+    || nonLive.find(m => !used.has(m.id))
+    || nonLive[0]
+    || (availableModels && availableModels[0]);
+  const defModel = preferred ? preferred.id : 'models/gemini-2.5-pro';
+  bigModelsPoolState.push({
+    model: defModel,
+    priority: bigModelsPoolState.length + 1,
+    enabled: true,
+  });
+  renderBigModelsPool();
+}
+window.addBigModelRow = addBigModelRow;
+
+function updateBigModelRow(idx, field, val) {
+  if (!bigModelsPoolState[idx]) return;
+  bigModelsPoolState[idx][field] = val;
+  if (field === 'model') renderBigModelsPool();
+}
+window.updateBigModelRow = updateBigModelRow;
+
+function removeBigModelRow(idx) {
+  bigModelsPoolState.splice(idx, 1);
+  renderBigModelsPool();
+}
+window.removeBigModelRow = removeBigModelRow;
+
+async function testBigModelRow(idx) {
+  const row = bigModelsPoolState[idx];
+  if (!row || !row.model) return;
+  showToast(`Тестирую ${row.model}...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/big_models/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: row.model })
+    });
+    const data = await res.json();
+    if (data.health) bigModelsHealth = data.health;
+    renderBigModelsPool();
+    if (data.success) {
+      showToast(`Модель ${row.model} работает (${data.latency_ms} мс)`);
+    } else {
+      showToast(`Ошибка ${row.model}: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.testBigModelRow = testBigModelRow;

@@ -279,6 +279,31 @@ class GeminiProxyClient:
 
         base_decls = [ha_tool, get_state_tool, search_music_tool, play_music_tool, schedule_action_tool, manage_timers_tool]
         declared_names = {d.name for d in base_decls}
+
+        # Явный инструмент делегирования в пул больших моделей (если включено в настройках)
+        try:
+            from config import get_options as _get_opts
+            if _get_opts().get("big_models_enabled"):
+                big_tool = _make_decl(
+                    name="ask_big_model",
+                    description=(
+                        "Delegate a complex analytical task, multi-source synthesis, or large text analysis "
+                        "to the pool of large-context Gemini models."
+                    ),
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "task": types.Schema(type=types.Type.STRING, description="Clear instruction or question for the big model."),
+                            "context": types.Schema(type=types.Type.STRING, description="Raw text/data to analyze or summarize."),
+                        },
+                        required=["task"],
+                    ),
+                )
+                base_decls.append(big_tool)
+                declared_names.add("ask_big_model")
+        except Exception:
+            pass
+
         if plugin_registry_singleton:
             try:
                 for spec in plugin_registry_singleton.get_active_tool_specs():

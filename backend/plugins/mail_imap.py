@@ -168,7 +168,7 @@ class MailImapPlugin(PorfiriyPlugin):
                         },
                         "days": {
                             "type": "INTEGER",
-                            "description": "How many recent days to search (default 14, max 60).",
+                            "description": "How many recent days to search (default 14; pass 0 to search ALL time without date limit, e.g. for old passwords or registrations).",
                         },
                         "limit": {
                             "type": "INTEGER",
@@ -346,7 +346,7 @@ class MailImapPlugin(PorfiriyPlugin):
         imap = None
         try:
             imap = cls._open_imap(acc)
-            since = _format_imap_date(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=max(1, days)))
+            since = _format_imap_date(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)) if days > 0 else None
             q_clean = (query or "").strip()
             q_tokens = [t for t in re.findall(r"[0-9a-zа-яё@._-]+", q_clean.lower()) if len(t) >= 2]
             candidate_uids: List[bytes] = []
@@ -354,16 +354,22 @@ class MailImapPlugin(PorfiriyPlugin):
             if q_clean.isascii():
                 safe_q = q_clean.replace('"', "")
                 try:
-                    typ, data = imap.uid("search", None, "SINCE", since, "TEXT", f'"{safe_q}"')
+                    if since:
+                        typ, data = imap.uid("search", None, "SINCE", since, "TEXT", f'"{safe_q}"')
+                    else:
+                        typ, data = imap.uid("search", None, "TEXT", f'"{safe_q}"')
                     if typ == "OK" and data and data[0]:
                         candidate_uids = data[0].split()[-limit:][::-1]
                 except Exception:
                     candidate_uids = []
 
             if not candidate_uids:
-                typ, data = imap.uid("search", None, "SINCE", since)
+                if since:
+                    typ, data = imap.uid("search", None, "SINCE", since)
+                else:
+                    typ, data = imap.uid("search", None, "ALL")
                 all_uids = (data[0] or b"").split() if typ == "OK" and data else []
-                recent_uids = all_uids[-60:][::-1]
+                recent_uids = all_uids[-80:][::-1]
                 hdr_matched: List[bytes] = []
                 body_fallback_pool: List[bytes] = []
 
@@ -478,8 +484,9 @@ class MailImapPlugin(PorfiriyPlugin):
             query = str(args.get("query") or "").strip()
             if not query:
                 return {"status": "error", "error": "Укажите поисковый запрос query"}
-            days = max(1, min(int(args.get("days") or 14), 60))
-            limit = max(1, min(int(args.get("limit") or 6), 12))
+            raw_days = args.get("days")
+            days = max(0, min(int(raw_days), 3650)) if raw_days is not None else 14
+            limit = max(1, min(int(args.get("limit") or 6), 15))
             nested = await asyncio.gather(
                 *(asyncio.to_thread(self._sync_search, acc, query, days, limit) for acc in accounts)
             )

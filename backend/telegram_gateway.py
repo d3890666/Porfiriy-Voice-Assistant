@@ -257,10 +257,11 @@ class TelegramBotGateway:
         except Exception:
             pass
 
-    async def _send_tg_text(self, session: aiohttp.ClientSession, bot_token: str, chat_id: str, text: str) -> None:
+    async def _send_tg_text(self, session: aiohttp.ClientSession, bot_token: str, chat_id: str, text: str) -> Optional[int]:
         clean = (text or "").strip()
         if not clean:
-            return
+            return None
+        last_msg_id: Optional[int] = None
         # Разбиваем слишком длинные ответы на части <= 4000 символов
         chunks = [clean[i : i + 4000] for i in range(0, len(clean), 4000)]
         for chunk in chunks:
@@ -272,6 +273,25 @@ class TelegramBotGateway:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning(f"[TG-GW] sendMessage failed ({resp.status}): {body[:300]}")
+                else:
+                    try:
+                        data = await resp.json(content_type=None)
+                        last_msg_id = (data.get("result") or {}).get("message_id")
+                    except Exception:
+                        pass
+        return last_msg_id
+
+    async def _delete_tg_msg(self, session: aiohttp.ClientSession, bot_token: str, chat_id: str, msg_id: Optional[int]) -> None:
+        if not msg_id:
+            return
+        try:
+            await session.post(
+                f"https://api.telegram.org/bot{bot_token}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": int(msg_id)},
+                timeout=aiohttp.ClientTimeout(total=8),
+            )
+        except Exception:
+            pass
 
     async def _send_tg_voice(
         self, session: aiohttp.ClientSession, bot_token: str, chat_id: str, ogg_bytes: bytes, caption: str = ""
@@ -514,6 +534,12 @@ class TelegramBotGateway:
             pcm_chunks: List[bytes] = []
             turn_state = {"tool_executed": False, "playback_changed": False}
             sent_to_same_chat = False
+            status_msg_id: Optional[int] = None
+
+            async def _on_progress(progress_text: str) -> None:
+                nonlocal status_msg_id
+                if status_msg_id is None:
+                    status_msg_id = await self._send_tg_text(http_sess, bot_token, chat_id, progress_text)
 
             try:
                 async with proxy.connect() as session:
@@ -530,12 +556,15 @@ class TelegramBotGateway:
                                     fn_resps = []
                                     for call in response.tool_call.function_calls:
                                         call_args = dict(call.args) if call.args else {}
+                                        current_q = text_in or "".join(input_transcript_parts).strip()
                                         res = await self.tool_executor.execute(
                                             call.name,
                                             call_args,
                                             options,
                                             dev=dev_ctx,
                                             turn_state=turn_state,
+                                            user_query=current_q,
+                                            on_progress=_on_progress,
                                         )
                                         if call.name == "send_to_telegram" and str(res.get("chat_id") or "") == chat_id:
                                             sent_to_same_chat = True
@@ -569,12 +598,15 @@ class TelegramBotGateway:
                             if not got_any:
                                 break
 
-                    await asyncio.wait_for(_consume(), timeout=60.0)
+                    await asyncio.wait_for(_consume(), timeout=75.0)
 
             except Exception as e:
+                await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
                 logger.error(f"[TG-GW] Gemini Live error for chat_id={chat_id}: {e}", exc_info=True)
                 await self._send_tg_text(http_sess, bot_token, chat_id, f"Ошибка обработки запроса: {e}")
                 return
+
+            await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
 
             reply_text = "".join(output_text_parts).strip()
             user_history_text = (text_in or "".join(input_transcript_parts).strip() or "[Голосовое сообщение]").strip()

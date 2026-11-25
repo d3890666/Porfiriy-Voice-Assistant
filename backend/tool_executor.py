@@ -41,6 +41,8 @@ class ToolExecutor:
         turn_state: Optional[Dict[str, Any]] = None,
         on_feedback: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         default_player_fallback: str = "media_player.living_room",
+        user_query: str = "",
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         """
         Выполняет инструмент и возвращает словарь ответа для Gemini FunctionResponse.
@@ -293,6 +295,26 @@ class ToolExecutor:
 
                 return {"status": "error", "error": f"Unknown manage_timers action: {action}"}
 
+            if name == "ask_big_model":
+                try:
+                    from big_models import big_model_pool_singleton
+                except ImportError:
+                    from .big_models import big_model_pool_singleton
+                if on_progress:
+                    try:
+                        await on_progress("🔍 Передаю сложную задачу большой модели, скоро вернусь...")
+                    except Exception:
+                        pass
+                task_txt = str(args.get("task") or "").strip()
+                ctx_txt = str(args.get("context") or "").strip()
+                full_prompt = f"{task_txt}\n\nКонтекст:\n{ctx_txt}" if ctx_txt else task_txt
+                big_res = await big_model_pool_singleton.run_text_task(full_prompt, options)
+                if turn_state is not None:
+                    turn_state["tool_executed"] = True
+                if big_res.get("success"):
+                    return {"status": "ok", "model": big_res["model"], "answer": big_res["text"]}
+                return {"status": "error", "error": big_res.get("error") or "Big model pool failed"}
+
             if plugin_registry_singleton and plugin_registry_singleton.handles_tool(name):
                 res = await plugin_registry_singleton.execute_tool(
                     name,
@@ -303,6 +325,8 @@ class ToolExecutor:
                         "ha_api": self.ha_api,
                         "turn_state": turn_state,
                         "device_manager": self.device_manager,
+                        "user_query": user_query,
+                        "on_progress": on_progress,
                     },
                 )
                 if turn_state is not None:

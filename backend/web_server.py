@@ -35,11 +35,13 @@ except ImportError:
 
 try:
     from .db import db_singleton
+    from .big_models import big_model_pool_singleton
     from .plugins.telegram_bot import TelegramBotPlugin
     from .plugins.telegram_userbot import TelegramUserbotPlugin
     from .plugins.mail_imap import MailImapPlugin
 except ImportError:
     from db import db_singleton
+    from big_models import big_model_pool_singleton
     from plugins.telegram_bot import TelegramBotPlugin
     from plugins.telegram_userbot import TelegramUserbotPlugin
     from plugins.mail_imap import MailImapPlugin
@@ -156,6 +158,7 @@ class WebServer:
         self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
         self.app.router.add_get("/api/tools/audit", self.handle_get_tools_audit)
+        self.app.router.add_post("/api/big_models/test", self.handle_test_big_model)
         self.app.router.add_get("/api/memory", self.handle_get_memory)
         self.app.router.add_post("/api/memory", self.handle_add_memory)
         self.app.router.add_post("/api/memory/cleanup", self.handle_cleanup_memory)
@@ -408,6 +411,7 @@ class WebServer:
             "version": get_addon_version(),
             "options": self._safe_options(opts),
             "models": models,
+            "big_models_health": big_model_pool_singleton.get_health_map(),
             "media_players": media_players,
             "addon_version": get_addon_version(),
             "bundled_quasar_version": self.quasar_manager.get_bundled_version_info().get("version", ""),
@@ -431,7 +435,8 @@ class WebServer:
             updated_opts = dict(current_opts)
             
             allowed_fields = [
-                "gemini_api_key", "gemini_model", "voice_name", "temperature",
+                "gemini_api_key", "gemini_model", "big_models_enabled", "big_models_threshold_chars", "big_models_pool",
+                "voice_name", "temperature",
                 "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
                 "enable_barge_in", "barge_in_threshold_rms", "prompt_persona", "prompt_users",
                 "prompt_smart_home", "prompt_general",
@@ -485,8 +490,24 @@ class WebServer:
                                     engine.set_threshold(new_thr)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled"]:
                         updated_opts[field] = bool(val)
+                    elif field == "big_models_threshold_chars":
+                        try:
+                            updated_opts[field] = max(500, min(100000, int(val)))
+                        except (ValueError, TypeError):
+                            pass
+                    elif field == "big_models_pool":
+                        if isinstance(val, list):
+                            cleaned_pool = []
+                            for idx, item in enumerate(val):
+                                if isinstance(item, dict) and str(item.get("model") or "").strip():
+                                    cleaned_pool.append({
+                                        "model": str(item["model"]).strip(),
+                                        "priority": int(item.get("priority", idx + 1)),
+                                        "enabled": bool(item.get("enabled", True)),
+                                    })
+                            updated_opts[field] = cleaned_pool
                     elif field in ["openai_api_key", "default_airplay_player"]:
                         sval = str(val).strip()
                         if field == "openai_api_key" and ("..." in sval or "*" in sval):
@@ -1535,6 +1556,16 @@ class WebServer:
     async def handle_mail_imap_test(self, request):
         aid = request.match_info.get("account_id", "").strip()
         res = await MailImapPlugin.test_connection(db_singleton, aid)
+        return web.json_response(res, status=200 if res.get("success") else 400)
+
+    async def handle_test_big_model(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        model_id = str((data or {}).get("model") or "").strip()
+        opts = self.options_callback() if self.options_callback else {}
+        res = await big_model_pool_singleton.test_model(model_id, opts.get("gemini_api_key", ""))
         return web.json_response(res, status=200 if res.get("success") else 400)
 
 

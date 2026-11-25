@@ -191,6 +191,9 @@ def get_options() -> Dict[str, Any]:
     defaults = {
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": DEFAULT_GEMINI_MODEL,
+        "big_models_enabled": False,
+        "big_models_threshold_chars": 4000,
+        "big_models_pool": [],
         "system_prompt": "",
         "prompt_persona": DEFAULT_PERSONA,
         "prompt_users": DEFAULT_USERS,

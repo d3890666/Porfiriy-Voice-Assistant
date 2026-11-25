@@ -7,10 +7,14 @@ from typing import Any, Dict, List, Optional
 
 try:
     from .db import PorfiriyDB, db_singleton
+    from .big_models import big_model_pool_singleton
 except ImportError:
     from db import PorfiriyDB, db_singleton
+    from big_models import big_model_pool_singleton
 
 logger = logging.getLogger("plugins")
+
+CONTEXT_GATE_TOOLS = {"tg_read_messages", "tg_search_messages", "mail_search", "mail_read_message"}
 
 
 class PorfiriyPlugin:
@@ -183,6 +187,48 @@ class PluginRegistry:
                         if cnt_key in res and res[cnt_key] is not None:
                             res_summary = f" -> {cnt_key}={res[cnt_key]}"
                             break
+
+                # Context Gate: автоматическая передача крупного результата в пул больших моделей
+                opts = ctx_dict.get("options") or {}
+                if (
+                    opts.get("big_models_enabled")
+                    and tool_name in CONTEXT_GATE_TOOLS
+                    and isinstance(res, dict)
+                    and res.get("status") == "ok"
+                ):
+                    raw_json = json.dumps(res, ensure_ascii=False)
+                    threshold = max(500, int(opts.get("big_models_threshold_chars") or 4000))
+                    if len(raw_json) > threshold:
+                        on_progress = ctx_dict.get("on_progress")
+                        if on_progress:
+                            try:
+                                await on_progress("🔍 Данных много, передаю на анализ большой модели, скоро вернусь...")
+                            except Exception:
+                                pass
+                        user_q = str(ctx_dict.get("user_query") or "").strip()
+                        big_prompt = (
+                            f"Исходный запрос пользователя: {user_q or 'Проанализируй и кратко перескажи данные.'}\n\n"
+                            f"Инструмент `{tool_name}` вернул большой объём данных ({len(raw_json)} символов).\n"
+                            f"Сделай точную, структурированную выжимку для ответа пользователю на русском языке: "
+                            f"сохрани ключевые факты, даты, имена, ссылки, пароли и коды.\n\n"
+                            f"ДАННЫЕ:\n{raw_json[:180000]}"
+                        )
+                        big_res = await big_model_pool_singleton.run_text_task(big_prompt, opts)
+                        if big_res.get("success"):
+                            res_summary += f" -> big={big_res['model']}"
+                            return {
+                                "status": "ok",
+                                "delegated_to_big_model": big_res["model"],
+                                "original_chars": len(raw_json),
+                                "summary": big_res["text"],
+                            }
+                        status = "error"
+                        error_text = str(big_res.get("error") or "Big model pool failed")
+                        return {
+                            "status": "error",
+                            "error": f"Не удалось обработать большой объём данных: {error_text}",
+                        }
+
                 return res if isinstance(res, dict) else {"status": "ok", "result": res}
 
             status = "not_implemented"
