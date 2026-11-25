@@ -630,6 +630,17 @@ async def handle_client(websocket):
                                     elif not has_data:
                                         await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
 
+                                esp_progress_played = False
+
+                                async def _esp_progress(_msg: str):
+                                    nonlocal esp_progress_played
+                                    if esp_progress_played:
+                                        return
+                                    esp_progress_played = True
+                                    phrase = phrase_manager.get_phrase("thinking")
+                                    if phrase:
+                                        await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
+
                                 for fc in response.tool_call.function_calls:
                                     safe_result = await tool_executor.execute(
                                         fc.name,
@@ -637,6 +648,7 @@ async def handle_client(websocket):
                                         options,
                                         dev=device_manager.get_device(client_mac),
                                         on_feedback=_esp_tool_feedback,
+                                        on_progress=_esp_progress,
                                     )
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
@@ -1321,6 +1333,17 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 device_manager.set_device_state(client_mac, "thinking")
                                 await _send_json({"type": "state", "state": "thinking"})
                                 function_responses = []
+                                station_progress_played = False
+
+                                async def _station_progress(_msg: str):
+                                    nonlocal station_progress_played
+                                    if station_progress_played:
+                                        return
+                                    station_progress_played = True
+                                    phrase = phrase_manager.get_phrase("thinking")
+                                    if phrase:
+                                        await phrase_manager.play_phrase(websocket, phrase, volume=1.0)
+
                                 for fc in response.tool_call.function_calls:
                                     tool_res = await tool_executor.execute(
                                         fc.name,
@@ -1328,6 +1351,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                         options,
                                         dev=device_manager.get_device(client_mac),
                                         turn_state=turn_state,
+                                        on_progress=_station_progress,
                                     )
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
@@ -1445,7 +1469,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
                     stall_task = asyncio.create_task(_stall_guard())
                     try:
-                        await asyncio.wait_for(recv_task, timeout=45.0)
+                        await asyncio.wait_for(recv_task, timeout=90.0)
                     except asyncio.CancelledError:
                         if not turn_responded and replay_chunks is None and turn_idx == 0:
                             return False

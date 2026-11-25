@@ -178,6 +178,11 @@ class PluginRegistry:
                     status = "error"
                     error_text = f"Builtin plugin '{pid}' is not registered"
                     return {"status": "error", "error": error_text}
+                if tool_name in CONTEXT_GATE_TOOLS and ctx_dict.get("on_progress"):
+                    try:
+                        await ctx_dict["on_progress"]("🔍 Пошёл искать данные, скоро вернусь...")
+                    except Exception:
+                        pass
                 res = await plugin.execute_tool(tool_name, clean_args, ctx_dict)
                 if isinstance(res, dict):
                     if res.get("status") == "error":
