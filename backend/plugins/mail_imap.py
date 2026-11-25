@@ -168,7 +168,7 @@ class MailImapPlugin(PorfiriyPlugin):
                         },
                         "days": {
                             "type": "INTEGER",
-                            "description": "Optional recent days filter (default 0 = search ALL time; pass e.g. 7 or 30 only if user asks for recent mail).",
+                            "description": "Optional recent days filter. Omit for progressive search (last 30 days first, auto-expanding to all time if nothing found), or pass 0 to force all-time search immediately.",
                         },
                         "limit": {
                             "type": "INTEGER",
@@ -342,62 +342,74 @@ class MailImapPlugin(PorfiriyPlugin):
                     pass
 
     @classmethod
-    def _sync_search(cls, acc: Dict[str, Any], query: str, days: int, limit: int) -> List[Dict[str, Any]]:
-        imap = None
-        try:
-            imap = cls._open_imap(acc)
-            since = _format_imap_date(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)) if days > 0 else None
-            q_clean = (query or "").strip()
-            q_tokens = [t for t in re.findall(r"[0-9a-zа-яё@._-]+", q_clean.lower()) if len(t) >= 2]
-            candidate_uids: List[bytes] = []
+    def _run_imap_search_pass(cls, imap: imaplib.IMAP4_SSL, q_clean: str, q_tokens: List[str], days: int, limit: int) -> List[bytes]:
+        since = _format_imap_date(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)) if days > 0 else None
+        candidate_uids: List[bytes] = []
 
-            if q_clean.isascii():
-                safe_q = q_clean.replace('"', "")
-                try:
-                    if since:
-                        typ, data = imap.uid("search", None, "SINCE", since, "TEXT", f'"{safe_q}"')
-                    else:
-                        typ, data = imap.uid("search", None, "TEXT", f'"{safe_q}"')
-                    if typ == "OK" and data and data[0]:
-                        candidate_uids = data[0].split()[-limit:][::-1]
-                except Exception:
-                    candidate_uids = []
-
-            if not candidate_uids:
+        if q_clean.isascii():
+            safe_q = q_clean.replace('"', "")
+            try:
                 if since:
-                    typ, data = imap.uid("search", None, "SINCE", since)
+                    typ, data = imap.uid("search", None, "SINCE", since, "TEXT", f'"{safe_q}"')
                 else:
-                    typ, data = imap.uid("search", None, "ALL")
-                all_uids = (data[0] or b"").split() if typ == "OK" and data else []
-                recent_uids = all_uids[-80:][::-1]
-                hdr_matched: List[bytes] = []
-                body_fallback_pool: List[bytes] = []
+                    typ, data = imap.uid("search", None, "TEXT", f'"{safe_q}"')
+                if typ == "OK" and data and data[0]:
+                    candidate_uids = data[0].split()[-limit:][::-1]
+            except Exception:
+                candidate_uids = []
 
-                for uid_b in recent_uids:
-                    ftyp, fdata = imap.uid("fetch", uid_b, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+        if not candidate_uids:
+            if since:
+                typ, data = imap.uid("search", None, "SINCE", since)
+            else:
+                typ, data = imap.uid("search", None, "ALL")
+            all_uids = (data[0] or b"").split() if typ == "OK" and data else []
+            recent_uids = all_uids[-80:][::-1]
+            hdr_matched: List[bytes] = []
+            body_fallback_pool: List[bytes] = []
+
+            for uid_b in recent_uids:
+                ftyp, fdata = imap.uid("fetch", uid_b, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                if ftyp != "OK":
+                    continue
+                msg = email.message_from_bytes(_extract_bytes_from_fetch(fdata))
+                hay = f"{_decode_mime_header(msg.get('From'))} {_decode_mime_header(msg.get('Subject'))}".lower()
+                if q_tokens and all(tok in hay for tok in q_tokens):
+                    hdr_matched.append(uid_b)
+                    if len(hdr_matched) >= limit:
+                        break
+                elif len(body_fallback_pool) < 18:
+                    body_fallback_pool.append(uid_b)
+
+            candidate_uids = hdr_matched
+            if len(candidate_uids) < limit and body_fallback_pool:
+                for uid_b in body_fallback_pool:
+                    ftyp, fdata = imap.uid("fetch", uid_b, "(BODY.PEEK[])")
                     if ftyp != "OK":
                         continue
                     msg = email.message_from_bytes(_extract_bytes_from_fetch(fdata))
-                    hay = f"{_decode_mime_header(msg.get('From'))} {_decode_mime_header(msg.get('Subject'))}".lower()
-                    if q_tokens and all(tok in hay for tok in q_tokens):
-                        hdr_matched.append(uid_b)
-                        if len(hdr_matched) >= limit:
+                    body = _extract_text_body(msg, max_len=1200).lower()
+                    if q_tokens and all(tok in body for tok in q_tokens):
+                        candidate_uids.append(uid_b)
+                        if len(candidate_uids) >= limit:
                             break
-                    elif len(body_fallback_pool) < 18:
-                        body_fallback_pool.append(uid_b)
+        return candidate_uids
 
-                candidate_uids = hdr_matched
-                if len(candidate_uids) < limit and body_fallback_pool:
-                    for uid_b in body_fallback_pool:
-                        ftyp, fdata = imap.uid("fetch", uid_b, "(BODY.PEEK[])")
-                        if ftyp != "OK":
-                            continue
-                        msg = email.message_from_bytes(_extract_bytes_from_fetch(fdata))
-                        body = _extract_text_body(msg, max_len=1200).lower()
-                        if q_tokens and all(tok in body for tok in q_tokens):
-                            candidate_uids.append(uid_b)
-                            if len(candidate_uids) >= limit:
-                                break
+    @classmethod
+    def _sync_search(cls, acc: Dict[str, Any], query: str, days: Optional[int], limit: int) -> List[Dict[str, Any]]:
+        imap = None
+        try:
+            imap = cls._open_imap(acc)
+            q_clean = (query or "").strip()
+            q_tokens = [t for t in re.findall(r"[0-9a-zа-яё@._-]+", q_clean.lower()) if len(t) >= 2]
+
+            if days is None:
+                # Прогрессивный поиск: сначала последние 30 дней, если пусто — весь ящик
+                candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 30, limit)
+                if not candidate_uids:
+                    candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, 0, limit)
+            else:
+                candidate_uids = cls._run_imap_search_pass(imap, q_clean, q_tokens, days, limit)
 
             results: List[Dict[str, Any]] = []
             for uid_b in candidate_uids[:limit]:
@@ -485,7 +497,7 @@ class MailImapPlugin(PorfiriyPlugin):
             if not query:
                 return {"status": "error", "error": "Укажите поисковый запрос query"}
             raw_days = args.get("days")
-            days = max(0, min(int(raw_days), 3650)) if raw_days is not None else 0
+            days = max(0, min(int(raw_days), 3650)) if raw_days is not None else None
             limit = max(1, min(int(args.get("limit") or 8), 15))
             nested = await asyncio.gather(
                 *(asyncio.to_thread(self._sync_search, acc, query, days, limit) for acc in accounts)
