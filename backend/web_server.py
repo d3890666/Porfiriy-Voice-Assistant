@@ -36,9 +36,11 @@ except ImportError:
 try:
     from .db import db_singleton
     from .plugins.telegram_bot import TelegramBotPlugin
+    from .plugins.telegram_userbot import TelegramUserbotPlugin
 except ImportError:
     from db import db_singleton
     from plugins.telegram_bot import TelegramBotPlugin
+    from plugins.telegram_userbot import TelegramUserbotPlugin
 
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
@@ -145,6 +147,8 @@ class WebServer:
         self.app.router.add_post("/api/providers", self.handle_save_provider)
         self.app.router.add_post("/api/providers/{provider_id}/toggle", self.handle_toggle_provider)
         self.app.router.add_post("/api/providers/builtin.telegram_bot/test", self.handle_test_telegram_bot)
+        self.app.router.add_post("/api/providers/builtin.telegram_userbot/accounts/{account_id}/auth/start", self.handle_tg_userbot_auth_start)
+        self.app.router.add_post("/api/providers/builtin.telegram_userbot/accounts/{account_id}/auth/verify", self.handle_tg_userbot_auth_verify)
         self.app.router.add_post("/api/providers/{provider_id}/accounts", self.handle_save_provider_account)
         self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
@@ -1505,5 +1509,24 @@ class WebServer:
             max_active_items=int(cfg.get("max_active_items") or 500),
         )
         return web.json_response({"success": True, **res, "stats": db_singleton.get_memory_stats()})
+
+    async def handle_tg_userbot_auth_start(self, request):
+        aid = request.match_info.get("account_id", "").strip()
+        res = await TelegramUserbotPlugin.start_auth(db_singleton, aid)
+        return web.json_response(res, status=200 if res.get("success") else 400)
+
+    async def handle_tg_userbot_auth_verify(self, request):
+        aid = request.match_info.get("account_id", "").strip()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        res = await TelegramUserbotPlugin.verify_auth(
+            db_singleton,
+            aid,
+            code=str((data or {}).get("code") or ""),
+            password=str((data or {}).get("password") or ""),
+        )
+        return web.json_response(res, status=200 if res.get("success") else 400)
 
 

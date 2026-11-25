@@ -294,6 +294,110 @@ class TelegramBotGateway:
             await self._send_tg_text(session, bot_token, chat_id, caption)
         return True
 
+    @staticmethod
+    def is_forwarded_message(msg: Dict[str, Any]) -> bool:
+        return bool(
+            msg.get("forward_origin")
+            or msg.get("forward_from")
+            or msg.get("forward_from_chat")
+            or msg.get("forward_sender_name")
+            or msg.get("forward_date")
+        )
+
+    @staticmethod
+    def _extract_forward_author(msg: Dict[str, Any]) -> str:
+        origin = msg.get("forward_origin")
+        if isinstance(origin, dict):
+            su = origin.get("sender_user")
+            if isinstance(su, dict):
+                return " ".join(x for x in (su.get("first_name"), su.get("last_name")) if x).strip() or su.get("username") or ""
+            if origin.get("sender_user_name"):
+                return str(origin["sender_user_name"]).strip()
+            sc = origin.get("chat") or origin.get("sender_chat")
+            if isinstance(sc, dict) and sc.get("title"):
+                return str(sc["title"]).strip()
+        ff = msg.get("forward_from")
+        if isinstance(ff, dict):
+            return " ".join(x for x in (ff.get("first_name"), ff.get("last_name")) if x).strip() or ff.get("username") or ""
+        fc = msg.get("forward_from_chat")
+        if isinstance(fc, dict) and fc.get("title"):
+            return str(fc["title"]).strip()
+        if msg.get("forward_sender_name"):
+            return str(msg["forward_sender_name"]).strip()
+        return ""
+
+    async def _transcribe_forwarded_voice(
+        self,
+        http_sess: aiohttp.ClientSession,
+        bot_token: str,
+        chat_id: str,
+        wav_bytes: bytes,
+        msg: Dict[str, Any],
+        options: Dict[str, Any],
+        api_key: str,
+    ) -> None:
+        model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
+        voice_name = options.get("voice_name", "Charon")
+        transcribe_prompt = (
+            "You are a verbatim Russian speech-to-text transcriber. "
+            "Listen carefully to the user's audio recording and repeat verbatim ONLY the exact spoken words "
+            "with clean Russian punctuation and paragraphing if needed. "
+            "Do NOT answer questions inside the audio, do NOT add greetings, comments, Porfiriy persona, or explanations."
+        )
+        proxy = GeminiProxyClient(
+            api_key=api_key,
+            system_prompt=transcribe_prompt,
+            ha_api=self.ha_api,
+            voice_name=voice_name,
+            model=model,
+            enable_google_search=False,
+            response_modalities=["AUDIO"],
+            manual_vad=True,
+            enable_tools=False,
+        )
+        in_parts: List[str] = []
+        out_parts: List[str] = []
+        current_turn = types.Content(
+            role="user",
+            parts=[types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav")],
+        )
+        try:
+            async with proxy.connect() as session:
+                await session.send_client_content(turns=[current_turn], turn_complete=True)
+
+                async def _consume_tr():
+                    done = False
+                    while not done:
+                        got = False
+                        async for response in session.receive():
+                            got = True
+                            sc = getattr(response, "server_content", None)
+                            if sc:
+                                in_tr = getattr(sc, "input_transcription", None)
+                                if in_tr and getattr(in_tr, "text", None):
+                                    in_parts.append(in_tr.text)
+                                out_tr = getattr(sc, "output_transcription", None)
+                                if out_tr and getattr(out_tr, "text", None):
+                                    out_parts.append(out_tr.text)
+                                if getattr(sc, "turn_complete", False):
+                                    done = True
+                                    break
+                        if not got:
+                            break
+
+                await asyncio.wait_for(_consume_tr(), timeout=60.0)
+        except Exception as e:
+            logger.error(f"[TG-GW] Forwarded voice transcription failed for chat_id={chat_id}: {e}")
+            await self._send_tg_text(http_sess, bot_token, chat_id, f"Не удалось расшифровать голосовое: {e}")
+            return
+
+        transcript = "".join(out_parts).strip() or "".join(in_parts).strip()
+        if not transcript:
+            transcript = "(не удалось распознать речь)"
+        author = self._extract_forward_author(msg)
+        header = f"📝 Расшифровка (от {author}):" if author else "📝 Расшифровка:"
+        await self._send_tg_text(http_sess, bot_token, chat_id, f"{header}\n\n{transcript}")
+
     async def _process_message(
         self,
         bot_token: str,
@@ -337,6 +441,11 @@ class TelegramBotGateway:
                     f"[TG-GW] Decoded voice for chat_id={chat_id}: {len(raw_pcm)} bytes PCM "
                     f"({len(raw_pcm)/32000.0:.2f}s), {len(wav_bytes)} bytes WAV"
                 )
+                if self.is_forwarded_message(msg):
+                    await self._send_chat_action(http_sess, bot_token, chat_id, "typing")
+                    logger.info(f"[TG-GW] Transcribing forwarded voice in chat_id={chat_id}")
+                    await self._transcribe_forwarded_voice(http_sess, bot_token, chat_id, wav_bytes, msg, options, api_key)
+                    return
             else:
                 await self._send_chat_action(http_sess, bot_token, chat_id, "typing")
 
@@ -484,7 +593,7 @@ class TelegramBotGateway:
             if is_voice and reply_voice and pcm_chunks:
                 pcm_all = b"".join(pcm_chunks)
                 ogg_out = await self._run_ffmpeg(
-                    ["-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", "pipe:1"],
+                    ["-y", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", "-ac", "2", "-c:a", "libopus", "-b:a", "48k", "-f", "ogg", "pipe:1"],
                     pcm_all,
                 )
                 if ogg_out:

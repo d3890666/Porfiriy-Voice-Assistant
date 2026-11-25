@@ -3324,14 +3324,28 @@ function renderAccountsBlock(p) {
           ? `<span class="owner-badge owner-personal">👤 ${escapeHtml(a.owner_user_name)}</span>`
           : `<span class="owner-badge owner-home">🏠 Общий (Дом)</span>`;
         const hint = a.credentials?.email || a.credentials?.phone || a.credentials?.host || '';
+        let authBadge = '';
+        let authBtn = '';
+        if (p.id === 'builtin.telegram_userbot') {
+          const stMap = {
+            authorized: '<span class="p2-chip p2-chip-ok">✅ Авторизован</span>',
+            awaiting_code: '<span class="p2-chip">⏳ Ждёт код</span>',
+            awaiting_2fa: '<span class="p2-chip">🔒 Ждёт 2FA</span>',
+            error: `<span class="p2-chip" style="color:#f87171;">⚠️ Ошибка</span>`,
+          };
+          authBadge = stMap[a.status] || '<span class="p2-chip p2-chip-muted">⚪ Не авторизован</span>';
+          authBtn = `<button type="button" class="btn btn-secondary btn-sm" onclick="openTgUserbotAuthModal('${escapeHtml(a.id)}', '${escapeHtml(a.label).replace(/'/g, "\\'")}')" title="Войти в Telegram">🔐 Войти</button>`;
+        }
         return `
           <div class="account-row">
             <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
               <strong>${escapeHtml(a.label)}</strong>
               ${ownerBadge}
+              ${authBadge}
               ${hint ? `<span style="font-size:12px; color:#8b949e; font-family:monospace;">${escapeHtml(hint)}</span>` : ''}
             </div>
             <div style="display:flex; gap:6px;">
+              ${authBtn}
               <button type="button" class="btn btn-secondary btn-sm" onclick="openProviderAccountModal('${pid}', '${escapeHtml(a.id)}')" title="Редактировать">✏️</button>
               <button type="button" class="btn btn-secondary btn-sm" onclick="deleteProviderAccount('${escapeHtml(a.id)}', '${escapeHtml(a.label).replace(/'/g, "\\'")}')" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить">🗑️</button>
             </div>
@@ -3915,3 +3929,73 @@ async function runMemoryCleanup(refreshModal) {
   }
 }
 window.runMemoryCleanup = runMemoryCleanup;
+
+function openTgUserbotAuthModal(accountId, label) {
+  const modal = document.getElementById('modal-tg-userbot-auth');
+  if (!modal) return;
+  document.getElementById('tg-ub-auth-acc-id').value = accountId;
+  document.getElementById('tg-ub-auth-title').textContent = `🔐 Вход: ${label || accountId}`;
+  document.getElementById('tg-ub-code').value = '';
+  document.getElementById('tg-ub-2fa').value = '';
+  document.getElementById('tg-ub-2fa-wrap').style.display = 'none';
+  document.getElementById('tg-ub-auth-status').textContent = 'Нажмите «Отправить код в Telegram» и введите пришедший 5-значный код.';
+  modal.style.display = 'flex';
+}
+window.openTgUserbotAuthModal = openTgUserbotAuthModal;
+
+function closeTgUserbotAuthModal() {
+  const modal = document.getElementById('modal-tg-userbot-auth');
+  if (modal) modal.style.display = 'none';
+}
+window.closeTgUserbotAuthModal = closeTgUserbotAuthModal;
+
+async function startTgUserbotAuth() {
+  const aid = document.getElementById('tg-ub-auth-acc-id')?.value || '';
+  const stEl = document.getElementById('tg-ub-auth-status');
+  if (stEl) stEl.textContent = 'Отправляю запрос кода в Telegram...';
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/builtin.telegram_userbot/accounts/${encodeURIComponent(aid)}/auth/start`, {
+      method: 'POST',
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (stEl) stEl.innerHTML = `<span style="color:#34d399;">${escapeHtml(data.message)}</span>`;
+      showToast('Код отправлен в Telegram');
+      fetchProviders();
+    } else {
+      if (stEl) stEl.innerHTML = `<span style="color:#f87171;">Ошибка: ${escapeHtml(data.error || 'сбой')}</span>`;
+    }
+  } catch (e) {
+    if (stEl) stEl.innerHTML = `<span style="color:#f87171;">Сетевая ошибка: ${escapeHtml(e.message)}</span>`;
+  }
+}
+window.startTgUserbotAuth = startTgUserbotAuth;
+
+async function verifyTgUserbotAuth() {
+  const aid = document.getElementById('tg-ub-auth-acc-id')?.value || '';
+  const code = (document.getElementById('tg-ub-code')?.value || '').trim();
+  const password = document.getElementById('tg-ub-2fa')?.value || '';
+  const stEl = document.getElementById('tg-ub-auth-status');
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/builtin.telegram_userbot/accounts/${encodeURIComponent(aid)}/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, password })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || 'Аккаунт авторизован!');
+      closeTgUserbotAuthModal();
+      fetchProviders();
+    } else if (data.needs_2fa) {
+      document.getElementById('tg-ub-2fa-wrap').style.display = 'block';
+      if (stEl) stEl.innerHTML = `<span style="color:#fbbf24;">${escapeHtml(data.error)}</span>`;
+    } else {
+      if (stEl) stEl.innerHTML = `<span style="color:#f87171;">Ошибка: ${escapeHtml(data.error || 'сбой')}</span>`;
+      fetchProviders();
+    }
+  } catch (e) {
+    if (stEl) stEl.innerHTML = `<span style="color:#f87171;">Сетевая ошибка: ${escapeHtml(e.message)}</span>`;
+  }
+}
+window.verifyTgUserbotAuth = verifyTgUserbotAuth;

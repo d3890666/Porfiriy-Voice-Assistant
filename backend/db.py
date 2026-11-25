@@ -820,6 +820,75 @@ class PorfiriyDB:
             finally:
                 conn.close()
 
+    def get_provider_account(self, account_id: str, *, mask_secrets: bool = False) -> Optional[Dict[str, Any]]:
+        aid = (account_id or "").strip()
+        if not aid:
+            return None
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    """
+                    SELECT pa.*, u.name AS owner_user_name
+                    FROM provider_accounts pa
+                    LEFT JOIN users u ON u.id = pa.owner_user_id
+                    WHERE pa.id = ?
+                    """,
+                    (aid,),
+                ).fetchone()
+                if not row:
+                    return None
+                creds = json.loads(row["credentials_json"] or "{}")
+                return {
+                    "id": row["id"],
+                    "provider_id": row["provider_id"],
+                    "owner_user_id": row["owner_user_id"],
+                    "owner_user_name": row["owner_user_name"] or "Общий (Дом)",
+                    "label": row["label"],
+                    "credentials": _mask_dict(creds) if mask_secrets else creds,
+                    "settings": json.loads(row["settings_json"] or "{}"),
+                    "enabled": bool(row["enabled"]),
+                    "status": row["status"] or "idle",
+                    "last_error": row["last_error"] or "",
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            finally:
+                conn.close()
+
+    def update_provider_account_status(
+        self,
+        account_id: str,
+        status: str,
+        last_error: str = "",
+        extra_credentials: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        aid = (account_id or "").strip()
+        if not aid:
+            return False
+        now = _now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT credentials_json FROM provider_accounts WHERE id = ?", (aid,)).fetchone()
+                if not row:
+                    return False
+                creds = json.loads(row["credentials_json"] or "{}")
+                if extra_credentials:
+                    creds.update(extra_credentials)
+                conn.execute(
+                    """
+                    UPDATE provider_accounts
+                    SET status = ?, last_error = ?, credentials_json = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (status or "idle", (last_error or "")[:500], json.dumps(creds, ensure_ascii=False), now, aid),
+                )
+                conn.commit()
+                return True
+            finally:
+                conn.close()
+
     # ------------------------------------------------------------------
     # Tool Audit Log
     # ------------------------------------------------------------------

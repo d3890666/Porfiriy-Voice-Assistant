@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.185">
+  <link rel="stylesheet" href="static/style.css?v=0.0.186">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.185</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.186</span></p>
         </div>
       </div>
       
@@ -1275,8 +1275,37 @@ PING:
     </div>
   </div>
 
+  <!-- Modal: Авторизация Telegram Userbot (Telethon) -->
+  <div id="modal-tg-userbot-auth" class="modal-backdrop p2-modal-backdrop" style="display: none;">
+    <div class="p2-modal-dialog" style="max-width: 440px;">
+      <div class="p2-modal-header">
+        <h3 id="tg-ub-auth-title">🔐 Авторизация Telegram Userbot</h3>
+        <button type="button" class="p2-modal-close" onclick="closeTgUserbotAuthModal()">×</button>
+      </div>
+      <div class="p2-modal-body">
+        <input type="hidden" id="tg-ub-auth-acc-id">
+        <div id="tg-ub-auth-status" style="font-size:13px; color:#c9d1d9; line-height:1.45;">
+          Нажмите кнопку ниже, чтобы Telegram отправил код подтверждения на номер телефона, указанный в этом аккаунте.
+        </div>
+        <button type="button" class="btn btn-secondary" onclick="startTgUserbotAuth()">📲 Отправить код в Telegram</button>
+        <div class="form-group" style="margin:0;">
+          <label for="tg-ub-code">Код из Telegram</label>
+          <input type="text" id="tg-ub-code" placeholder="Например: 12345">
+        </div>
+        <div class="form-group" id="tg-ub-2fa-wrap" style="margin:0; display:none;">
+          <label for="tg-ub-2fa">Облачный пароль (2FA)</label>
+          <input type="password" id="tg-ub-2fa" placeholder="Пароль двухфакторной защиты">
+        </div>
+      </div>
+      <div class="p2-modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeTgUserbotAuthModal()">Закрыть</button>
+        <button type="button" class="btn btn-primary" onclick="verifyTgUserbotAuth()">✅ Подтвердить вход</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.185"></script>
+  <script src="static/app.js?v=0.0.186"></script>
 </body>
 </html>

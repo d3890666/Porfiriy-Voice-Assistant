@@ -1,5 +1,12 @@
 # Журнал изменений (Changelog)
 
+## 0.0.186
+- **Стерео-голос в Telegram, расшифровка пересланных голосовух и плагин `builtin.telegram_userbot` (`backend/telegram_gateway.py`, `backend/plugins/telegram_userbot.py`, `backend/gemini_client.py`, `backend/db.py`, `web_server.py`, `app.js`, `requirements.txt`)**:
+  - Ответные голосовые сообщения в Telegram теперь кодируются в стерео (`-ac 2`, `48k` Opus), чтобы звук шёл равномерно в оба наушника.
+  - Пересланные голосовые сообщения в чат с Порфирием автоматически распознаются (`forward_origin`/`forward_from`/...) и только транскрибируются в чистый текст через Gemini Live API без запуска инструментов и диалоговых ответов.
+  - Реализован `TelegramUserbotPlugin` на базе `telethon>=1.36.0` (StringSession в SQLite, поддержка нескольких семейных аккаунтов Дениса/Светы): инструменты `tg_list_dialogs`, `tg_read_messages`, `tg_search_messages` + пошаговый мастер входа с кодом и 2FA прямо в Web UI (`🔐 Войти`).
+- Синхронизация версий до `0.0.186`.
+
 ## 0.0.185
 - **Исправлена ошибка `1008` при обработке голосовых сообщений в Telegram (`backend/telegram_gateway.py`)**:
   - Перекодировка входящей голосовой заметки переведена с потокового `ffmpeg -f wav pipe:1` (записывавшего `0xFFFFFFFF` в RIFF-заголовок из-за несикаемого pipe) на сырой PCM (`-f s16le`) + `pcm16_to_wav(raw_pcm, sample_rate=16000)` с валидным 44-байтным заголовком, идентичным Станции.

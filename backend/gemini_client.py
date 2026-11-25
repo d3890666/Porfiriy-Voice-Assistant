@@ -126,7 +126,7 @@ async def fetch_available_gemini_models(api_key: str) -> List[Dict[str, Any]]:
     return live_models + other_models
 
 class GeminiProxyClient:
-    def __init__(self, api_key: str, system_prompt: str, ha_api=None, voice_name: str = "Zephyr", model: str = "models/gemini-3.1-flash-live-preview", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None, manual_vad: bool = False):
+    def __init__(self, api_key: str, system_prompt: str, ha_api=None, voice_name: str = "Zephyr", model: str = "models/gemini-3.1-flash-live-preview", enable_google_search: bool = True, vad_silence_duration_ms: int = 600, response_modalities: List[str] = None, manual_vad: bool = False, enable_tools: bool = True):
         """
         Инициализация клиента Gemini Live API с инструментами управления Home Assistant.
         """
@@ -148,6 +148,7 @@ class GeminiProxyClient:
         self.vad_silence_duration_ms = vad_silence_duration_ms
         self.response_modalities = response_modalities or ["AUDIO"]
         self.manual_vad = manual_vad
+        self.enable_tools = enable_tools
 
     def _get_config(self) -> types.LiveConnectConfig:
         """Настройка конфигурации сессии (Промпт, Голос, Инструменты)."""
@@ -296,12 +297,16 @@ class GeminiProxyClient:
             except Exception as e:
                 logger.warning(f"Failed to attach plugin tool declarations: {e}")
 
-        tool_args = {"function_declarations": base_decls}
-        if self.enable_google_search:
-            tool_args["google_search"] = types.GoogleSearch()
-            
-        tool = types.Tool(**tool_args)
-        tools = [tool]
+        tools = None
+        if self.enable_tools:
+            tool_args = {"function_declarations": base_decls}
+            if self.enable_google_search:
+                tool_args["google_search"] = types.GoogleSearch()
+                
+            tool = types.Tool(**tool_args)
+            tools = [tool]
+        elif self.enable_google_search:
+            tools = [types.Tool(google_search=types.GoogleSearch())]
             
         realtime_input_config = None
         if self.manual_vad:
