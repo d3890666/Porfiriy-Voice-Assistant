@@ -3335,6 +3335,13 @@ function renderAccountsBlock(p) {
           };
           authBadge = stMap[a.status] || '<span class="p2-chip p2-chip-muted">⚪ Не авторизован</span>';
           authBtn = `<button type="button" class="btn btn-secondary btn-sm" onclick="openTgUserbotAuthModal('${escapeHtml(a.id)}', '${escapeHtml(a.label).replace(/'/g, "\\'")}')" title="Войти в Telegram">🔐 Войти</button>`;
+        } else if (p.id === 'builtin.mail_imap') {
+          const stMap = {
+            authorized: '<span class="p2-chip p2-chip-ok">✅ Подключена</span>',
+            error: `<span class="p2-chip" style="color:#f87171;" title="${escapeHtml(a.last_error || '')}">⚠️ Ошибка</span>`,
+          };
+          authBadge = stMap[a.status] || '<span class="p2-chip p2-chip-muted">⚪ Не проверена</span>';
+          authBtn = `<button type="button" class="btn btn-secondary btn-sm" onclick="testMailImapAccount('${escapeHtml(a.id)}')" title="Проверить IMAP вход">🔌 Проверить</button>`;
         }
         return `
           <div class="account-row">
@@ -3999,3 +4006,22 @@ async function verifyTgUserbotAuth() {
   }
 }
 window.verifyTgUserbotAuth = verifyTgUserbotAuth;
+
+async function testMailImapAccount(accountId) {
+  showToast('Проверяю подключение к IMAP...');
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/builtin.mail_imap/accounts/${encodeURIComponent(accountId)}/test`, {
+      method: 'POST',
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || 'Подключение IMAP успешно!');
+    } else {
+      showToast(`Ошибка IMAP: ${data.error || 'сбой'}`, true);
+    }
+    fetchProviders();
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.testMailImapAccount = testMailImapAccount;
