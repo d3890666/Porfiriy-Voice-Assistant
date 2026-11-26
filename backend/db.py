@@ -212,13 +212,35 @@ class PorfiriyDB:
                     CREATE TABLE IF NOT EXISTS scheduled_jobs (
                         id TEXT PRIMARY KEY,
                         job_type TEXT NOT NULL,
+                        title TEXT DEFAULT '',
                         owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
                         cron_or_run_at TEXT NOT NULL,
                         payload_json TEXT DEFAULT '{}',
+                        trigger_json TEXT DEFAULT '{}',
+                        action_json TEXT DEFAULT '{}',
+                        state_json TEXT DEFAULT '{}',
+                        notify_channel TEXT DEFAULT '',
+                        quiet_hours TEXT DEFAULT '',
+                        one_shot INTEGER DEFAULT 0,
                         enabled INTEGER DEFAULT 1,
+                        status TEXT DEFAULT 'active',
                         last_run_at TEXT,
                         next_run_at TEXT,
-                        last_status TEXT DEFAULT ''
+                        last_status TEXT DEFAULT '',
+                        last_error TEXT DEFAULT '',
+                        consecutive_errors INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT '',
+                        updated_at TEXT DEFAULT ''
+                    );
+
+                    CREATE TABLE IF NOT EXISTS job_runs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        job_id TEXT NOT NULL REFERENCES scheduled_jobs(id) ON DELETE CASCADE,
+                        started_at TEXT NOT NULL,
+                        duration_ms INTEGER DEFAULT 0,
+                        status TEXT NOT NULL,
+                        summary TEXT DEFAULT '',
+                        error TEXT DEFAULT ''
                     );
 
                     CREATE TABLE IF NOT EXISTS tool_audit_log (
@@ -241,8 +263,31 @@ class PorfiriyDB:
                     CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_items(owner_user_id);
                     CREATE INDEX IF NOT EXISTS idx_memory_expires ON memory_items(expires_at);
                     CREATE INDEX IF NOT EXISTS idx_audit_ts ON tool_audit_log(ts);
+                    CREATE INDEX IF NOT EXISTS idx_job_runs_job_id ON job_runs(job_id, id DESC);
+                    CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next ON scheduled_jobs(enabled, status, next_run_at);
                     """
                 )
+                # Миграция существующей таблицы scheduled_jobs (если БД создана в ранней версии)
+                existing_cols = {
+                    r["name"] for r in conn.execute("PRAGMA table_info(scheduled_jobs)").fetchall()
+                }
+                migrations = [
+                    ("title", "TEXT DEFAULT ''"),
+                    ("trigger_json", "TEXT DEFAULT '{}'"),
+                    ("action_json", "TEXT DEFAULT '{}'"),
+                    ("state_json", "TEXT DEFAULT '{}'"),
+                    ("notify_channel", "TEXT DEFAULT ''"),
+                    ("quiet_hours", "TEXT DEFAULT ''"),
+                    ("one_shot", "INTEGER DEFAULT 0"),
+                    ("status", "TEXT DEFAULT 'active'"),
+                    ("last_error", "TEXT DEFAULT ''"),
+                    ("consecutive_errors", "INTEGER DEFAULT 0"),
+                    ("created_at", "TEXT DEFAULT ''"),
+                    ("updated_at", "TEXT DEFAULT ''"),
+                ]
+                for col_name, col_def in migrations:
+                    if col_name not in existing_cols:
+                        conn.execute(f"ALTER TABLE scheduled_jobs ADD COLUMN {col_name} {col_def}")
                 now = _now_iso()
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)",
@@ -357,6 +402,7 @@ class PorfiriyDB:
         ).fetchall()
         channels = [dict(c) for c in ch_rows]
         tg_chat = next((c["channel_value"] for c in channels if c["channel_type"] == "telegram_chat"), "")
+        ha_tracker = next((c["channel_value"] for c in channels if c["channel_type"] == "ha_tracker"), "")
         acc_count = conn.execute(
             "SELECT COUNT(*) FROM provider_accounts WHERE owner_user_id = ?", (uid,)
         ).fetchone()[0]
@@ -371,6 +417,7 @@ class PorfiriyDB:
             "persona_notes": row["persona_notes"] or "",
             "is_active": bool(row["is_active"]),
             "telegram_chat_id": tg_chat,
+            "ha_tracker_entity": ha_tracker,
             "channels": channels,
             "linked_accounts_count": int(acc_count),
             "memory_items_count": int(mem_count),
@@ -412,6 +459,7 @@ class PorfiriyDB:
         voice_notes: str = "",
         persona_notes: str = "",
         telegram_chat_id: Optional[str] = None,
+        ha_tracker_entity: Optional[str] = None,
         is_active: bool = True,
     ) -> Dict[str, Any]:
         clean_name = (name or "").strip()
@@ -458,6 +506,21 @@ class PorfiriyDB:
                             VALUES (?, 'telegram_chat', ?, 'Личный Telegram', 1)
                             """,
                             (uid, tg_val),
+                        )
+
+                if ha_tracker_entity is not None:
+                    tr_val = str(ha_tracker_entity).strip()
+                    conn.execute(
+                        "DELETE FROM user_channels WHERE user_id = ? AND channel_type = 'ha_tracker'",
+                        (uid,),
+                    )
+                    if tr_val:
+                        conn.execute(
+                            """
+                            INSERT INTO user_channels(user_id, channel_type, channel_value, label, is_primary)
+                            VALUES (?, 'ha_tracker', ?, 'HA трекер присутствия', 1)
+                            """,
+                            (uid, tr_val),
                         )
 
                 conn.commit()
@@ -535,6 +598,8 @@ class PorfiriyDB:
                 details.append(f"notes='{u['persona_notes']}'")
             if u["telegram_chat_id"]:
                 details.append("telegram_chat=configured")
+            if u.get("ha_tracker_entity"):
+                details.append(f"ha_tracker={u['ha_tracker_entity']}")
             lines.append(f"- {u['name']} (user_id='{u['id']}'): {', '.join(details)}.")
 
         if family_ch.get("telegram_chat"):
@@ -1525,6 +1590,330 @@ class PorfiriyDB:
                     "total": sum(by_status.values()),
                     "last_cleanup": dict(last_cleanup) if last_cleanup else None,
                 }
+            finally:
+                conn.close()
+
+    # ------------------------------------------------------------------
+    # Persistent Scheduler Jobs & Run History
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _row_to_scheduled_job(row: sqlite3.Row) -> Dict[str, Any]:
+        def _j(raw: Any, default: Any) -> Any:
+            try:
+                val = json.loads(raw) if raw else default
+                return val if isinstance(val, type(default)) else default
+            except Exception:
+                return default
+
+        return {
+            "id": row["id"],
+            "job_type": row["job_type"],
+            "title": row["title"] or row["id"],
+            "owner_user_id": row["owner_user_id"] or "family",
+            "cron_or_run_at": row["cron_or_run_at"] or "",
+            "trigger": _j(row["trigger_json"], {}),
+            "action": _j(row["action_json"], {}),
+            "state": _j(row["state_json"], {}),
+            "notify_channel": row["notify_channel"] or "",
+            "quiet_hours": row["quiet_hours"] or "",
+            "one_shot": bool(row["one_shot"]),
+            "enabled": bool(row["enabled"]),
+            "status": row["status"] or "active",
+            "last_run_at": row["last_run_at"],
+            "next_run_at": row["next_run_at"],
+            "last_status": row["last_status"] or "",
+            "last_error": row["last_error"] or "",
+            "consecutive_errors": int(row["consecutive_errors"] or 0),
+            "created_at": row["created_at"] or "",
+            "updated_at": row["updated_at"] or "",
+        }
+
+    def list_scheduled_jobs(
+        self, *, enabled_only: bool = False, status: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                clauses: List[str] = []
+                params: List[Any] = []
+                if enabled_only:
+                    clauses.append("enabled = 1")
+                if status:
+                    clauses.append("status = ?")
+                    params.append(status)
+                sql = "SELECT * FROM scheduled_jobs"
+                if clauses:
+                    sql += " WHERE " + " AND ".join(clauses)
+                sql += " ORDER BY COALESCE(created_at, '') DESC, id DESC"
+                rows = conn.execute(sql, params).fetchall()
+                return [self._row_to_scheduled_job(r) for r in rows]
+            finally:
+                conn.close()
+
+    def get_scheduled_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        jid = (job_id or "").strip()
+        if not jid:
+            return None
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (jid,)).fetchone()
+                return self._row_to_scheduled_job(row) if row else None
+            finally:
+                conn.close()
+
+    def upsert_scheduled_job(
+        self,
+        *,
+        job_id: Optional[str] = None,
+        job_type: str,
+        title: str,
+        owner_user_id: Optional[str] = None,
+        cron_or_run_at: str = "",
+        trigger: Optional[Dict[str, Any]] = None,
+        action: Optional[Dict[str, Any]] = None,
+        state: Optional[Dict[str, Any]] = None,
+        notify_channel: str = "",
+        quiet_hours: str = "",
+        one_shot: bool = False,
+        enabled: bool = True,
+        status: str = "active",
+        next_run_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now = _now_iso()
+        jid = (job_id or "").strip()
+        if not jid:
+            jid = f"job_{uuid.uuid4().hex[:8]}"
+        clean_owner = (owner_user_id or "").strip().lower() or None
+        if clean_owner == "family":
+            clean_owner = None
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                if clean_owner:
+                    u_exists = conn.execute("SELECT 1 FROM users WHERE id = ?", (clean_owner,)).fetchone()
+                    if not u_exists:
+                        clean_owner = None
+
+                existing = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (jid,)).fetchone()
+                if existing:
+                    state_json_str = (
+                        json.dumps(state, ensure_ascii=False)
+                        if state is not None
+                        else (existing["state_json"] or "{}")
+                    )
+                    trig_json_str = (
+                        json.dumps(trigger, ensure_ascii=False)
+                        if trigger is not None
+                        else (existing["trigger_json"] or "{}")
+                    )
+                    act_json_str = (
+                        json.dumps(action, ensure_ascii=False)
+                        if action is not None
+                        else (existing["action_json"] or "{}")
+                    )
+                    conn.execute(
+                        """
+                        UPDATE scheduled_jobs
+                        SET job_type = ?, title = ?, owner_user_id = ?, cron_or_run_at = ?,
+                            trigger_json = ?, action_json = ?, state_json = ?,
+                            notify_channel = ?, quiet_hours = ?, one_shot = ?,
+                            enabled = ?, status = ?, next_run_at = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            job_type,
+                            title,
+                            clean_owner,
+                            cron_or_run_at,
+                            trig_json_str,
+                            act_json_str,
+                            state_json_str,
+                            notify_channel,
+                            quiet_hours,
+                            int(bool(one_shot)),
+                            int(bool(enabled)),
+                            status,
+                            next_run_at,
+                            now,
+                            jid,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO scheduled_jobs(
+                            id, job_type, title, owner_user_id, cron_or_run_at, payload_json,
+                            trigger_json, action_json, state_json, notify_channel, quiet_hours,
+                            one_shot, enabled, status, next_run_at, last_status, last_error,
+                            consecutive_errors, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 0, ?, ?)
+                        """,
+                        (
+                            jid,
+                            job_type,
+                            title,
+                            clean_owner,
+                            cron_or_run_at,
+                            json.dumps(trigger or {}, ensure_ascii=False),
+                            json.dumps(action or {}, ensure_ascii=False),
+                            json.dumps(state or {}, ensure_ascii=False),
+                            notify_channel,
+                            quiet_hours,
+                            int(bool(one_shot)),
+                            int(bool(enabled)),
+                            status,
+                            next_run_at,
+                            now,
+                            now,
+                        ),
+                    )
+                conn.commit()
+                row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (jid,)).fetchone()
+                return self._row_to_scheduled_job(row)
+            finally:
+                conn.close()
+
+    def delete_scheduled_job(self, job_id: str) -> bool:
+        jid = (job_id or "").strip()
+        if not jid:
+            return False
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute("DELETE FROM scheduled_jobs WHERE id = ?", (jid,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def record_job_run(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        duration_ms: int = 0,
+        summary: str = "",
+        error: str = "",
+        next_state: Optional[Dict[str, Any]] = None,
+        next_run_at: Optional[str] = "__KEEP__",
+        new_status: Optional[str] = None,
+        consecutive_errors: Optional[int] = None,
+        enabled: Optional[bool] = None,
+    ) -> None:
+        now = _now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (job_id,)).fetchone()
+                if not row:
+                    return
+                conn.execute(
+                    """
+                    INSERT INTO job_runs(job_id, started_at, duration_ms, status, summary, error)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        now,
+                        max(0, int(duration_ms)),
+                        status,
+                        (summary or "")[:300],
+                        (error or "")[:300],
+                    ),
+                )
+                # Ring-buffer: не более 20 последних записей на задачу
+                conn.execute(
+                    """
+                    DELETE FROM job_runs
+                    WHERE job_id = ? AND id NOT IN (
+                        SELECT id FROM job_runs WHERE job_id = ? ORDER BY id DESC LIMIT 20
+                    )
+                    """,
+                    (job_id, job_id),
+                )
+                upd_next_run = row["next_run_at"] if next_run_at == "__KEEP__" else next_run_at
+                upd_state = (
+                    json.dumps(next_state, ensure_ascii=False)
+                    if next_state is not None
+                    else (row["state_json"] or "{}")
+                )
+                upd_status = new_status if new_status is not None else (row["status"] or "active")
+                upd_enabled = int(bool(enabled)) if enabled is not None else row["enabled"]
+                upd_errs = int(consecutive_errors) if consecutive_errors is not None else int(row["consecutive_errors"] or 0)
+
+                conn.execute(
+                    """
+                    UPDATE scheduled_jobs
+                    SET last_run_at = ?, last_status = ?, last_error = ?,
+                        state_json = ?, next_run_at = ?, status = ?,
+                        enabled = ?, consecutive_errors = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        status,
+                        (error or "")[:300],
+                        upd_state,
+                        upd_next_run,
+                        upd_status,
+                        upd_enabled,
+                        upd_errs,
+                        now,
+                        job_id,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def list_job_runs(self, job_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM job_runs WHERE job_id = ? ORDER BY id DESC LIMIT ?",
+                    ((job_id or "").strip(), max(1, min(100, int(limit)))),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    def cleanup_scheduler_data(
+        self, *, completed_ttl_days: int = 14, max_runs_per_job: int = 20
+    ) -> Dict[str, int]:
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(days=max(1, int(completed_ttl_days)))
+        ).isoformat()
+        with self._lock:
+            conn = self._connect()
+            try:
+                c_jobs = conn.execute(
+                    """
+                    DELETE FROM scheduled_jobs
+                    WHERE one_shot = 1 AND status IN ('completed', 'missed', 'cancelled')
+                      AND COALESCE(updated_at, last_run_at, created_at, '') <= ?
+                    """,
+                    (cutoff,),
+                ).rowcount
+                c_runs = conn.execute(
+                    """
+                    DELETE FROM job_runs
+                    WHERE started_at <= ?
+                       OR id NOT IN (
+                           SELECT r1.id FROM job_runs r1
+                           WHERE (
+                               SELECT COUNT(*) FROM job_runs r2
+                               WHERE r2.job_id = r1.job_id AND r2.id >= r1.id
+                           ) <= ?
+                       )
+                    """,
+                    (cutoff, max(1, int(max_runs_per_job))),
+                ).rowcount
+                conn.commit()
+                return {"deleted_jobs": int(c_jobs), "deleted_runs": int(c_runs)}
             finally:
                 conn.close()
 

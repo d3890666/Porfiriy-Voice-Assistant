@@ -138,6 +138,14 @@ async def build_system_prompt(
     if extra_context and extra_context.strip():
         parts.append(extra_context.strip())
 
+    parts.append(
+        "### PERSISTENT SCHEDULER & AUTOMATIONS (schedule_create, schedule_list, schedule_manage):\n"
+        "- Use `schedule_create` whenever the user asks for delayed Telegram notifications ('через 10 секунд напиши в телегу...'), "
+        "recurring price/release watchers, daily/weekly briefings, or Home Assistant event triggers ('когда Денис вернётся домой и не уйдёт 5 минут' -> "
+        "`ha_event` with resident's `ha_tracker`, `to_state='home'`, `for_seconds=300`).\n"
+        "- Prefer `action.type='direct_tool'` for deterministic actions (`send_to_telegram`, `call_ha_service`) and `action.type='ai_prompt'` for smart checks/summaries."
+    )
+
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")
     parts.append(f"### CURRENT LOCAL DATE & TIME:\n{now_str}")
 

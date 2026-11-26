@@ -173,6 +173,10 @@ class ToolExecutor:
                 return res if isinstance(res, dict) else {"result": res}
 
             if name == "schedule_ha_action":
+                try:
+                    from scheduler import scheduler_singleton
+                except ImportError:
+                    from .scheduler import scheduler_singleton
                 delay_s = int(args.get("delay_seconds") or 0)
                 if delay_s <= 0 or delay_s > 86400:
                     return {"status": "error", "error": "delay_seconds must be between 1 and 86400 (24 hours)"}
@@ -189,111 +193,195 @@ class ToolExecutor:
                 if domain != "alarm" and not entity_id and domain in ("light", "switch", "cover", "fan", "climate", "media_player"):
                     return {"status": "error", "error": f"entity_id is required to schedule {domain}.{service}"}
 
-                self._timer_seq += 1
-                tid = f"t{self._timer_seq}"
-                fire_ts = time.time() + delay_s
-                fire_local = datetime.datetime.fromtimestamp(fire_ts).strftime("%H:%M:%S")
                 caller_mac = (dev or {}).get("mac", "")
-
-                async def _timer_runner(timer_id: str):
-                    try:
-                        await asyncio.sleep(delay_s)
-                        if domain == "alarm":
-                            tool_logger.info(f"[TIMER] Alarm '{label}' ({timer_id}) fired!")
-                            ws = self.device_manager.active_sockets.get(caller_mac) if (self.device_manager and caller_mac) else None
-                            if ws and not getattr(ws, "closed", False):
-                                chime = get_earcon_pcm("smarthome", "apple_homepod", sample_rate=24000, volume=1.0)
-                                if chime:
-                                    for _ in range(3):
-                                        await ws.send(chime)
-                                        await asyncio.sleep(0.45)
-                                    await ws.send(json.dumps({"type": "turn_complete"}))
-                        else:
-                            tool_logger.info(f"[TIMER] Executing scheduled {domain}.{service} {service_data} ({timer_id}: {label})")
-                            res = await self.ha_api.call_ha_action(
-                                domain=domain,
-                                service=service,
-                                service_data=service_data,
-                            )
-                            tool_logger.info(f"[TIMER] Result ({timer_id}): {res}")
-                    except asyncio.CancelledError:
-                        tool_logger.info(f"[TIMER] Cancelled {timer_id} ({label})")
-                    except Exception as ex:
-                        tool_logger.error(f"[TIMER] Error in {timer_id} ({label}): {ex}")
-                    finally:
-                        self._timers.pop(timer_id, None)
-
-                task = asyncio.create_task(_timer_runner(tid))
-                self._timers[tid] = {
-                    "id": tid,
-                    "task": task,
-                    "fire_ts": fire_ts,
-                    "fire_local": fire_local,
-                    "delay_seconds": delay_s,
-                    "domain": domain,
-                    "service": service,
-                    "entity_id": entity_id or "",
-                    "label": label,
-                    "mac": caller_mac,
-                }
+                if domain == "alarm":
+                    act_payload = {"type": "direct_tool", "tool": "alarm_chime", "args": {"mac": caller_mac, "label": label}}
+                else:
+                    act_payload = {
+                        "type": "direct_tool",
+                        "tool": "call_ha_service",
+                        "args": {"domain": domain, "service": service, **service_data},
+                    }
+                owner_uid = caller_mac[3:] if caller_mac.startswith("tg_") else "family"
+                job = await scheduler_singleton.create_job(
+                    title=label,
+                    trigger={"type": "once", "delay_seconds": delay_s},
+                    action=act_payload,
+                    owner_user_id=owner_uid,
+                    one_shot=True,
+                )
+                fire_local = datetime.datetime.now().astimezone() + datetime.timedelta(seconds=delay_s)
                 if turn_state is not None:
                     turn_state["tool_executed"] = True
-                tool_logger.info(f"[TIMER] Scheduled {tid}: '{label}' in {delay_s}s (at {fire_local})")
                 return {
                     "status": "scheduled",
-                    "timer_id": tid,
+                    "timer_id": job["id"],
                     "delay_seconds": delay_s,
-                    "fire_at_local": fire_local,
+                    "fire_at_local": fire_local.strftime("%H:%M:%S"),
                     "label": label,
+                    "persistent": True,
                 }
 
             if name == "manage_timers":
+                try:
+                    from scheduler import scheduler_singleton
+                except ImportError:
+                    from .scheduler import scheduler_singleton
                 action = str(args.get("action") or "list").strip().lower()
                 query = str(args.get("query") or "").strip().lower()
-                now_ts = time.time()
+                active_once = [
+                    j for j in scheduler_singleton.db.list_scheduled_jobs(enabled_only=True, status="active")
+                    if (j.get("trigger") or {}).get("type") == "once"
+                ]
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
 
                 if action == "list":
-                    items = [
-                        {
-                            "timer_id": t["id"],
-                            "label": t["label"],
-                            "remaining_seconds": max(0, int(t["fire_ts"] - now_ts)),
-                            "fire_at_local": t["fire_local"],
-                        }
-                        for t in self._timers.values()
-                    ]
+                    items = []
+                    for j in active_once:
+                        rem = 0
+                        if j.get("next_run_at"):
+                            try:
+                                dt = datetime.datetime.fromisoformat(j["next_run_at"])
+                                rem = max(0, int((dt - now_utc).total_seconds()))
+                            except Exception:
+                                pass
+                        items.append({
+                            "timer_id": j["id"],
+                            "label": j["title"],
+                            "remaining_seconds": rem,
+                            "fire_at": j.get("next_run_at"),
+                        })
                     return {"status": "success", "count": len(items), "timers": items}
 
                 if action == "cancel_all":
-                    n = len(self._timers)
-                    for t in list(self._timers.values()):
-                        t["task"].cancel()
-                    self._timers.clear()
+                    n = 0
+                    for j in active_once:
+                        if scheduler_singleton.db.delete_scheduled_job(j["id"]):
+                            n += 1
                     return {"status": "success", "cancelled_count": n}
 
                 if action == "cancel":
-                    target_ids = []
-                    if query:
-                        for tid, t in self._timers.items():
-                            hay = f"{tid} {t['label']} {t['entity_id']}".lower()
-                            if query in hay:
-                                target_ids.append(tid)
-                    elif self._timers:
-                        # Если запрос не уточнён — отменяем последний поставленный таймер
-                        target_ids.append(list(self._timers.keys())[-1])
-
+                    matches = scheduler_singleton.find_jobs_by_query(query) if query else active_once[-1:]
                     cancelled = []
-                    for tid in target_ids:
-                        t = self._timers.pop(tid, None)
-                        if t:
-                            t["task"].cancel()
-                            cancelled.append({"timer_id": tid, "label": t["label"]})
+                    for j in matches:
+                        if (j.get("trigger") or {}).get("type") == "once" and scheduler_singleton.db.delete_scheduled_job(j["id"]):
+                            cancelled.append({"timer_id": j["id"], "label": j["title"]})
                     return {
                         "status": "success" if cancelled else "not_found",
                         "cancelled": cancelled,
                     }
 
                 return {"status": "error", "error": f"Unknown manage_timers action: {action}"}
+
+            if name == "schedule_create":
+                try:
+                    from scheduler import scheduler_singleton
+                except ImportError:
+                    from .scheduler import scheduler_singleton
+                trig = args.get("trigger") if isinstance(args.get("trigger"), dict) else {}
+                act = args.get("action") if isinstance(args.get("action"), dict) else {}
+                title = str(args.get("title") or "").strip()
+                owner = str(args.get("owner_user_id") or "family").strip() or "family"
+                notify_ch = str(args.get("notify_channel") or "").strip()
+                quiet_h = str(args.get("quiet_hours") or "").strip()
+                one_shot = args.get("one_shot")
+                if one_shot is not None:
+                    one_shot = bool(one_shot)
+                job = await scheduler_singleton.create_job(
+                    title=title,
+                    trigger=trig,
+                    action=act,
+                    owner_user_id=owner,
+                    notify_channel=notify_ch,
+                    quiet_hours=quiet_h,
+                    one_shot=one_shot,
+                )
+                if turn_state is not None:
+                    turn_state["tool_executed"] = True
+                return {"status": "scheduled", "job": job}
+
+            if name == "schedule_list":
+                try:
+                    from scheduler import scheduler_singleton
+                except ImportError:
+                    from .scheduler import scheduler_singleton
+                status_filter = str(args.get("status") or "").strip() or None
+                jobs = scheduler_singleton.db.list_scheduled_jobs(status=status_filter)
+                compact = [
+                    {
+                        "id": j["id"],
+                        "title": j["title"],
+                        "job_type": j["job_type"],
+                        "cron_or_run_at": j["cron_or_run_at"],
+                        "enabled": j["enabled"],
+                        "status": j["status"],
+                        "next_run_at": j["next_run_at"],
+                        "last_status": j["last_status"],
+                        "last_error": j["last_error"],
+                    }
+                    for j in jobs
+                ]
+                return {"status": "ok", "count": len(compact), "jobs": compact}
+
+            if name == "schedule_manage":
+                try:
+                    from scheduler import scheduler_singleton
+                except ImportError:
+                    from .scheduler import scheduler_singleton
+                op = str(args.get("operation") or "").strip().lower()
+                query = str(args.get("job_id") or args.get("query") or "").strip()
+                matches = scheduler_singleton.find_jobs_by_query(query) if query else []
+                if not matches:
+                    return {"status": "not_found", "error": f"Задача '{query}' не найдена"}
+                target_job = matches[0]
+                jid = target_job["id"]
+
+                if op == "delete":
+                    ok = scheduler_singleton.db.delete_scheduled_job(jid)
+                    return {"status": "ok" if ok else "not_found", "deleted_id": jid, "title": target_job["title"]}
+                if op in ("pause", "resume"):
+                    en = (op == "resume")
+                    nxt = target_job.get("next_run_at")
+                    if en and not nxt and (target_job.get("trigger") or {}).get("type") in ("interval", "cron"):
+                        nxt = scheduler_singleton._compute_following_run(target_job["trigger"])
+                    upd = scheduler_singleton.db.upsert_scheduled_job(
+                        job_id=jid,
+                        job_type=target_job["job_type"],
+                        title=target_job["title"],
+                        owner_user_id=target_job["owner_user_id"],
+                        cron_or_run_at=target_job["cron_or_run_at"],
+                        trigger=target_job["trigger"],
+                        action=target_job["action"],
+                        notify_channel=target_job["notify_channel"],
+                        quiet_hours=target_job["quiet_hours"],
+                        one_shot=target_job["one_shot"],
+                        enabled=en,
+                        status="active" if en else "paused",
+                        next_run_at=nxt,
+                    )
+                    return {"status": "ok", "job": upd}
+                if op == "run_now":
+                    res = await scheduler_singleton.run_job_now(jid)
+                    return {"status": "ok", "job_id": jid, "run_result": res}
+                if op == "update":
+                    new_title = str(args.get("title") or target_job["title"]).strip()
+                    new_trig = args.get("trigger") if isinstance(args.get("trigger"), dict) else target_job["trigger"]
+                    new_act = args.get("action") if isinstance(args.get("action"), dict) else target_job["action"]
+                    new_ch = str(args.get("notify_channel") if args.get("notify_channel") is not None else target_job["notify_channel"])
+                    new_qh = str(args.get("quiet_hours") if args.get("quiet_hours") is not None else target_job["quiet_hours"])
+                    upd = await scheduler_singleton.create_job(
+                        job_id=jid,
+                        title=new_title,
+                        trigger=new_trig,
+                        action=new_act,
+                        owner_user_id=str(args.get("owner_user_id") or target_job["owner_user_id"]),
+                        notify_channel=new_ch,
+                        quiet_hours=new_qh,
+                        one_shot=target_job["one_shot"],
+                        enabled=target_job["enabled"],
+                    )
+                    return {"status": "ok", "job": upd}
+                return {"status": "error", "error": f"Unknown schedule_manage operation: {op}"}
 
             if name == "web_search":
                 try:

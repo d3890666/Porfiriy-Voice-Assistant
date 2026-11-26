@@ -323,7 +323,79 @@ class GeminiProxyClient:
             )
         )
 
-        base_decls = [ha_tool, get_state_tool, search_music_tool, play_music_tool, schedule_action_tool, manage_timers_tool]
+        schedule_create_tool = _make_decl(
+            name="schedule_create",
+            description=(
+                "Create a persistent background scheduled job or event watcher (survives reboots). "
+                "Supports delayed messages ('через 10 секунд напиши в телегу...'), recurring price/movie watchers, "
+                "cron briefings, and Home Assistant entity triggers with hold time ('когда Денис придёт домой и не уйдёт 5 минут')."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "title": types.Schema(type=types.Type.STRING, description="Short Russian job title."),
+                    "owner_user_id": types.Schema(type=types.Type.STRING, description="Resident user_id ('denis', 'sveta') or 'family'."),
+                    "notify_channel": types.Schema(type=types.Type.STRING, description="Optional delivery target: 'tg_denis', 'tg_sveta', 'tg_family', 'voice', 'tg_and_voice'."),
+                    "quiet_hours": types.Schema(type=types.Type.STRING, description="Optional quiet hours 'HH:MM-HH:MM' e.g. '23:00-08:00'."),
+                    "one_shot": types.Schema(type=types.Type.BOOLEAN, description="Set true to auto-complete after first trigger."),
+                    "trigger": types.Schema(
+                        type=types.Type.OBJECT,
+                        description=(
+                            "Trigger config. Examples: "
+                            "{'type':'once','delay_seconds':10} or {'type':'once','run_at':'2026-11-26T19:00:00+03:00'}; "
+                            "{'type':'interval','every_minutes':240,'jitter_minutes':15}; "
+                            "{'type':'cron','expr':'30 8 * * 1-5'}; "
+                            "{'type':'ha_event','entity_id':'person.denis','to_state':'home','for_seconds':300}."
+                        ),
+                    ),
+                    "action": types.Schema(
+                        type=types.Type.OBJECT,
+                        description=(
+                            "Action config. Either direct tool call: "
+                            "{'type':'direct_tool','tool':'send_to_telegram','args':{'target':'denis','text':'...'}} "
+                            "or {'type':'direct_tool','tool':'call_ha_service','args':{'domain':'light','service':'turn_off','entity_id':'...'}} "
+                            "OR smart AI job: {'type':'ai_prompt','prompt':'...','allowed_tools':['ozon_card','wb_card','kinowatch_search']}."
+                        ),
+                    ),
+                },
+                required=["title", "trigger", "action"],
+            ),
+        )
+
+        schedule_list_tool = _make_decl(
+            name="schedule_list",
+            description="List all persistent scheduled jobs, radars, and timers ('какие задачи в планировщике', 'за чем следишь').",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "status": types.Schema(type=types.Type.STRING, description="Optional filter: 'active', 'paused', 'paused_error', 'completed'."),
+                },
+            ),
+        )
+
+        schedule_manage_tool = _make_decl(
+            name="schedule_manage",
+            description="Pause, resume, delete, update, or run immediately a scheduled job ('поставь радар на паузу', 'удали задачу', 'проверь радар сейчас').",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "operation": types.Schema(type=types.Type.STRING, description="'pause', 'resume', 'delete', 'run_now', or 'update'."),
+                    "query": types.Schema(type=types.Type.STRING, description="Job ID or keyword from title."),
+                    "title": types.Schema(type=types.Type.STRING, description="Optional new title for 'update'."),
+                    "trigger": types.Schema(type=types.Type.OBJECT, description="Optional new trigger for 'update'."),
+                    "action": types.Schema(type=types.Type.OBJECT, description="Optional new action for 'update'."),
+                    "notify_channel": types.Schema(type=types.Type.STRING, description="Optional new notify_channel for 'update'."),
+                    "quiet_hours": types.Schema(type=types.Type.STRING, description="Optional new quiet_hours for 'update'."),
+                },
+                required=["operation", "query"],
+            ),
+        )
+
+        base_decls = [
+            ha_tool, get_state_tool, search_music_tool, play_music_tool,
+            schedule_action_tool, manage_timers_tool,
+            schedule_create_tool, schedule_list_tool, schedule_manage_tool,
+        ]
         declared_names = {d.name for d in base_decls}
 
         # Явный инструмент делегирования в пул больших моделей и/или быстрый веб-поиск

@@ -115,6 +115,7 @@ class TelegramBotPlugin(PorfiriyPlugin):
         title: str = "",
         parse_mode: str = "",
         disable_web_page_preview: bool = False,
+        disable_notification: bool = False,
     ) -> Dict[str, Any]:
         if not provider:
             return {"status": "error", "error": "Провайдер builtin.telegram_bot не найден в БД"}
@@ -147,6 +148,8 @@ class TelegramBotPlugin(PorfiriyPlugin):
                 payload["parse_mode"] = parse_mode
             if disable_web_page_preview:
                 payload["disable_web_page_preview"] = True
+            if disable_notification:
+                payload["disable_notification"] = True
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     body = await resp.json(content_type=None)

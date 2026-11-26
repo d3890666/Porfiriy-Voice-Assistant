@@ -38,6 +38,7 @@ try:
     from .big_models import big_model_pool_singleton
     from .serper_search import serper_search_singleton
     from .mcp_client import mcp_http_client_singleton
+    from .scheduler import scheduler_singleton
     from .ww_capture import ww_capture_store
     from .plugins.telegram_bot import TelegramBotPlugin
     from .plugins.telegram_userbot import TelegramUserbotPlugin
@@ -49,6 +50,7 @@ except ImportError:
     from big_models import big_model_pool_singleton
     from serper_search import serper_search_singleton
     from mcp_client import mcp_http_client_singleton
+    from scheduler import scheduler_singleton
     from ww_capture import ww_capture_store
     from plugins.telegram_bot import TelegramBotPlugin
     from plugins.telegram_userbot import TelegramUserbotPlugin
@@ -185,6 +187,14 @@ class WebServer:
         self.app.router.add_post("/api/memory/cleanup", self.handle_cleanup_memory)
         self.app.router.add_patch("/api/memory/{item_id}", self.handle_patch_memory)
         self.app.router.add_delete("/api/memory/{item_id}", self.handle_delete_memory)
+        # Персистентный планировщик задач и радаров
+        self.app.router.add_get("/api/schedules", self.handle_get_schedules)
+        self.app.router.add_post("/api/schedules", self.handle_create_schedule)
+        self.app.router.add_patch("/api/schedules/{job_id}", self.handle_patch_schedule)
+        self.app.router.add_delete("/api/schedules/{job_id}", self.handle_delete_schedule)
+        self.app.router.add_post("/api/schedules/{job_id}/toggle", self.handle_toggle_schedule)
+        self.app.router.add_post("/api/schedules/{job_id}/run", self.handle_run_schedule)
+        self.app.router.add_get("/api/schedules/{job_id}/runs", self.handle_get_schedule_runs)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -1005,9 +1015,13 @@ class WebServer:
     async def _on_ha_state_changed(self, entity_id: str, new_state: str, old_state: str):
         """
         Слушатель событий смены состояния сущностей в Home Assistant.
-        Когда привязанный к Станции плеер Music Assistant (Squeezelite) начинает играть ('playing'),
-        отключаем активный AirPlay стрим на этой Станции, чтобы музыка не играла в два потока.
+        Передаёт события в планировщик (ha_event триггеры) и отключает активный AirPlay при запуске Squeezelite.
         """
+        try:
+            await scheduler_singleton.on_ha_state_changed(entity_id, new_state, old_state)
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] HA state hook error for {entity_id}: {e}")
+
         if new_state != "playing":
             return
 
@@ -1319,6 +1333,7 @@ class WebServer:
                 voice_notes=str(data.get("voice_notes") or ""),
                 persona_notes=str(data.get("persona_notes") or ""),
                 telegram_chat_id=data.get("telegram_chat_id"),
+                ha_tracker_entity=data.get("ha_tracker_entity"),
                 is_active=bool(data.get("is_active", True)),
             )
             return web.json_response({"success": True, "user": user})
@@ -1668,6 +1683,116 @@ class WebServer:
             "error": res.get("error", ""),
         }
         return web.json_response(payload, status=200 if payload["success"] else 400)
+
+    # ------------------------------------------------------------------ #
+    # Persistent Scheduler REST API
+    # ------------------------------------------------------------------ #
+    async def handle_get_schedules(self, request):
+        status = request.query.get("status", "").strip() or None
+        return web.json_response({
+            "success": True,
+            "jobs": db_singleton.list_scheduled_jobs(status=status),
+        })
+
+    async def handle_create_schedule(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            job = await scheduler_singleton.create_job(
+                job_id=data.get("id"),
+                title=str(data.get("title") or "").strip(),
+                trigger=data.get("trigger") if isinstance(data.get("trigger"), dict) else {},
+                action=data.get("action") if isinstance(data.get("action"), dict) else {},
+                owner_user_id=str(data.get("owner_user_id") or "family"),
+                notify_channel=str(data.get("notify_channel") or ""),
+                quiet_hours=str(data.get("quiet_hours") or ""),
+                one_shot=data.get("one_shot") if data.get("one_shot") is None else bool(data.get("one_shot")),
+                enabled=bool(data.get("enabled", True)),
+            )
+            return web.json_response({"success": True, "job": job})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_patch_schedule(self, request):
+        jid = request.match_info.get("job_id", "").strip()
+        existing = db_singleton.get_scheduled_job(jid)
+        if not existing:
+            return web.json_response({"success": False, "error": "Задача не найдена"}, status=404)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"success": False, "error": "Invalid JSON"}, status=400)
+        try:
+            job = await scheduler_singleton.create_job(
+                job_id=jid,
+                title=str(data.get("title") or existing["title"]).strip(),
+                trigger=data.get("trigger") if isinstance(data.get("trigger"), dict) else existing["trigger"],
+                action=data.get("action") if isinstance(data.get("action"), dict) else existing["action"],
+                owner_user_id=str(data.get("owner_user_id") or existing["owner_user_id"]),
+                notify_channel=str(data.get("notify_channel") if "notify_channel" in data else existing["notify_channel"]),
+                quiet_hours=str(data.get("quiet_hours") if "quiet_hours" in data else existing["quiet_hours"]),
+                one_shot=bool(data["one_shot"]) if "one_shot" in data else existing["one_shot"],
+                enabled=bool(data["enabled"]) if "enabled" in data else existing["enabled"],
+            )
+            return web.json_response({"success": True, "job": job})
+        except ValueError as e:
+            return web.json_response({"success": False, "error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_delete_schedule(self, request):
+        jid = request.match_info.get("job_id", "").strip()
+        ok = db_singleton.delete_scheduled_job(jid)
+        if not ok:
+            return web.json_response({"success": False, "error": "Задача не найдена"}, status=404)
+        return web.json_response({"success": True})
+
+    async def handle_toggle_schedule(self, request):
+        jid = request.match_info.get("job_id", "").strip()
+        job = db_singleton.get_scheduled_job(jid)
+        if not job:
+            return web.json_response({"success": False, "error": "Задача не найдена"}, status=404)
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        enabled = bool(data.get("enabled", not job["enabled"]))
+        nxt = job.get("next_run_at")
+        if enabled and not nxt and (job.get("trigger") or {}).get("type") in ("interval", "cron"):
+            nxt = scheduler_singleton._compute_following_run(job["trigger"])
+        upd = db_singleton.upsert_scheduled_job(
+            job_id=jid,
+            job_type=job["job_type"],
+            title=job["title"],
+            owner_user_id=job["owner_user_id"],
+            cron_or_run_at=job["cron_or_run_at"],
+            trigger=job["trigger"],
+            action=job["action"],
+            notify_channel=job["notify_channel"],
+            quiet_hours=job["quiet_hours"],
+            one_shot=job["one_shot"],
+            enabled=enabled,
+            status="active" if enabled else "paused",
+            next_run_at=nxt,
+        )
+        return web.json_response({"success": True, "job": upd})
+
+    async def handle_run_schedule(self, request):
+        jid = request.match_info.get("job_id", "").strip()
+        res = await scheduler_singleton.run_job_now(jid)
+        return web.json_response({"success": res.get("status") == "ok", "result": res}, status=200 if res.get("status") == "ok" else 400)
+
+    async def handle_get_schedule_runs(self, request):
+        jid = request.match_info.get("job_id", "").strip()
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except Exception:
+            limit = 20
+        return web.json_response({"success": True, "runs": db_singleton.list_job_runs(jid, limit=limit)})
 
     async def handle_get_ww_captures(self, request):
         mac = request.query.get("mac", "").strip() or None

@@ -1721,6 +1721,9 @@ async def _memory_cleanup_loop():
                     max_active_items=int(cfg.get("max_active_items") or 500),
                 )
                 logger.info(f"[MEMORY] Scheduled smart cleanup: {res.get('summary')}")
+            sched_res = db_singleton.cleanup_scheduler_data()
+            if sched_res.get("deleted_jobs") or sched_res.get("deleted_runs"):
+                logger.info(f"[SCHEDULER] Cleanup: {sched_res}")
         except Exception as e:
             logger.warning(f"[MEMORY] Cleanup loop error: {e}")
         await asyncio.sleep(6 * 3600)
@@ -1735,9 +1738,17 @@ async def main():
     phrase_manager.load_from_cache()
     asyncio.create_task(phrase_manager.initialize(options))
     
-    # 0. Запуск динамического обнаружения доступных моделей Gemini, умной очистки памяти и шлюза Telegram
+    # 0. Запуск динамического обнаружения доступных моделей Gemini, умной очистки памяти, планировщика и шлюза Telegram
     asyncio.create_task(refresh_available_models())
     asyncio.create_task(_memory_cleanup_loop())
+    from scheduler import scheduler_singleton
+    scheduler_singleton.configure(
+        ha_api=ha_api_singleton,
+        tool_executor=tool_executor,
+        device_manager=device_manager,
+        options_callback=get_options,
+    )
+    asyncio.create_task(scheduler_singleton.start())
     telegram_gateway = TelegramBotGateway(ha_api_singleton, tool_executor, get_options, device_manager=device_manager)
     asyncio.create_task(telegram_gateway.start())
 
