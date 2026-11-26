@@ -113,6 +113,8 @@ class TelegramBotPlugin(PorfiriyPlugin):
         target: str,
         text: str,
         title: str = "",
+        parse_mode: str = "",
+        disable_web_page_preview: bool = False,
     ) -> Dict[str, Any]:
         if not provider:
             return {"status": "error", "error": "Провайдер builtin.telegram_bot не найден в БД"}
@@ -140,7 +142,11 @@ class TelegramBotPlugin(PorfiriyPlugin):
             if not bot_token:
                 return {"status": "error", "error": "Bot Token не задан в настройках плагина builtin.telegram_bot"}
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            payload = {"chat_id": chat_id, "text": full_text}
+            payload: Dict[str, Any] = {"chat_id": chat_id, "text": full_text[:4090]}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            if disable_web_page_preview:
+                payload["disable_web_page_preview"] = True
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     body = await resp.json(content_type=None)
@@ -153,6 +159,23 @@ class TelegramBotPlugin(PorfiriyPlugin):
                             "chat_id": str(chat_id),
                             "message_id": msg_id,
                         }
+                    # Если Telegram отклонил HTML-разметку — повторяем обычным текстом без тегов
+                    if parse_mode and resp.status == 400:
+                        plain_fallback = re.sub(r"<[^>]+>", "", full_text)[:4090]
+                        async with session.post(
+                            url,
+                            json={"chat_id": chat_id, "text": plain_fallback, "disable_web_page_preview": disable_web_page_preview},
+                            timeout=aiohttp.ClientTimeout(total=15),
+                        ) as resp2:
+                            body2 = await resp2.json(content_type=None)
+                            if resp2.status == 200 and isinstance(body2, dict) and body2.get("ok"):
+                                return {
+                                    "status": "ok",
+                                    "mode": "direct_bot_plain_fallback",
+                                    "target": display_name,
+                                    "chat_id": str(chat_id),
+                                    "message_id": (body2.get("result") or {}).get("message_id"),
+                                }
                     desc = body.get("description") if isinstance(body, dict) else str(body)
                     return {
                         "status": "error",

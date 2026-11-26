@@ -264,8 +264,88 @@ class PluginRegistry:
                     error_text = str(res.get("error") or "")
                     return res
 
-                # Context Gate для крупных ответов внешних MCP-серверов (маркетплейсы и т.п.)
+                # Специальный режим для маркетплейсов: всегда формируем красивую HTML-карточку
+                # с ценами цифрами, кликабельными ссылками и рекомендацией и отправляем в Telegram
+                # (в тот же чат, если запрос из Telegram, или в общий семейный чат, если запрос голосом)
                 opts = ctx_dict.get("options") or {}
+                is_marketplace_product_tool = (
+                    pid == "mcp.marketplaces"
+                    and tool_name not in ("marketplace_health", "marketplace_sources", "compare_sources", "compare_browser_snapshot")
+                )
+                if is_marketplace_product_tool and isinstance(res, dict) and res.get("status") == "ok":
+                    raw_json = json.dumps(res, ensure_ascii=False)
+                    user_q = str(ctx_dict.get("user_query") or clean_args.get("query") or "").strip()
+                    if ctx_dict.get("on_progress"):
+                        try:
+                            await ctx_dict["on_progress"]("🔍 Обрабатываю результаты и готовлю подборку со ссылками...")
+                        except Exception:
+                            pass
+                    card_prompt = (
+                        f"Исходный запрос пользователя: {user_q or 'Найди лучшие предложения.'}\n\n"
+                        f"Ниже JSON-ответ маркетплейсов от инструмента `{tool_name}`.\n"
+                        f"Сформируй компактную, красивую карточку для Telegram строго в формате **Telegram HTML**.\n"
+                        f"ПРАВИЛА:\n"
+                        f"1. Разрешены ТОЛЬКО теги Telegram HTML: <b>, <i>, <a href=\"URL\">, <code>. НЕ используй Markdown (**, ##, []()), списки <ul>/<li> и <br>. Символ & в тексте экранируй как &amp;.\n"
+                        f"2. Все цены пиши СТРОГО ЦИФРАМИ (например: <b>490 ₽</b>), никогда прописью.\n"
+                        f"3. У пользователя есть Ozon Карта, WB Кошелёк и Яндекс Пэй — в первую очередь указывай цену по карте/кошельку (если есть в данных, подпиши в скобках, например «Ozon Карта» / «WB Кошелёк»).\n"
+                        f"4. Выбери 3–5 лучших релевантных предложений (отсеивай мусор и нерелевантные аксессуары). Формат каждой строки:\n"
+                        f"   1. <a href=\"URL\">Короткое название</a> — <b>ЦЕНА ₽</b> (площадка, рейтинг/доставка если есть)\n"
+                        f"   Если URL нет в данных — пиши просто название без ссылки.\n"
+                        f"5. В начале заголовок: 🛒 <b>Подборка: {user_q or 'товары'}</b>\n"
+                        f"6. В конце добавь 1–2 предложения: 💡 <b>Рекомендация:</b> что лучше взять и почему.\n\n"
+                        f"ДАННЫЕ:\n{raw_json[:150000]}"
+                    )
+                    big_res = await big_model_pool_singleton.run_text_task(card_prompt, opts)
+                    if big_res.get("success") and (big_res.get("text") or "").strip():
+                        card_html = big_res["text"].strip()
+                        if card_html.startswith("```"):
+                            card_html = card_html.split("\n", 1)[-1]
+                            if card_html.endswith("```"):
+                                card_html = card_html[:-3].strip()
+
+                        tg_target = mac[3:] if mac.startswith("tg_") and len(mac) > 3 else "family"
+                        tg_sent = False
+                        tg_dest_label = "этот Telegram-чат" if mac.startswith("tg_") else "общий семейный Telegram-чат"
+                        try:
+                            try:
+                                from .plugins.telegram_bot import TelegramBotPlugin
+                            except ImportError:
+                                from plugins.telegram_bot import TelegramBotPlugin
+                            tg_prov = self.db.get_provider("builtin.telegram_bot", mask_secrets=False)
+                            if tg_prov and tg_prov.get("enabled"):
+                                tg_res = await TelegramBotPlugin.send_message(
+                                    db=self.db,
+                                    provider=tg_prov,
+                                    ha_api=ctx_dict.get("ha_api"),
+                                    target=tg_target,
+                                    text=card_html,
+                                    parse_mode="HTML",
+                                    disable_web_page_preview=True,
+                                )
+                                tg_sent = tg_res.get("status") == "ok"
+                                if not tg_sent:
+                                    logger.warning(f"Marketplace Telegram card send failed ({tg_target}): {tg_res.get('error')}")
+                        except Exception as tg_ex:
+                            logger.warning(f"Marketplace Telegram card send exception: {tg_ex}")
+
+                        import re as _re
+                        plain_summary = _re.sub(r"<[^>]+>", "", card_html)
+                        res_summary = f" -> mcp={len(raw_json)}ch -> big={big_res['model']} -> tg={'ok' if tg_sent else 'skip'}({tg_target})"
+                        return {
+                            "status": "ok",
+                            "sent_to_telegram": tg_sent,
+                            "telegram_target": tg_dest_label,
+                            "instruction": (
+                                f"Подробная карточка с ценами цифрами и кликабельными ссылками УЖЕ отправлена в {tg_dest_label}. "
+                                "НЕ перечисляй весь список и НЕ читай ссылки. Кратко (1–2 предложения) назови лучший вариант, "
+                                f"главную цену и скажи, что подробности со ссылками отправлены в {tg_dest_label}."
+                                if tg_sent
+                                else "Кратко озвучь лучшие варианты и цены из summary."
+                            ),
+                            "summary": plain_summary[:2500],
+                        }
+
+                # Context Gate для крупных ответов внешних MCP-серверов (маркетплейсы и т.п.)
                 if opts.get("big_models_enabled") and isinstance(res, dict) and res.get("status") == "ok":
                     raw_json = json.dumps(res, ensure_ascii=False)
                     threshold = max(500, int(opts.get("big_models_threshold_chars") or 4000))
