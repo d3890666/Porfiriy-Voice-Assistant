@@ -303,7 +303,7 @@ class GeminiProxyClient:
                 base_decls.append(big_tool)
                 declared_names.add("ask_big_model")
 
-            if _opts.get("enable_google_search", True) and (
+            if (
                 _opts.get("serper_api_key")
                 or _opts.get("web_search_model")
                 or _opts.get("big_models_enabled")
