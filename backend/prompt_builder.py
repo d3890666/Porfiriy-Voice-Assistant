@@ -101,8 +101,9 @@ async def build_system_prompt(
 
         prompt_base = "\n\n".join(modular_parts) or (options.get("system_prompt", "") or "").strip()
         anti_hallucination = (
-            "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action "
-            "unless you have explicitly called the corresponding tool (e.g. call_ha_service). "
+            "CRITICAL DIRECTIVE: NEVER fabricate or claim you performed a smart home action, set a timer/alarm, "
+            "created a reminder, or scheduled a background watcher unless you have explicitly called the corresponding tool "
+            "(e.g. call_ha_service, schedule_create, schedule_manage) and received status='success'/'scheduled'/'ok'. "
             "Devices under domain 'switch' can also control lights or appliances; use them when appropriate."
         )
 
@@ -140,10 +141,11 @@ async def build_system_prompt(
 
     parts.append(
         "### PERSISTENT SCHEDULER & AUTOMATIONS (schedule_create, schedule_list, schedule_manage):\n"
-        "- Use `schedule_create` whenever the user asks for delayed Telegram notifications ('через 10 секунд напиши в телегу...'), "
-        "recurring price/release watchers, daily/weekly briefings, or Home Assistant event triggers ('когда Денис вернётся домой и не уйдёт 5 минут' -> "
-        "`ha_event` with resident's `ha_tracker`, `to_state='home'`, `for_seconds=300`).\n"
-        "- Prefer `action.type='direct_tool'` for deterministic actions (`send_to_telegram`, `call_ha_service`) and `action.type='ai_prompt'` for smart checks/summaries."
+        "- Use `schedule_create` whenever the user asks for countdown timers ('поставь таймер на 5 минут' -> `direct_tool` + `alarm_chime`), "
+        "delayed Telegram notifications ('через 10 секунд напиши в телегу...' -> `direct_tool` + `send_to_telegram`), "
+        "delayed device actions (`direct_tool` + `call_ha_service`), recurring price/release watchers or daily briefings (`ai_prompt`), "
+        "or Home Assistant event triggers ('когда Денис вернётся домой и не уйдёт 5 минут' -> `ha_event` with `ha_tracker`, `to_state='home'`, `for_seconds=300`).\n"
+        "- Use `schedule_list` and `schedule_manage` to check, pause, resume, run, or cancel timers and scheduled tasks."
     )
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")

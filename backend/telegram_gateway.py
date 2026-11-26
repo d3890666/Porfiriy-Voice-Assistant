@@ -931,6 +931,10 @@ class TelegramBotGateway:
             elif not reply_text:
                 reply_text = "Не расслышал запрос, повторите ещё раз."
 
+            logger.info(
+                f"[TG-GW] Turn done chat_id={chat_id} tool_executed={turn_state['tool_executed']} "
+                f"| in='{user_history_text[:140]}' | out='{reply_text[:180]}'"
+            )
             self._save_turn(chat_id, user_history_text, reply_text)
 
             reply_voice = bool(cfg.get("reply_voice_to_voice", True))
