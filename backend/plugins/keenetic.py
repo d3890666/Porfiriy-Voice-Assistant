@@ -50,6 +50,41 @@ def _is_ip(value: str) -> bool:
         return False
 
 
+def _as_ipv4_net(value: str) -> Optional[ipaddress.IPv4Network]:
+    txt = (value or "").strip()
+    if not txt or ":" in txt:
+        return None
+    try:
+        net = ipaddress.ip_network(txt, strict=False)
+        if isinstance(net, ipaddress.IPv4Network):
+            return net
+    except ValueError:
+        pass
+    return None
+
+
+def normalize_ipv4_or_cidr(raw: str) -> Optional[str]:
+    """
+    Принимает одиночный IPv4 (1.2.3.4) или подсеть IPv4 CIDR (1.2.3.0/24).
+    Явно отклоняет IPv6 и 0.0.0.0/0. /32 приводится к одиночному IPv4.
+    """
+    txt = (raw or "").strip()
+    if not txt or ":" in txt:
+        return None
+    if "/" in txt:
+        net = _as_ipv4_net(txt)
+        if not net or net.prefixlen == 0:
+            return None
+        return str(net.network_address) if net.prefixlen == 32 else str(net)
+    try:
+        addr = ipaddress.ip_address(txt)
+        if isinstance(addr, ipaddress.IPv4Address):
+            return str(addr)
+    except ValueError:
+        return None
+    return None
+
+
 def normalize_domain(raw: str, keep_subdomain: bool = False) -> Optional[str]:
     """
     Приводит URL / домен к чистому виду, отбрасывая схему, путь, порт, '*.' и 'www.'.
@@ -99,22 +134,58 @@ def normalize_domain(raw: str, keep_subdomain: bool = False) -> Optional[str]:
     return last_two
 
 
-def check_domain_in_list(domain: str, existing: List[str]) -> Dict[str, Any]:
-    """Проверяет точное наличие, перекрытие родительским доменом и наличие дочерних поддоменов."""
-    ex_set = {d.strip().lower() for d in existing if d and d.strip()}
-    exact = domain in ex_set
+def normalize_entry(raw: str, keep_subdomain: bool = False) -> Optional[str]:
+    """
+    Универсальная нормализация записи для Netcraze/KeeneticOS 5.x object-group fqdn:
+    - Сначала проверяет IPv4 или IPv4 CIDR (отсекает IPv6).
+    - Иначе нормализует домен (eTLD+1 по умолчанию).
+    """
+    ip_val = normalize_ipv4_or_cidr(raw)
+    if ip_val:
+        return ip_val
+    return normalize_domain(raw, keep_subdomain=keep_subdomain)
 
-    covered_by: Optional[str] = None
-    parts = domain.split(".")
+
+def check_domain_in_list(domain: str, existing: List[str]) -> Dict[str, Any]:
+    """Проверяет точное наличие и перекрытие родителем/подсетью (как для доменов, так и для IPv4/CIDR)."""
+    entry = domain.strip().lower()
+    ex_set = {d.strip().lower() for d in existing if d and d.strip()}
+    exact = entry in ex_set
+
+    entry_net = _as_ipv4_net(entry)
+    if entry_net is not None:
+        covered_by: Optional[str] = None
+        children: List[str] = []
+        for ex in sorted(ex_set):
+            ex_net = _as_ipv4_net(ex)
+            if ex_net is None or ex == entry:
+                continue
+            if entry_net.subnet_of(ex_net):
+                if covered_by is None:
+                    covered_by = ex
+            elif ex_net.subnet_of(entry_net):
+                children.append(ex)
+        return {
+            "domain": entry,
+            "kind": "ipv4",
+            "exact": exact,
+            "covered_by_parent": covered_by,
+            "existing_children": children,
+            "already_routed": bool(exact or covered_by),
+        }
+
+    covered_by = None
+    parts = entry.split(".")
     for i in range(1, len(parts) - 1):
         parent = ".".join(parts[i:])
         if parent in ex_set:
             covered_by = parent
             break
 
-    children = sorted(d for d in ex_set if d.endswith("." + domain))
+    children = sorted(d for d in ex_set if d.endswith("." + entry))
     return {
-        "domain": domain,
+        "domain": entry,
+        "kind": "domain",
         "exact": exact,
         "covered_by_parent": covered_by,
         "existing_children": children,
@@ -356,7 +427,7 @@ class KeeneticPlugin(PorfiriyPlugin):
                 if prefix == "keyword":
                     continue
                 token = val
-            norm = normalize_domain(token, keep_subdomain=False)
+            norm = normalize_entry(token, keep_subdomain=False)
             if norm and norm not in collected:
                 collected.append(norm)
             if len(collected) >= 200:
@@ -399,13 +470,13 @@ class KeeneticPlugin(PorfiriyPlugin):
             {
                 "name": "keenetic_check_domain",
                 "description": (
-                    "Проверить, есть ли указанный домен или URL в списках маршрутизации роутера Keenetic/Netcraze. "
-                    "Автоматически извлекает верхний домен (eTLD+1) и проверяет покрытие родительским доменом."
+                    "Проверить, есть ли указанный домен, URL, IPv4-адрес или IPv4-подсеть CIDR в списках роутера Keenetic/Netcraze. "
+                    "Для доменов извлекает верхний домен (eTLD+1), для IPv4 проверяет вхождение в подсети."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "domain": {"type": "string", "description": "Домен или URL для проверки"},
+                        "domain": {"type": "string", "description": "Домен, URL, IPv4-адрес или IPv4 CIDR для проверки"},
                         "group": {"type": "string", "description": "Имя группы fqdn (если не указано — проверит все группы)"},
                     },
                     "required": ["domain"],
@@ -414,13 +485,13 @@ class KeeneticPlugin(PorfiriyPlugin):
             {
                 "name": "keenetic_resolve_pool",
                 "description": (
-                    "Найти пул доменов сервиса через GeoSite (например 'openai', 'youtube', 'discord', 'instagram') "
-                    "или определить IP/ASN/страну и верхний домен через GeoIP/DNS, сверив с роутером."
+                    "Найти пул доменов/IPv4 сервиса через GeoSite (например 'openai', 'youtube', 'discord', 'instagram') "
+                    "или определить IPv4/ASN/страну и верхний домен через GeoIP/DNS, сверив с роутером."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Имя сервиса/категории GeoSite (openai, youtube...) или домен/IP для GeoIP"},
+                        "query": {"type": "string", "description": "Имя сервиса/категории GeoSite (openai, youtube...) или домен/IPv4 для GeoIP"},
                         "mode": {"type": "string", "enum": ["geosite", "geoip"], "description": "Режим поиска: geosite (по умолчанию) или geoip"},
                         "group": {"type": "string", "description": "Группа fqdn на роутере для сверки дубликатов"},
                     },
@@ -431,8 +502,8 @@ class KeeneticPlugin(PorfiriyPlugin):
                 "name": "keenetic_add_domains",
                 "description": (
                     "Подготовить и отправить на согласование в Telegram (кнопками Да/Нет) или сразу добавить "
-                    "один домен либо пул доменов в список маршрутизации роутера Keenetic. "
-                    "Берёт верхний домен и отсекает всё, что уже покрыто на роутере."
+                    "домены, IPv4-адреса или IPv4 CIDR-подсети (пулом или по одному) в список маршрутизации роутера Netcraze/Keenetic (IPv6 не поддерживается и отбрасывается). "
+                    "Берёт верхний домен (для URL/доменов) и отсекает всё, что уже покрыто на роутере."
                 ),
                 "parameters": {
                     "type": "object",
@@ -440,7 +511,7 @@ class KeeneticPlugin(PorfiriyPlugin):
                         "domains": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Список доменов или URL для добавления",
+                            "description": "Список доменов, URL, IPv4-адресов или IPv4 CIDR-подсетей для добавления",
                         },
                         "group": {"type": "string", "description": "Имя группы fqdn (по умолчанию из настроек плагина)"},
                         "keep_subdomain": {"type": "boolean", "description": "True только если пользователь прямо попросил добавить точный поддомен, а не верхний домен"},
@@ -451,11 +522,11 @@ class KeeneticPlugin(PorfiriyPlugin):
             },
             {
                 "name": "keenetic_remove_domain",
-                "description": "Удалить домен из группы маршрутизации fqdn на роутере Keenetic (с согласованием в Telegram при настройке confirm_mode=always).",
+                "description": "Удалить домен, IPv4 или IPv4 CIDR из группы маршрутизации fqdn на роутере Keenetic (с согласованием в Telegram при настройке confirm_mode=always).",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "domain": {"type": "string", "description": "Домен или URL для удаления"},
+                        "domain": {"type": "string", "description": "Домен, URL, IPv4 или IPv4 CIDR для удаления"},
                         "group": {"type": "string", "description": "Имя группы fqdn (по умолчанию из настроек)"},
                     },
                     "required": ["domain"],
@@ -478,7 +549,8 @@ class KeeneticPlugin(PorfiriyPlugin):
         return (
             "### KEENETIC / NETCRAZE DOMAIN ROUTING (`builtin.keenetic`):\n"
             f"- Default fqdn group: `{def_group}`.{groups_hint}\n"
-            "- Use `keenetic_*` tools whenever the user asks about router domain routing, VPN lists, Keenetic/Netcraze, GeoSite/GeoIP pools, checking or adding domains.\n"
+            "- Router lists (`object-group fqdn` / `domain-list*`) support BOTH domain names AND IPv4 addresses / IPv4 CIDR subnets (IPv6 is NOT supported and must be ignored).\n"
+            "- Use `keenetic_*` tools whenever the user asks about router routing, VPN lists, domains, IPv4 addresses/subnets, Keenetic/Netcraze, GeoSite/GeoIP pools, checking or adding entries.\n"
             "- If a domain or URL is given, normalize to top registrable domain unless the user explicitly requested a subdomain.\n"
             "- If `keenetic_add_domains` or `keenetic_remove_domain` returns `status='awaiting_approval'`: follow its `message` field! When already inside Telegram chat, NEVER say 'проверяйте Telegram' — simply say the confirmation buttons were sent above."
         )
@@ -513,10 +585,10 @@ class KeeneticPlugin(PorfiriyPlugin):
 
         if tool_name == "keenetic_check_domain":
             raw_dom = str(args.get("domain") or "").strip()
-            dom = normalize_domain(raw_dom, keep_subdomain=False)
-            exact_sub = normalize_domain(raw_dom, keep_subdomain=True)
+            dom = normalize_entry(raw_dom, keep_subdomain=False)
+            exact_sub = normalize_entry(raw_dom, keep_subdomain=True)
             if not dom:
-                return {"status": "error", "error": f"Некорректный домен или URL: {raw_dom}"}
+                return {"status": "error", "error": f"Некорректный домен, URL или IPv4/CIDR (IPv6 не поддерживается): {raw_dom}"}
             groups = await self.fetch_fqdn_groups(ha_api, entry_id)
             target_group = str(args.get("group") or "").strip()
             if target_group:
@@ -559,6 +631,7 @@ class KeeneticPlugin(PorfiriyPlugin):
                 except Exception as e:
                     geo_info = {"error": str(e)}
                 chk = check_domain_in_list(top, existing) if (top and target_group) else None
+                ips_check = [check_domain_in_list(ip, existing) for ip in ips] if (ips and target_group) else []
                 return {
                     "status": "ok",
                     "mode": "geoip",
@@ -569,6 +642,7 @@ class KeeneticPlugin(PorfiriyPlugin):
                     "geoip": geo_info,
                     "router_group": target_group,
                     "router_check": chk,
+                    "router_ips_check": ips_check,
                 }
 
             geosite_tpl = str(cfg.get("geosite_url_template") or DEFAULT_GEOSITE_URL)
@@ -621,14 +695,14 @@ class KeeneticPlugin(PorfiriyPlugin):
             normalized: List[str] = []
             invalid: List[str] = []
             for raw in raw_domains:
-                d = normalize_domain(str(raw), keep_subdomain=keep_sub)
+                d = normalize_entry(str(raw), keep_subdomain=keep_sub)
                 if not d:
                     invalid.append(str(raw))
                 elif d not in normalized:
                     normalized.append(d)
 
             if not normalized:
-                return {"status": "error", "error": f"Не удалось распознать валидные домены: {invalid}"}
+                return {"status": "error", "error": f"Не удалось распознать валидные домены или IPv4/CIDR (IPv6 отклонён): {invalid}"}
 
             to_add: List[str] = []
             skipped: List[str] = []
@@ -711,10 +785,10 @@ class KeeneticPlugin(PorfiriyPlugin):
 
         if tool_name == "keenetic_remove_domain":
             raw_dom = str(args.get("domain") or "").strip()
-            dom = normalize_domain(raw_dom, keep_subdomain=True)
+            dom = normalize_entry(raw_dom, keep_subdomain=True)
             target_group = str(args.get("group") or default_group).strip()
             if not dom or not target_group:
-                return {"status": "error", "error": "Укажите корректный domain и group"}
+                return {"status": "error", "error": "Укажите корректный domain/IPv4/CIDR и group"}
 
             groups_meta = await self.fetch_fqdn_groups_meta(ha_api, entry_id)
             groups = {k: v["domains"] for k, v in groups_meta.items()}
