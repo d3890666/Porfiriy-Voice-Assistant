@@ -1,4 +1,6 @@
+import html
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -125,6 +127,17 @@ class SerperSearchClient:
         formatted = self._format_results(data if isinstance(data, dict) else {}, num)
         organic = data.get("organic") if isinstance(data, dict) else None
         results_count = len(organic) if isinstance(organic, list) else 0
+        items: List[Dict[str, str]] = []
+        if isinstance(organic, list):
+            for item in organic[:num]:
+                if not isinstance(item, dict):
+                    continue
+                items.append({
+                    "title": str(item.get("title") or "").strip(),
+                    "link": str(item.get("link") or "").strip(),
+                    "snippet": str(item.get("snippet") or "").strip(),
+                    "date": str(item.get("date") or "").strip(),
+                })
         if not formatted:
             return {
                 "success": False,
@@ -138,9 +151,57 @@ class SerperSearchClient:
             "provider": "serper.dev",
             "latency_ms": latency_ms,
             "answer": formatted,
+            "items": items,
             "results_count": results_count,
             "credits": data.get("credits", 1) if isinstance(data, dict) else 1,
         }
+
+    async def fetch_page_text(
+        self,
+        url: str,
+        *,
+        max_chars: int = 8000,
+        timeout_s: float = 6.0,
+    ) -> str:
+        """Скачивает HTML-страницу по URL и возвращает очищенный текст (для извлечения полных рецептов)."""
+        target_url = str(url or "").strip()
+        if not (target_url.startswith("http://") or target_url.startswith("https://")):
+            return ""
+        try:
+            session = await self._get_session()
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5",
+            }
+            async with session.get(
+                target_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
+                allow_redirects=True,
+            ) as resp:
+                if resp.status != 200:
+                    return ""
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if ctype and ("text/" not in ctype and "html" not in ctype):
+                    return ""
+                raw_bytes = await resp.content.read(512 * 1024)
+                raw_html = raw_bytes.decode(resp.charset or "utf-8", errors="ignore")
+        except Exception as e:
+            logger.debug(f"fetch_page_text failed for {target_url}: {e}")
+            return ""
+
+        cleaned = re.sub(r"<!--.*?-->", " ", raw_html, flags=re.DOTALL)
+        cleaned = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(r"</?(p|div|li|br|h[1-6]|tr)[^>]*>", "\n", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        cleaned = html.unescape(cleaned)
+        lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in cleaned.splitlines()]
+        text = "\n".join(ln for ln in lines if ln)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text[:max_chars].strip()
 
 
 serper_search_singleton = SerperSearchClient()

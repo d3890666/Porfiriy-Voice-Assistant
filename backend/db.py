@@ -256,6 +256,17 @@ class PorfiriyDB:
                         error TEXT DEFAULT ''
                     );
 
+                    CREATE TABLE IF NOT EXISTS rich_results (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kind TEXT NOT NULL,
+                        topic TEXT DEFAULT '',
+                        query TEXT DEFAULT '',
+                        html_text TEXT NOT NULL,
+                        plain_text TEXT DEFAULT '',
+                        device_mac TEXT DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+
                     CREATE INDEX IF NOT EXISTS idx_user_channels_user ON user_channels(user_id);
                     CREATE INDEX IF NOT EXISTS idx_provider_accounts_provider ON provider_accounts(provider_id);
                     CREATE INDEX IF NOT EXISTS idx_provider_accounts_owner ON provider_accounts(owner_user_id);
@@ -264,6 +275,7 @@ class PorfiriyDB:
                     CREATE INDEX IF NOT EXISTS idx_memory_expires ON memory_items(expires_at);
                     CREATE INDEX IF NOT EXISTS idx_audit_ts ON tool_audit_log(ts);
                     CREATE INDEX IF NOT EXISTS idx_job_runs_job_id ON job_runs(job_id, id DESC);
+                    CREATE INDEX IF NOT EXISTS idx_rich_results_created ON rich_results(created_at DESC);
                     """
                 )
                 # Миграция существующей таблицы scheduled_jobs (если БД создана в ранней версии)
@@ -1916,6 +1928,130 @@ class PorfiriyDB:
                 ).rowcount
                 conn.commit()
                 return {"deleted_jobs": int(c_jobs), "deleted_runs": int(c_runs)}
+            finally:
+                conn.close()
+
+    def save_rich_result(
+        self,
+        *,
+        kind: str,
+        topic: str,
+        query: str = "",
+        html_text: str = "",
+        plain_text: str = "",
+        device_mac: str = "",
+    ) -> Optional[int]:
+        """Сохраняет оформленный результат поиска/рецепта/маркетплейсов (для повторной отправки в Telegram)."""
+        clean_html = (html_text or "").strip()
+        clean_plain = (plain_text or "").strip()
+        if not clean_html and not clean_plain:
+            return None
+        now = _now_iso()
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO rich_results(kind, topic, query, html_text, plain_text, device_mac, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (kind or "web_search").strip(),
+                        (topic or "")[:300].strip(),
+                        (query or "")[:300].strip(),
+                        clean_html or clean_plain,
+                        clean_plain or clean_html,
+                        (device_mac or "").strip(),
+                        now,
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid) if cur.lastrowid is not None else None
+            finally:
+                conn.close()
+
+    def find_rich_result(
+        self,
+        *,
+        query: str = "",
+        device_mac: str = "",
+        ttl_hours: int = 72,
+    ) -> Optional[Dict[str, Any]]:
+        """Находит последний сохранённый результат в пределах TTL по теме/запросу или просто самый свежий."""
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(hours=max(1, int(ttl_hours)))
+        ).isoformat()
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM rich_results WHERE created_at >= ? ORDER BY id DESC LIMIT 100",
+                    (cutoff,),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        if not rows:
+            return None
+
+        stop_words = {
+            "вчера", "вчерашний", "вчерашнее", "вчерашнего", "вчерашнюю",
+            "позавчера", "позавчерашний", "сегодня", "сегодняшний", "недавний", "недавнее",
+            "результат", "результаты", "результату", "поиск", "поиска", "поиску",
+            "про", "что", "искал", "искали", "телегу", "телеграм", "телеграмм", "телеграме", "телеграмме",
+            "скинь", "отправь", "отправить", "пришли", "прислать", "пожалуйста",
+            "последний", "последняя", "последнее", "последнего", "предыдущий", "предыдущее", "предыдущую",
+            "ответ", "информацию", "инфу", "ссылку", "ссылки", "рецепт", "найденное",
+        }
+        raw_q = (query or "").strip().lower()
+        tokens = [
+            t for t in re.findall(r"[a-zа-яё0-9]{3,}", raw_q)
+            if t not in stop_words
+        ]
+
+        if not tokens:
+            if device_mac:
+                for r in rows:
+                    if (r["device_mac"] or "") == device_mac:
+                        return dict(r)
+            return dict(rows[0])
+
+        best_row = None
+        best_score = 0
+        for r in rows:
+            hay = f"{r['topic'] or ''} {r['query'] or ''} {(r['plain_text'] or '')[:800]}".lower()
+            score = 0
+            for tok in tokens:
+                if tok in hay:
+                    score += 2
+                elif (len(tok) >= 5 and tok[:-1] in hay) or (len(tok) >= 6 and tok[:-2] in hay):
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_row = r
+
+        return dict(best_row) if best_row is not None and best_score > 0 else None
+
+    def cleanup_rich_results(self, *, ttl_hours: int = 72, max_items: int = 50) -> int:
+        """Удаляет устаревшие сохранённые результаты старше ttl_hours и ограничивает их число."""
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(hours=max(1, int(ttl_hours)))
+        ).isoformat()
+        with self._lock:
+            conn = self._connect()
+            try:
+                res = conn.execute(
+                    """
+                    DELETE FROM rich_results
+                    WHERE created_at < ?
+                       OR id NOT IN (SELECT id FROM rich_results ORDER BY id DESC LIMIT ?)
+                    """,
+                    (cutoff, max(1, int(max_items))),
+                )
+                conn.commit()
+                return int(res.rowcount or 0)
             finally:
                 conn.close()
 

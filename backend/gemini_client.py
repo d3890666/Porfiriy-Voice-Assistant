@@ -412,12 +412,17 @@ class GeminiProxyClient:
                     name="web_search",
                     description=(
                         "Search the live Internet via Google Search "
-                        "(use for fresh news, release dates, prices, weather, facts, or anything post-training)."
+                        "(use for fresh news, release dates, prices, weather, facts, food/cocktail recipes, or anything post-training)."
                     ),
                     parameters=types.Schema(
                         type=types.Type.OBJECT,
                         properties={
                             "query": types.Schema(type=types.Type.STRING, description="Clear search query or question."),
+                            "mode": types.Schema(
+                                type=types.Type.STRING,
+                                enum=["fact", "recipe", "cocktail"],
+                                description="Search mode: 'fact' (default: news, weather, history, facts — cached for 3 days, not auto-sent), 'recipe' (food recipes — auto-sent to Telegram with exact measurements), 'cocktail' (cocktail recipes — prioritizes edim.tv and auto-sends to Telegram).",
+                            ),
                         },
                         required=["query"],
                     ),

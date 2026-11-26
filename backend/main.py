@@ -1724,6 +1724,9 @@ async def _memory_cleanup_loop():
             sched_res = db_singleton.cleanup_scheduler_data()
             if sched_res.get("deleted_jobs") or sched_res.get("deleted_runs"):
                 logger.info(f"[SCHEDULER] Cleanup: {sched_res}")
+            rich_del = db_singleton.cleanup_rich_results(ttl_hours=72, max_items=50)
+            if rich_del:
+                logger.info(f"[RICH_CACHE] Cleaned up {rich_del} expired rich results")
         except Exception as e:
             logger.warning(f"[MEMORY] Cleanup loop error: {e}")
         await asyncio.sleep(6 * 3600)

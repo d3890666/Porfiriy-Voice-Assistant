@@ -42,14 +42,22 @@ class TelegramBotPlugin(PorfiriyPlugin):
                         },
                         "text": {
                             "type": "STRING",
-                            "description": "Message body in clean readable text (URLs are clickable automatically).",
+                            "description": "Message body in clean readable text (URLs are clickable automatically). Optional if use_last_result=true or result_query is set.",
                         },
                         "title": {
                             "type": "STRING",
                             "description": "Optional short title/header for the message.",
                         },
+                        "use_last_result": {
+                            "type": "BOOLEAN",
+                            "description": "Set true to send the last cached formatted search/recipe/marketplace HTML card (with clickable links and exact numbers) instead of writing new text.",
+                        },
+                        "result_query": {
+                            "type": "STRING",
+                            "description": "Optional topic keyword to find a cached search/recipe/marketplace result from the last 3 days (e.g. 'негрони', 'бородино', 'наушники'). Automatically enables use_last_result.",
+                        },
                     },
-                    "required": ["target", "text"],
+                    "required": ["target"],
                 },
             }
         ]
@@ -68,7 +76,9 @@ class TelegramBotPlugin(PorfiriyPlugin):
             "### PLUGIN: TELEGRAM BOT (send_to_telegram)\n"
             f"- Configured Telegram recipients: {targets_str}.\n"
             "- When the user asks to send/drop a recipe, link, code, list, or text to their phone or to another family member "
-            "('скинь мне в телегу', 'отправь Свете', 'кинь в общий чат'), call send_to_telegram with the appropriate target ('denis', 'sveta', or 'family')."
+            "('скинь мне в телегу', 'отправь Свете', 'кинь в общий чат'), call send_to_telegram with the appropriate target ('denis', 'sveta', or 'family').\n"
+            "- When the user asks to send the last search result or something searched earlier/yesterday ('отправь мне это в телегу', 'скинь в телегу результат поиска про ...'), "
+            "call send_to_telegram with use_last_result=true (and result_query='<topic>' if they mention a specific topic) so the original formatted card with links and exact numbers is sent verbatim."
         )
 
     @staticmethod
@@ -233,11 +243,44 @@ class TelegramBotPlugin(PorfiriyPlugin):
     async def execute_tool(self, tool_name: str, args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
         if tool_name != "send_to_telegram":
             return {"status": "error", "error": f"Unknown tool: {tool_name}"}
+        db = ctx.get("db")
+        mac = (ctx.get("dev") or {}).get("mac", "")
+        target = str(args.get("target") or "").strip()
+        if not target:
+            target = mac[3:] if mac.startswith("tg_") and len(mac) > 3 else "family"
+        text = str(args.get("text") or "").strip()
+        title = str(args.get("title") or "").strip()
+        use_last = bool(args.get("use_last_result", False))
+        res_query = str(args.get("result_query") or "").strip()
+
+        if db and (use_last or (res_query and not text)):
+            cached = db.find_rich_result(query=res_query, device_mac=mac, ttl_hours=72)
+            if cached:
+                send_res = await self.send_message(
+                    db=db,
+                    provider=ctx.get("provider"),
+                    ha_api=ctx.get("ha_api"),
+                    target=target,
+                    text=cached.get("html_text") or cached.get("plain_text") or "",
+                    title="",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                if send_res.get("status") == "ok":
+                    send_res["resent_topic"] = cached.get("topic")
+                    send_res["resent_kind"] = cached.get("kind")
+                return send_res
+            if not text:
+                return {
+                    "status": "not_found",
+                    "error": f"В кэше за последние 3 дня не найден сохранённый результат по теме '{res_query or 'последний'}'.",
+                }
+
         return await self.send_message(
-            db=ctx.get("db"),
+            db=db,
             provider=ctx.get("provider"),
             ha_api=ctx.get("ha_api"),
-            target=str(args.get("target") or ""),
-            text=str(args.get("text") or ""),
-            title=str(args.get("title") or ""),
+            target=target,
+            text=text,
+            title=title,
         )

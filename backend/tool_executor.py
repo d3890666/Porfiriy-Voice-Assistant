@@ -1,9 +1,11 @@
 import asyncio
 import datetime
+import html as _html
 import json
 import logging
+import re as _re
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from audio_utils import get_earcon_pcm, is_simple_smarthome_action
 from net_utils import get_device_ip
@@ -18,6 +20,22 @@ except ImportError:
         plugin_registry_singleton = None
 
 tool_logger = logging.getLogger("tools")
+
+
+def _format_fact_html(topic: str, answer: str, items: List[Dict[str, str]]) -> str:
+    """Форматирует результат обычного веб-поиска в безопасный Telegram HTML со ссылками."""
+    parts = [f"🔍 <b>{_html.escape(topic)}</b>", "", _html.escape(answer)]
+    links: List[str] = []
+    for item in (items or [])[:3]:
+        link = str(item.get("link") or "").strip()
+        title = str(item.get("title") or link).strip()
+        if link.startswith("http://") or link.startswith("https://"):
+            links.append(f"• <a href=\"{_html.escape(link, quote=True)}\">{_html.escape(title[:90])}</a>")
+    if links:
+        parts.append("")
+        parts.append("🔗 <b>Источники:</b>")
+        parts.extend(links)
+    return "\n".join(parts).strip()
 
 
 def _build_schedule_trigger_and_action(
@@ -389,20 +407,161 @@ class ToolExecutor:
             if name == "web_search":
                 try:
                     from big_models import big_model_pool_singleton
+                    from db import db_singleton
                     from serper_search import serper_search_singleton
                 except ImportError:
                     from .big_models import big_model_pool_singleton
+                    from .db import db_singleton
                     from .serper_search import serper_search_singleton
+
+                q_txt = str(args.get("query") or "").strip()
+                if not q_txt:
+                    return {"status": "error", "error": "Укажите поисковый запрос query"}
+
+                mode = str(args.get("mode") or "fact").strip().lower()
+                if mode not in ("fact", "recipe", "cocktail"):
+                    mode = "fact"
+                if mode == "recipe" and "коктейл" in q_txt.lower():
+                    mode = "cocktail"
+
+                mac = (dev or {}).get("mac", "")
+                serper_key = str(options.get("serper_api_key") or "").strip()
+                pref_model = str(options.get("web_search_model") or "").strip()
+
+                if mode in ("recipe", "cocktail"):
+                    if on_progress:
+                        try:
+                            msg = "🍸 Ищу рецепт коктейля..." if mode == "cocktail" else "🍽️ Ищу точный рецепт..."
+                            await on_progress(msg)
+                        except Exception:
+                            pass
+
+                    serper_res: Dict[str, Any] = {}
+                    items: List[Dict[str, str]] = []
+                    if serper_key:
+                        if mode == "cocktail":
+                            serper_res = await serper_search_singleton.search(f"site:edim.tv {q_txt}", serper_key, num=5)
+                            if not (serper_res.get("success") and serper_res.get("items")):
+                                serper_res = await serper_search_singleton.search(q_txt, serper_key, num=5)
+                        else:
+                            serper_res = await serper_search_singleton.search(q_txt, serper_key, num=5)
+                        if serper_res.get("success"):
+                            items = serper_res.get("items") or []
+
+                    page_text = ""
+                    source_url = ""
+                    source_title = ""
+                    for it in items[:2]:
+                        link = str(it.get("link") or "").strip()
+                        if not link:
+                            continue
+                        fetched = await serper_search_singleton.fetch_page_text(link, max_chars=8000, timeout_s=6.0)
+                        if len(fetched) >= 400:
+                            page_text = fetched
+                            source_url = link
+                            source_title = str(it.get("title") or "").strip()
+                            break
+                    if not source_url and items:
+                        source_url = str(items[0].get("link") or "").strip()
+                        source_title = str(items[0].get("title") or "").strip()
+
+                    icon = "🍸" if mode == "cocktail" else "🍽️"
+                    src_line = f'\nИсточник (уже найденный URL): {source_url} ({source_title})' if source_url else ""
+                    snippets_txt = serper_res.get("answer") or ""
+                    has_serper_data = bool(page_text or snippets_txt)
+
+                    card_prompt = (
+                        f"Запрос пользователя: {q_txt}\n"
+                        f"Собери и оформи точный рецепт строго в формате **Telegram HTML**.\n"
+                        f"ПРАВИЛА:\n"
+                        f"1. Разрешены ТОЛЬКО теги Telegram HTML: <b>, <i>, <a href=\"URL\">, <code>. "
+                        f"НЕ используй Markdown (**, ##, []()), списки <ul>/<li> и <br>. Символ & экранируй как &amp;.\n"
+                        f"2. Заголовок: {icon} <b>Рецепт: ...</b>\n"
+                        f"3. Обязательно укажи точные ингредиенты с цифрами и единицами измерения (50 мл, 200 г, 1 ч.л., температура, время) — НЕ сокращай граммовки!\n"
+                        f"4. Шаги приготовления пронумеруй (1., 2., 3. ...).\n"
+                        f"5. При желании в конце добавь короткий совет по подаче/украшению.\n"
+                        f"6. Если есть URL источника, добавь внизу строку: 🔗 <a href=\"{source_url or 'URL'}\">Источник</a>.{src_line}\n\n"
+                        + (f"СНИППЕТЫ ПОИСКА:\n{snippets_txt}\n\n" if snippets_txt else "")
+                        + (f"ТЕКСТ СТРАНИЦЫ:\n{page_text}" if page_text else "Найди точный рецепт через Google Поиск (для коктейлей приоритетно ориентируйся на edim.tv).")
+                    )
+                    big_res = await big_model_pool_singleton.run_text_task(
+                        card_prompt,
+                        options,
+                        enable_google_search=not has_serper_data,
+                        preferred_model=pref_model,
+                    )
+                    if not big_res.get("success") or not (big_res.get("text") or "").strip():
+                        return {"status": "error", "error": big_res.get("error") or "Не удалось получить рецепт"}
+
+                    card_html = big_res["text"].strip()
+                    if card_html.startswith("```"):
+                        card_html = card_html.split("\n", 1)[-1]
+                        if card_html.endswith("```"):
+                            card_html = card_html[:-3].strip()
+
+                    plain_summary = _re.sub(r"<[^>]+>", "", card_html)
+                    try:
+                        db_singleton.save_rich_result(
+                            kind="recipe",
+                            topic=q_txt,
+                            query=q_txt,
+                            html_text=card_html,
+                            plain_text=plain_summary,
+                            device_mac=mac,
+                        )
+                    except Exception as cache_ex:
+                        tool_logger.warning(f"Failed to cache recipe rich result: {cache_ex}")
+
+                    tg_target = mac[3:] if mac.startswith("tg_") and len(mac) > 3 else "family"
+                    tg_dest_label = "этот Telegram-чат" if mac.startswith("tg_") else "общий семейный Telegram-чат"
+                    tg_sent = False
+                    try:
+                        try:
+                            from plugins.telegram_bot import TelegramBotPlugin
+                        except ImportError:
+                            from .plugins.telegram_bot import TelegramBotPlugin
+                        tg_prov = db_singleton.get_provider("builtin.telegram_bot", mask_secrets=False)
+                        if tg_prov and tg_prov.get("enabled"):
+                            tg_res = await TelegramBotPlugin.send_message(
+                                db=db_singleton,
+                                provider=tg_prov,
+                                ha_api=self.ha_api,
+                                target=tg_target,
+                                text=card_html,
+                                parse_mode="HTML",
+                                disable_web_page_preview=True,
+                            )
+                            tg_sent = tg_res.get("status") == "ok"
+                            if not tg_sent:
+                                tool_logger.warning(f"Recipe Telegram send failed ({tg_target}): {tg_res.get('error')}")
+                    except Exception as tg_ex:
+                        tool_logger.warning(f"Recipe Telegram send exception: {tg_ex}")
+
+                    if turn_state is not None:
+                        turn_state["tool_executed"] = True
+                    return {
+                        "status": "ok",
+                        "mode": mode,
+                        "source_url": source_url,
+                        "sent_to_telegram": tg_sent,
+                        "telegram_target": tg_dest_label,
+                        "instruction": (
+                            f"Полный оформленный рецепт со всеми точными граммовками и шагами УЖЕ отправлен в {tg_dest_label}. "
+                            "НЕ зачитывай всю простыню целиком и НЕ читай ссылки. Кратко (2–3 предложения) назови ключевые ингредиенты/пропорции "
+                            f"и главную суть приготовления, и сообщи, что подробный рецепт с граммовками отправлен в {tg_dest_label}."
+                            if tg_sent
+                            else "Озвучь рецепт с точными ингредиентами, граммовками и шагами из summary."
+                        ),
+                        "summary": plain_summary[:2500],
+                    }
+
+                # Обычный веб-поиск фактов, новостей, погоды (в ТГ автоматически НЕ отправляем, но кэшируем на 3 дня)
                 if on_progress:
                     try:
                         await on_progress("🔍 Ищу актуальную информацию в интернете...")
                     except Exception:
                         pass
-                q_txt = str(args.get("query") or "").strip()
-                if not q_txt:
-                    return {"status": "error", "error": "Укажите поисковый запрос query"}
 
-                serper_key = str(options.get("serper_api_key") or "").strip()
                 if serper_key:
                     serper_res = await serper_search_singleton.search(q_txt, serper_key)
                     if serper_res.get("success") and serper_res.get("answer"):
@@ -410,13 +569,26 @@ class ToolExecutor:
                             f"Web search via serper.dev completed in {serper_res.get('latency_ms')} ms "
                             f"({serper_res.get('results_count', 0)} results)"
                         )
+                        items = serper_res.get("items") or []
+                        answer_txt = serper_res["answer"]
+                        try:
+                            db_singleton.save_rich_result(
+                                kind="web_search",
+                                topic=q_txt,
+                                query=q_txt,
+                                html_text=_format_fact_html(q_txt, answer_txt, items),
+                                plain_text=answer_txt,
+                                device_mac=mac,
+                            )
+                        except Exception as cache_ex:
+                            tool_logger.warning(f"Failed to cache serper rich result: {cache_ex}")
                         if turn_state is not None:
                             turn_state["tool_executed"] = True
                         return {
                             "status": "ok",
                             "provider": "serper.dev",
                             "latency_ms": serper_res.get("latency_ms"),
-                            "answer": serper_res["answer"],
+                            "answer": answer_txt,
                         }
                     tool_logger.warning(
                         f"Serper.dev failed ({serper_res.get('error')}), falling back to web_search_model / BigModelPool"
@@ -430,12 +602,24 @@ class ToolExecutor:
                     search_prompt,
                     options,
                     enable_google_search=True,
-                    preferred_model=str(options.get("web_search_model") or "").strip(),
+                    preferred_model=pref_model,
                 )
                 if turn_state is not None:
                     turn_state["tool_executed"] = True
                 if big_res.get("success"):
-                    return {"status": "ok", "model": big_res["model"], "answer": big_res["text"]}
+                    answer_txt = big_res["text"]
+                    try:
+                        db_singleton.save_rich_result(
+                            kind="web_search",
+                            topic=q_txt,
+                            query=q_txt,
+                            html_text=_format_fact_html(q_txt, answer_txt, []),
+                            plain_text=answer_txt,
+                            device_mac=mac,
+                        )
+                    except Exception as cache_ex:
+                        tool_logger.warning(f"Failed to cache fallback web_search rich result: {cache_ex}")
+                    return {"status": "ok", "model": big_res["model"], "answer": answer_txt}
                 return {"status": "error", "error": big_res.get("error") or "Web search failed"}
 
             if name == "ask_big_model":

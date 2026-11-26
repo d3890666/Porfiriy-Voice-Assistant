@@ -330,6 +330,17 @@ class PluginRegistry:
 
                         import re as _re
                         plain_summary = _re.sub(r"<[^>]+>", "", card_html)
+                        try:
+                            self.db.save_rich_result(
+                                kind="marketplace",
+                                topic=user_q or tool_name,
+                                query=user_q,
+                                html_text=card_html,
+                                plain_text=plain_summary,
+                                device_mac=mac,
+                            )
+                        except Exception as cache_ex:
+                            logger.warning(f"Failed to cache marketplace rich result: {cache_ex}")
                         res_summary = f" -> mcp={len(raw_json)}ch -> big={big_res['model']} -> tg={'ok' if tg_sent else 'skip'}({tg_target})"
                         return {
                             "status": "ok",
