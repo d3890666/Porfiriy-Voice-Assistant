@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
+import html as _html
 import json
 import logging
 import time
@@ -13,7 +15,7 @@ except ImportError:
     types = None
 
 from audio_utils import pcm16_to_wav
-from config import DEFAULT_GEMINI_MODEL, get_active_api_key
+from config import DEFAULT_GEMINI_MODEL, get_active_api_key, get_addon_version
 from db import db_singleton
 try:
     from gemini_client import GeminiProxyClient
@@ -127,6 +129,7 @@ class TelegramBotGateway:
 
                 if not logged_active:
                     logger.info("[TG-GW] Telegram long-polling started.")
+                    asyncio.create_task(self._register_bot_commands(bot_token))
                     logged_active = True
 
                 url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
@@ -162,7 +165,11 @@ class TelegramBotGateway:
                                 asyncio.create_task(self._dispatch_message(bot_token, cfg, msg))
                             cb = upd.get("callback_query")
                             if isinstance(cb, dict):
-                                asyncio.create_task(approval_manager.handle_callback(bot_token, cb))
+                                cb_data = str(cb.get("data") or "")
+                                if cb_data.startswith(("menu:", "sched:")):
+                                    asyncio.create_task(self._handle_menu_callback(bot_token, cb))
+                                else:
+                                    asyncio.create_task(approval_manager.handle_callback(bot_token, cb))
 
             except asyncio.CancelledError:
                 break
@@ -227,6 +234,287 @@ class TelegramBotGateway:
         except Exception as e:
             logger.warning(f"[TG-GW] ffmpeg error: {e}")
             return None
+
+    async def _register_bot_commands(self, bot_token: str) -> None:
+        """Регистрирует нативную кнопку Меню и список команд в Telegram."""
+        commands = [
+            {"command": "menu", "description": "📋 Главное меню Порфирия"},
+            {"command": "jobs", "description": "⏰ Планировщик и радары"},
+            {"command": "memory", "description": "🧠 Память и списки"},
+            {"command": "status", "description": "📊 Статус системы и колонок"},
+        ]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"https://api.telegram.org/bot{bot_token}/setMyCommands",
+                    json={"commands": commands},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    body = await resp.json(content_type=None)
+                    if resp.status != 200 or not body.get("ok"):
+                        logger.warning(f"[TG-GW] setMyCommands failed: {body}")
+                async with session.post(
+                    f"https://api.telegram.org/bot{bot_token}/setChatMenuButton",
+                    json={"menu_button": {"type": "commands"}},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp2:
+                    body2 = await resp2.json(content_type=None)
+                    if resp2.status != 200 or not body2.get("ok"):
+                        logger.warning(f"[TG-GW] setChatMenuButton failed: {body2}")
+                logger.info(f"[TG-GW] Registered bot commands menu ({len(commands)} commands)")
+        except Exception as e:
+            logger.warning(f"[TG-GW] Failed to register bot menu: {e}")
+
+    async def _send_or_edit_html(
+        self,
+        session: aiohttp.ClientSession,
+        bot_token: str,
+        chat_id: str,
+        text: str,
+        *,
+        reply_markup: Optional[Dict[str, Any]] = None,
+        edit_message_id: Optional[int] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text[:4090],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        if edit_message_id:
+            payload["message_id"] = int(edit_message_id)
+            method = "editMessageText"
+        else:
+            method = "sendMessage"
+        async with session.post(
+            f"https://api.telegram.org/bot{bot_token}/{method}",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                if "message is not modified" not in body.lower():
+                    logger.warning(f"[TG-GW] {method} failed ({resp.status}): {body[:300]}")
+
+    async def _answer_callback(self, session: aiohttp.ClientSession, bot_token: str, cb_id: str, text: str = "") -> None:
+        try:
+            payload: Dict[str, Any] = {"callback_query_id": cb_id}
+            if text:
+                payload["text"] = text[:180]
+            await session.post(
+                f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=8),
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _render_main_menu() -> Tuple[str, Dict[str, Any]]:
+        txt = (
+            "🤖 <b>Порфирий — меню управления</b>\n\n"
+            "Выберите раздел ниже или просто напишите/надиктуйте запрос в этот чат."
+        )
+        kb = {
+            "inline_keyboard": [
+                [{"text": "⏰ Планировщик и радары", "callback_data": "menu:jobs"}],
+                [{"text": "🧠 Память и списки", "callback_data": "menu:memory"}],
+                [{"text": "📊 Статус системы и колонок", "callback_data": "menu:status"}],
+            ]
+        }
+        return txt, kb
+
+    @staticmethod
+    def _render_jobs_menu() -> Tuple[str, Dict[str, Any]]:
+        all_jobs = db_singleton.list_scheduled_jobs()
+        active_first = [j for j in all_jobs if j.get("status") not in ("completed", "missed", "cancelled")]
+        recent_done = [j for j in all_jobs if j.get("status") in ("completed", "missed", "cancelled")][:3]
+        shown = (active_first + recent_done)[:10]
+
+        if not shown:
+            txt = (
+                "⏰ <b>Планировщик и радары</b>\n\n"
+                "Пока нет ни одной задачи. Можно просто написать:\n"
+                "• <i>«Через 10 минут напомни выключить духовку»</i>\n"
+                "• <i>«Раз в 4 часа следи за ценой ... на Ozon»</i>\n"
+                "• <i>«Каждый будний день в 8:30 шли сводку»</i>"
+            )
+            return txt, {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "menu:jobs"}, {"text": "⬅️ Меню", "callback_data": "menu:home"}]]}
+
+        st_icons = {
+            "active": "🟢",
+            "paused": "⏸",
+            "paused_error": "⚠️",
+            "error": "❌",
+            "completed": "✅",
+            "missed": "⏭",
+        }
+        lines = ["⏰ <b>Планировщик и радары</b>\n"]
+        rows: List[List[Dict[str, str]]] = []
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+
+        for idx, j in enumerate(shown, start=1):
+            st = j.get("status") or "active"
+            icon = st_icons.get(st, "•")
+            title = _html.escape(str(j.get("title") or j["id"]))
+            when = str(j.get("cron_or_run_at") or "")
+            nxt_txt = ""
+            if j.get("next_run_at"):
+                try:
+                    dt = datetime.datetime.fromisoformat(j["next_run_at"]).astimezone(local_tz)
+                    nxt_txt = dt.strftime("%d.%m %H:%M:%S")
+                except Exception:
+                    nxt_txt = str(j["next_run_at"])[:16]
+            sched_str = nxt_txt or _html.escape(when[:28])
+            err_str = f" — <i>{_html.escape(j['last_error'][:60])}</i>" if j.get("last_error") else ""
+            lines.append(f"<b>{idx}.</b> {icon} {title}\n   <code>{_html.escape(j['job_type'])}</code> • {sched_str}{err_str}")
+
+            jid = j["id"]
+            if st in ("active", "paused", "paused_error", "error"):
+                toggle_lbl = f"⏸ #{idx}" if j.get("enabled") else f"▶ Вкл #{idx}"
+                rows.append([
+                    {"text": f"▶ Запустить #{idx}", "callback_data": f"sched:run:{jid}"},
+                    {"text": toggle_lbl, "callback_data": f"sched:toggle:{jid}"},
+                    {"text": f"🗑️ #{idx}", "callback_data": f"sched:del:{jid}"},
+                ])
+            else:
+                rows.append([
+                    {"text": f"▶ Повторить #{idx}", "callback_data": f"sched:run:{jid}"},
+                    {"text": f"🗑️ Удалить #{idx}", "callback_data": f"sched:del:{jid}"},
+                ])
+
+        rows.append([
+            {"text": "🔄 Обновить", "callback_data": "menu:jobs"},
+            {"text": "⬅️ Меню", "callback_data": "menu:home"},
+        ])
+        return "\n".join(lines), {"inline_keyboard": rows}
+
+    @staticmethod
+    def _render_memory_menu() -> Tuple[str, Dict[str, Any]]:
+        items = db_singleton.search_memory(status="active", limit=15, touch_access=False)
+        stats = db_singleton.get_memory_stats()
+        kind_icons = {"list_item": "🛒", "fact": "📌", "preference": "⭐", "note": "📝"}
+        lines = [f"🧠 <b>Память и списки</b> (активных: {stats.get('active', 0)})\n"]
+        if not items:
+            lines.append("Активных записей пока нет.")
+        else:
+            for idx, it in enumerate(items, start=1):
+                ic = kind_icons.get(it.get("kind"), "•")
+                lbl = f"[{_html.escape(it['list_name'])}] " if it.get("list_name") else ""
+                title = _html.escape(str(it.get("title") or "")[:40])
+                content = _html.escape(str(it.get("content") or "")[:90])
+                body = f"<b>{title}</b>: {content}" if title and title != content else content
+                lines.append(f"{idx}. {ic} {lbl}{body}")
+        kb = {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "menu:memory"}, {"text": "⬅️ Меню", "callback_data": "menu:home"}]]}
+        return "\n".join(lines), kb
+
+    def _render_status_menu(self) -> Tuple[str, Dict[str, Any]]:
+        ver = get_addon_version()
+        devs = self.device_manager.get_all_devices() if self.device_manager else []
+        online_devs = [d for d in devs if d.get("online")]
+        jobs = db_singleton.list_scheduled_jobs()
+        active_jobs = sum(1 for j in jobs if j.get("enabled") and j.get("status") == "active")
+        err_jobs = sum(1 for j in jobs if j.get("status") in ("paused_error", "error"))
+        provs = [p["title"] for p in db_singleton.list_providers(mask_secrets=True, enabled_only=True)]
+
+        lines = [
+            f"📊 <b>Статус Порфирия v{_html.escape(ver)}</b>\n",
+            f"🔊 Колонок онлайн: <b>{len(online_devs)} / {len(devs)}</b>",
+        ]
+        for d in devs[:8]:
+            mark = "🟢" if d.get("online") else "⚪"
+            lines.append(f"   {mark} {_html.escape(str(d.get('name') or d.get('mac')))}")
+        lines.append(f"\n⏰ Задач в планировщике: <b>{active_jobs}</b> активных (ошибок: {err_jobs})")
+        lines.append(f"🧩 Активные плагины ({len(provs)}): {_html.escape(', '.join(provs) or 'нет')}")
+        kb = {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "menu:status"}, {"text": "⬅️ Меню", "callback_data": "menu:home"}]]}
+        return "\n".join(lines), kb
+
+    async def _handle_menu_callback(self, bot_token: str, cb: Dict[str, Any]) -> None:
+        cb_id = str(cb.get("id") or "")
+        data = str(cb.get("data") or "")
+        msg = cb.get("message") or {}
+        chat_id = str((msg.get("chat") or {}).get("id") or "").strip()
+        msg_id = msg.get("message_id")
+        if not chat_id or not msg_id:
+            return
+        allowed, _ = self.get_allowed_chats(db_singleton)
+        if chat_id not in allowed:
+            return
+
+        toast_txt = ""
+        view = "jobs"
+        try:
+            async with aiohttp.ClientSession() as session:
+                if data == "menu:home":
+                    view = "home"
+                elif data == "menu:jobs":
+                    view = "jobs"
+                elif data == "menu:memory":
+                    view = "memory"
+                elif data == "menu:status":
+                    view = "status"
+                elif data.startswith("sched:run:"):
+                    jid = data.split(":", 2)[2]
+                    try:
+                        from scheduler import scheduler_singleton
+                    except ImportError:
+                        from .scheduler import scheduler_singleton
+                    await self._answer_callback(session, bot_token, cb_id, "▶ Запускаю задачу...")
+                    cb_id = ""
+                    res = await scheduler_singleton.run_job_now(jid)
+                    toast_txt = "Выполнено" if res.get("status") == "ok" else f"Ошибка: {res.get('error')}"
+                    view = "jobs"
+                elif data.startswith("sched:toggle:"):
+                    jid = data.split(":", 2)[2]
+                    job = db_singleton.get_scheduled_job(jid)
+                    if job:
+                        new_en = not bool(job.get("enabled"))
+                        nxt = job.get("next_run_at")
+                        if new_en and not nxt and (job.get("trigger") or {}).get("type") in ("interval", "cron"):
+                            try:
+                                from scheduler import scheduler_singleton
+                            except ImportError:
+                                from .scheduler import scheduler_singleton
+                            nxt = scheduler_singleton._compute_following_run(job["trigger"])
+                        db_singleton.upsert_scheduled_job(
+                            job_id=jid,
+                            job_type=job["job_type"],
+                            title=job["title"],
+                            owner_user_id=job["owner_user_id"],
+                            cron_or_run_at=job["cron_or_run_at"],
+                            trigger=job["trigger"],
+                            action=job["action"],
+                            notify_channel=job["notify_channel"],
+                            quiet_hours=job["quiet_hours"],
+                            one_shot=job["one_shot"],
+                            enabled=new_en,
+                            status="active" if new_en else "paused",
+                            next_run_at=nxt,
+                        )
+                        toast_txt = "Включена" if new_en else "На паузе"
+                    view = "jobs"
+                elif data.startswith("sched:del:"):
+                    jid = data.split(":", 2)[2]
+                    db_singleton.delete_scheduled_job(jid)
+                    toast_txt = "🗑️ Задача удалена"
+                    view = "jobs"
+
+                if cb_id:
+                    await self._answer_callback(session, bot_token, cb_id, toast_txt)
+
+                if view == "home":
+                    txt, kb = self._render_main_menu()
+                elif view == "memory":
+                    txt, kb = self._render_memory_menu()
+                elif view == "status":
+                    txt, kb = self._render_status_menu()
+                else:
+                    txt, kb = self._render_jobs_menu()
+                await self._send_or_edit_html(session, bot_token, chat_id, txt, reply_markup=kb, edit_message_id=msg_id)
+        except Exception as e:
+            logger.warning(f"[TG-GW] Menu callback error ({data}): {e}")
 
     async def _download_tg_file(self, session: aiohttp.ClientSession, bot_token: str, file_id: str) -> Optional[bytes]:
         async with session.get(
@@ -471,6 +759,24 @@ class TelegramBotGateway:
                     await self._transcribe_forwarded_voice(http_sess, bot_token, chat_id, wav_bytes, msg, options, api_key)
                     return
             else:
+                if text_in.startswith("/"):
+                    cmd = text_in.split()[0].split("@")[0].lower()
+                    if cmd in ("/start", "/menu"):
+                        txt, kb = self._render_main_menu()
+                        await self._send_or_edit_html(http_sess, bot_token, chat_id, txt, reply_markup=kb)
+                        return
+                    if cmd in ("/jobs", "/schedule"):
+                        txt, kb = self._render_jobs_menu()
+                        await self._send_or_edit_html(http_sess, bot_token, chat_id, txt, reply_markup=kb)
+                        return
+                    if cmd == "/memory":
+                        txt, kb = self._render_memory_menu()
+                        await self._send_or_edit_html(http_sess, bot_token, chat_id, txt, reply_markup=kb)
+                        return
+                    if cmd == "/status":
+                        txt, kb = self._render_status_menu()
+                        await self._send_or_edit_html(http_sess, bot_token, chat_id, txt, reply_markup=kb)
+                        return
                 await self._send_chat_action(http_sess, bot_token, chat_id, "typing")
 
             logger.info(
