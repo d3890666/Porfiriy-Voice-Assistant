@@ -315,6 +315,26 @@ class PorfiriyDB:
                     ensure_ascii=False,
                 ),
             ),
+            (
+                "builtin.kinowatch",
+                "builtin",
+                "KinoWatch / KinoPub (кино, сериалы, избранное)",
+                "Общий домашний аккаунт KinoWatch (бывший KinoPub): поиск фильмов и сериалов, проверка качества и озвучек, добавление в закладки и «Буду смотреть».",
+                json.dumps(
+                    {
+                        "api_base": "https://api.service-kp.com",
+                        "client_id": "",
+                        "client_secret": "",
+                        "access_token": "",
+                        "refresh_token": "",
+                        "token_expires_at": 0,
+                        "auth_status": "unauthorized",
+                        "default_folder_id": "",
+                        "cached_folders": [],
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
         ]
         for pid, kind, title, desc, cfg in builtin_providers:
             conn.execute(
