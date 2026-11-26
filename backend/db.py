@@ -264,7 +264,6 @@ class PorfiriyDB:
                     CREATE INDEX IF NOT EXISTS idx_memory_expires ON memory_items(expires_at);
                     CREATE INDEX IF NOT EXISTS idx_audit_ts ON tool_audit_log(ts);
                     CREATE INDEX IF NOT EXISTS idx_job_runs_job_id ON job_runs(job_id, id DESC);
-                    CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next ON scheduled_jobs(enabled, status, next_run_at);
                     """
                 )
                 # Миграция существующей таблицы scheduled_jobs (если БД создана в ранней версии)
@@ -288,6 +287,9 @@ class PorfiriyDB:
                 for col_name, col_def in migrations:
                     if col_name not in existing_cols:
                         conn.execute(f"ALTER TABLE scheduled_jobs ADD COLUMN {col_name} {col_def}")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next ON scheduled_jobs(enabled, status, next_run_at)"
+                )
                 now = _now_iso()
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, ?)",
