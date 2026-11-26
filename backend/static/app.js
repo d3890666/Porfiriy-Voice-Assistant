@@ -3373,6 +3373,19 @@ function renderBuiltinConfigForm(p) {
   if (p.id === 'builtin.keenetic') {
     const apprUser = cfg.approver_user_id || '';
     const confirmMode = cfg.confirm_mode || 'always';
+    const defGroup = cfg.default_group || '';
+    const cachedGroups = (cfg.cached_groups && typeof cfg.cached_groups === 'object') ? cfg.cached_groups : {};
+    const groupEntries = Object.entries(cachedGroups);
+    const groupOptsList = groupEntries.map(([gname, gmeta]) => {
+      const desc = (gmeta && gmeta.description) ? ` — ${gmeta.description}` : '';
+      const cnt = (gmeta && gmeta.count !== undefined) ? ` (${gmeta.count})` : '';
+      return `<option value="${escapeHtml(gname)}" ${defGroup === gname ? 'selected' : ''}>${escapeHtml(gname)}${escapeHtml(desc)}${cnt}</option>`;
+    });
+    if (defGroup && !cachedGroups[defGroup]) {
+      groupOptsList.unshift(`<option value="${escapeHtml(defGroup)}" selected>${escapeHtml(defGroup)}</option>`);
+    } else if (groupOptsList.length === 0) {
+      groupOptsList.push(`<option value="">— Нажмите «Проверить и найти группы» —</option>`);
+    }
     const userOpts = [
       `<option value="">Авто (первый жилец с Telegram)</option>`,
       ...porfiriyUsers.map(u => `<option value="${escapeHtml(u.id)}" ${apprUser === u.id ? 'selected' : ''}>👤 ${escapeHtml(u.name)}</option>`)
@@ -3381,35 +3394,42 @@ function renderBuiltinConfigForm(p) {
       <div class="plugin-config-box">
         <div class="p2-config-grid">
           <div class="form-group" style="margin:0;">
-            <label>Entry ID интеграции keenetic_api</label>
-            <input type="text" id="cfg-keen-entry" value="${escapeHtml(cfg.entry_id || '')}" placeholder="Авто-поиск из keenetic_api">
-          </div>
-          <div class="form-group" style="margin:0;">
-            <label>Группа доменов по умолчанию (object-group fqdn)</label>
-            <input type="text" id="cfg-keen-group" value="${escapeHtml(cfg.default_group || '')}" placeholder="Например: VPN_List">
+            <label>Группа доменов по умолчанию</label>
+            <select id="cfg-keen-group">${groupOptsList.join('')}</select>
           </div>
           <div class="form-group" style="margin:0;">
             <label>Получатель согласований (Telegram)</label>
             <select id="cfg-keen-approver">${userOpts}</select>
           </div>
-          <div class="form-group" style="margin:0;">
+          <div class="form-group full-width" style="margin:0;">
             <label>Режим подтверждения</label>
             <select id="cfg-keen-confirm">
               <option value="always" ${confirmMode === 'always' ? 'selected' : ''}>Всегда через кнопки в Telegram</option>
               <option value="pool_only" ${confirmMode === 'pool_only' ? 'selected' : ''}>Кнопки только для пулов (2+ доменов)</option>
             </select>
           </div>
-          <div class="form-group" style="margin:0;">
-            <label>URL-шаблон GeoSite ({name})</label>
-            <input type="text" id="cfg-keen-geosite" value="${escapeHtml(cfg.geosite_url_template || 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/{name}')}">
-          </div>
-          <div class="form-group" style="margin:0;">
-            <label>URL-шаблон GeoIP ({query})</label>
-            <input type="text" id="cfg-keen-geoip" value="${escapeHtml(cfg.geoip_url_template || 'http://ip-api.com/json/{query}?fields=status,message,country,isp,org,as,query')}">
-          </div>
         </div>
-        <div id="keenetic-test-result" style="font-size:12px; color:#8b949e; margin-top:8px;"></div>
-        <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+
+        <details class="p2-advanced-details">
+          <summary>⚙️ Расширенные настройки (Entry ID, GeoSite, GeoIP)</summary>
+          <div class="p2-config-grid">
+            <div class="form-group full-width" style="margin:0;">
+              <label>Entry ID интеграции keenetic_api</label>
+              <input type="text" id="cfg-keen-entry" value="${escapeHtml(cfg.entry_id || '')}" placeholder="Авто-поиск из keenetic_api">
+            </div>
+            <div class="form-group full-width" style="margin:0;">
+              <label>URL-шаблон GeoSite ({name})</label>
+              <input type="text" id="cfg-keen-geosite" value="${escapeHtml(cfg.geosite_url_template || 'https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/{name}')}">
+            </div>
+            <div class="form-group full-width" style="margin:0;">
+              <label>URL-шаблон GeoIP ({query})</label>
+              <input type="text" id="cfg-keen-geoip" value="${escapeHtml(cfg.geoip_url_template || 'http://ip-api.com/json/{query}?fields=status,message,country,isp,org,as,query')}">
+            </div>
+          </div>
+        </details>
+
+        <div id="keenetic-test-result" style="font-size:12px; color:#8b949e; margin-top:10px; line-height:1.45;"></div>
+        <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
           <button type="button" class="btn btn-secondary btn-sm" onclick="testKeeneticPlugin()">🔌 Проверить и найти группы</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить</button>
         </div>
@@ -3897,16 +3917,20 @@ async function testKeeneticPlugin() {
     const res = await fetch(`${API_BASE}/api/providers/builtin.keenetic/test`, { method: 'POST' });
     const data = await res.json();
     if (data.success) {
-      const grpList = Object.entries(data.groups || {}).map(([g, cnt]) => `<code>${escapeHtml(g)}</code> (${cnt})`).join(', ') || 'нет групп';
-      if (outEl) {
-        outEl.innerHTML = `<span style="color:#34d399;">✅ ${escapeHtml(data.router || 'Роутер')}</span> • Группы: ${grpList}`;
+      const meta = data.groups_meta || {};
+      const grpList = Object.keys(meta).length
+        ? Object.entries(meta).map(([g, info]) => {
+            const desc = info && info.description ? ` «${escapeHtml(info.description)}»` : '';
+            const cnt = info && info.count !== undefined ? info.count : 0;
+            return `<code>${escapeHtml(g)}</code>${desc} (${cnt})`;
+          }).join(', ')
+        : (Object.entries(data.groups || {}).map(([g, cnt]) => `<code>${escapeHtml(g)}</code> (${cnt})`).join(', ') || 'нет групп');
+      showToast(`Роутер подключён: ${data.router || 'Keenetic'}`);
+      await fetchProviders();
+      const refreshedOut = document.getElementById('keenetic-test-result');
+      if (refreshedOut) {
+        refreshedOut.innerHTML = `<span style="color:#34d399;">✅ ${escapeHtml(data.router || 'Роутер')}</span> • Группы: ${grpList}`;
       }
-      const entryInp = document.getElementById('cfg-keen-entry');
-      if (entryInp && !entryInp.value && data.entry_id) entryInp.value = data.entry_id;
-      const grpInp = document.getElementById('cfg-keen-group');
-      if (grpInp && !grpInp.value && data.default_group) grpInp.value = data.default_group;
-      showToast('Роутер Keenetic подключён!');
-      fetchProviders();
     } else {
       if (outEl) outEl.innerHTML = `<span style="color:#f87171;">⚠️ ${escapeHtml(data.error || 'Ошибка')}</span>`;
       showToast(`Ошибка Keenetic: ${data.error || 'сбой'}`, true);

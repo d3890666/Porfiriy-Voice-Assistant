@@ -122,9 +122,9 @@ def check_domain_in_list(domain: str, existing: List[str]) -> Dict[str, Any]:
     }
 
 
-def _parse_fqdn_groups(rci_payload: Any) -> Dict[str, List[str]]:
-    """Извлекает {group_name: [domains]} из ответа GET /rci/object-group/fqdn."""
-    groups: Dict[str, List[str]] = {}
+def _parse_fqdn_groups_meta(rci_payload: Any) -> Dict[str, Dict[str, Any]]:
+    """Извлекает {group_name: {'domains': [...], 'description': str, 'count': int}} из ответа GET /rci/object-group/fqdn."""
+    groups: Dict[str, Dict[str, Any]] = {}
     if not isinstance(rci_payload, dict):
         return groups
 
@@ -156,8 +156,20 @@ def _parse_fqdn_groups(rci_payload: Any) -> Dict[str, List[str]]:
             for k in inc.keys():
                 if k:
                     domains.add(str(k).strip().lower())
-        groups[str(gname)] = sorted(domains)
+        desc = str(gdata.get("description") or gdata.get("comment") or "").strip()
+        sorted_domains = sorted(domains)
+        groups[str(gname)] = {
+            "domains": sorted_domains,
+            "description": desc,
+            "count": len(sorted_domains),
+        }
     return groups
+
+
+def _parse_fqdn_groups(rci_payload: Any) -> Dict[str, List[str]]:
+    """Извлекает {group_name: [domains]} из ответа GET /rci/object-group/fqdn."""
+    meta = _parse_fqdn_groups_meta(rci_payload)
+    return {g: info["domains"] for g, info in meta.items()}
 
 
 class KeeneticPlugin(PorfiriyPlugin):
@@ -208,9 +220,35 @@ class KeeneticPlugin(PorfiriyPlugin):
         return payload
 
     @classmethod
-    async def fetch_fqdn_groups(cls, ha_api: Any, entry_id: str) -> Dict[str, List[str]]:
+    async def fetch_fqdn_groups_meta(cls, ha_api: Any, entry_id: str) -> Dict[str, Dict[str, Any]]:
         raw = await cls.rci_call(ha_api, entry_id, "GET", "/rci/object-group/fqdn")
-        return _parse_fqdn_groups(raw)
+        meta = _parse_fqdn_groups_meta(raw)
+        # Если description пуст в object-group/fqdn, пробуем подтянуть описание из dns-proxy/route
+        if meta and any(not info.get("description") for info in meta.values()):
+            try:
+                dns_routes = await cls.rci_call(ha_api, entry_id, "GET", "/rci/dns-proxy/route")
+                if isinstance(dns_routes, list):
+                    for item in dns_routes:
+                        if not isinstance(item, dict):
+                            continue
+                        gname = str(item.get("group") or item.get("object-group") or "").strip()
+                        cmt = str(item.get("comment") or item.get("description") or "").strip()
+                        if gname and cmt and gname in meta and not meta[gname].get("description"):
+                            meta[gname]["description"] = cmt
+                elif isinstance(dns_routes, dict):
+                    for gname, item in dns_routes.items():
+                        if isinstance(item, dict):
+                            cmt = str(item.get("comment") or item.get("description") or "").strip()
+                            if cmt and gname in meta and not meta[gname].get("description"):
+                                meta[gname]["description"] = cmt
+            except Exception:
+                pass
+        return meta
+
+    @classmethod
+    async def fetch_fqdn_groups(cls, ha_api: Any, entry_id: str) -> Dict[str, List[str]]:
+        meta = await cls.fetch_fqdn_groups_meta(ha_api, entry_id)
+        return {g: info["domains"] for g, info in meta.items()}
 
     @classmethod
     async def apply_add_domains(cls, ha_api: Any, entry_id: str, group_name: str, domains: List[str]) -> str:
@@ -237,14 +275,21 @@ class KeeneticPlugin(PorfiriyPlugin):
             if not entry_id:
                 return {"success": False, "error": "Не найдена интеграция keenetic_api в Home Assistant"}
             ver = await cls.rci_call(ha_api, entry_id, "GET", "/rci/show/version")
-            groups = await cls.fetch_fqdn_groups(ha_api, entry_id)
+            groups_meta = await cls.fetch_fqdn_groups_meta(ha_api, entry_id)
 
+            compact_groups = {
+                k: {"description": v.get("description", ""), "count": v.get("count", 0)}
+                for k, v in groups_meta.items()
+            }
             changed = False
             if not cfg.get("entry_id"):
                 cfg["entry_id"] = entry_id
                 changed = True
-            if not cfg.get("default_group") and groups:
-                cfg["default_group"] = next(iter(groups.keys()))
+            if not cfg.get("default_group") and groups_meta:
+                cfg["default_group"] = next(iter(groups_meta.keys()))
+                changed = True
+            if cfg.get("cached_groups") != compact_groups:
+                cfg["cached_groups"] = compact_groups
                 changed = True
             if changed:
                 db.upsert_provider(
@@ -264,7 +309,8 @@ class KeeneticPlugin(PorfiriyPlugin):
                 "entry_id": entry_id,
                 "router": model_str or "Keenetic / Netcraze",
                 "default_group": cfg.get("default_group", ""),
-                "groups": {k: len(v) for k, v in groups.items()},
+                "groups": {k: v["count"] for k, v in groups_meta.items()},
+                "groups_meta": compact_groups,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -420,12 +466,21 @@ class KeeneticPlugin(PorfiriyPlugin):
     def get_prompt_snippet(self, db: PorfiriyDB, provider: Dict[str, Any], options: Dict[str, Any]) -> str:
         cfg = provider.get("config") or {}
         def_group = cfg.get("default_group") or "не задана"
+        cached_groups = cfg.get("cached_groups") or {}
+        groups_hint = ""
+        if isinstance(cached_groups, dict) and cached_groups:
+            parts = []
+            for gname, gmeta in cached_groups.items():
+                desc = (gmeta or {}).get("description") or ""
+                cnt = (gmeta or {}).get("count", 0)
+                parts.append(f"`{gname}` ({desc}, {cnt})" if desc else f"`{gname}` ({cnt})")
+            groups_hint = "\n- Known router fqdn groups: " + ", ".join(parts) + "."
         return (
             "### KEENETIC / NETCRAZE DOMAIN ROUTING (`builtin.keenetic`):\n"
-            f"- Default fqdn group: `{def_group}`.\n"
+            f"- Default fqdn group: `{def_group}`.{groups_hint}\n"
             "- Use `keenetic_*` tools whenever the user asks about router domain routing, VPN lists, Keenetic/Netcraze, GeoSite/GeoIP pools, checking or adding domains.\n"
             "- If a domain or URL is given, normalize to top registrable domain unless the user explicitly requested a subdomain.\n"
-            "- If `keenetic_add_domains` or `keenetic_remove_domain` returns `status='awaiting_approval'`, tell the user concisely that you prepared the list/action and sent Yes/No confirmation buttons in Telegram."
+            "- If `keenetic_add_domains` or `keenetic_remove_domain` returns `status='awaiting_approval'`: follow its `message` field! When already inside Telegram chat, NEVER say 'проверяйте Telegram' — simply say the confirmation buttons were sent above."
         )
 
     async def execute_tool(self, tool_name: str, args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -433,6 +488,7 @@ class KeeneticPlugin(PorfiriyPlugin):
         ha_api = ctx.get("ha_api")
         prov = ctx["provider"]
         cfg = prov.get("config") or {}
+        from_telegram = str((ctx.get("dev") or {}).get("mac") or "").startswith("tg_")
 
         entry_id = await self.resolve_entry_id(ha_api, cfg)
         if not entry_id:
@@ -441,11 +497,18 @@ class KeeneticPlugin(PorfiriyPlugin):
         default_group = str(cfg.get("default_group") or "").strip()
 
         if tool_name == "keenetic_list_groups":
-            groups = await self.fetch_fqdn_groups(ha_api, entry_id)
+            meta = await self.fetch_fqdn_groups_meta(ha_api, entry_id)
             return {
                 "status": "ok",
                 "default_group": default_group,
-                "groups": {k: {"count": len(v), "sample": v[:10]} for k, v in groups.items()},
+                "groups": {
+                    k: {
+                        "description": v.get("description", ""),
+                        "count": v.get("count", 0),
+                        "sample": (v.get("domains") or [])[:10],
+                    }
+                    for k, v in meta.items()
+                },
             }
 
         if tool_name == "keenetic_check_domain":
@@ -538,7 +601,8 @@ class KeeneticPlugin(PorfiriyPlugin):
             target_group = str(args.get("group") or default_group).strip()
             reason = str(args.get("reason") or "").strip()
 
-            groups = await self.fetch_fqdn_groups(ha_api, entry_id)
+            groups_meta = await self.fetch_fqdn_groups_meta(ha_api, entry_id)
+            groups = {k: v["domains"] for k, v in groups_meta.items()}
             if not target_group:
                 if len(groups) == 1:
                     target_group = next(iter(groups.keys()))
@@ -549,6 +613,9 @@ class KeeneticPlugin(PorfiriyPlugin):
                     }
             if target_group not in groups:
                 return {"status": "error", "error": f"Группа '{target_group}' не найдена на роутере. Доступны: {', '.join(groups.keys())}"}
+
+            group_desc = str((groups_meta.get(target_group) or {}).get("description") or "").strip()
+            group_label = f"{target_group} ({group_desc})" if group_desc else target_group
 
             existing = groups[target_group]
             normalized: List[str] = []
@@ -600,7 +667,7 @@ class KeeneticPlugin(PorfiriyPlugin):
                 }
 
             approver = str(cfg.get("approver_user_id") or ctx.get("speaker_user_id") or "").strip() or None
-            lines = [f"Роутер: Keenetic / Netcraze", f"Группа fqdn: {target_group}"]
+            lines = ["Роутер: Keenetic / Netcraze", f"Группа fqdn: {group_label}"]
             if reason:
                 lines.append(f"Повод: {reason}")
             lines.append(f"К добавлению ({len(to_add)}):")
@@ -628,16 +695,18 @@ class KeeneticPlugin(PorfiriyPlugin):
             if not ap_res.get("success"):
                 return {"status": "error", "error": ap_res.get("error") or "Не удалось отправить запрос на согласование"}
 
+            msg_text = (
+                f"Карточка с кнопками Да/Нет уже отправлена выше в этот чат для группы «{group_label}» ({len(to_add)} шт.). Не пиши 'проверяйте Telegram', просто кратко предложи подтвердить кнопкой выше."
+                if from_telegram
+                else f"Подготовлено к добавлению в «{group_label}»: {len(to_add)} шт. ({', '.join(to_add[:5])}). Отправлено на согласование пользователю {ap_res.get('recipient')} в Telegram с кнопками Да/Нет."
+            )
             return {
                 "status": "awaiting_approval",
                 "group": target_group,
                 "recipient": ap_res.get("recipient"),
                 "to_add": to_add,
                 "skipped": skipped,
-                "message": (
-                    f"Подготовлено к добавлению в «{target_group}»: {len(to_add)} шт. ({', '.join(to_add[:5])}). "
-                    f"Отправлено на согласование пользователю {ap_res.get('recipient')} в Telegram с кнопками Да/Нет."
-                ),
+                "message": msg_text,
             }
 
         if tool_name == "keenetic_remove_domain":
@@ -647,11 +716,14 @@ class KeeneticPlugin(PorfiriyPlugin):
             if not dom or not target_group:
                 return {"status": "error", "error": "Укажите корректный domain и group"}
 
-            groups = await self.fetch_fqdn_groups(ha_api, entry_id)
+            groups_meta = await self.fetch_fqdn_groups_meta(ha_api, entry_id)
+            groups = {k: v["domains"] for k, v in groups_meta.items()}
             if target_group not in groups:
                 return {"status": "error", "error": f"Группа '{target_group}' не найдена"}
             if dom not in groups[target_group]:
                 return {"status": "ok", "action": "not_found", "message": f"Домена {dom} нет в группе «{target_group}»."}
+            group_desc = str((groups_meta.get(target_group) or {}).get("description") or "").strip()
+            group_label = f"{target_group} ({group_desc})" if group_desc else target_group
 
             confirm_mode = str(cfg.get("confirm_mode") or "always").strip()
             if confirm_mode != "always":
@@ -665,7 +737,7 @@ class KeeneticPlugin(PorfiriyPlugin):
 
             ap_res = await approval_manager.request_approval(
                 title="🗑️ Удаление домена из Keenetic",
-                details_text=f"Группа fqdn: {target_group}\nУдалить домен: {dom}",
+                details_text=f"Группа fqdn: {group_label}\nУдалить домен: {dom}",
                 on_approve=_approve_del,
                 target_user_id=approver,
                 confirm_label="✅ Да, удалить",
@@ -674,10 +746,15 @@ class KeeneticPlugin(PorfiriyPlugin):
             )
             if not ap_res.get("success"):
                 return {"status": "error", "error": ap_res.get("error")}
+            msg_text = (
+                f"Карточка на удаление {dom} из «{group_label}» отправлена выше в этот чат. Не пиши 'проверяйте Telegram', просто предложи подтвердить кнопкой выше."
+                if from_telegram
+                else f"Запрос на удаление {dom} из «{group_label}» отправлен в Telegram ({ap_res.get('recipient')})."
+            )
             return {
                 "status": "awaiting_approval",
                 "recipient": ap_res.get("recipient"),
-                "message": f"Запрос на удаление {dom} из «{target_group}» отправлен в Telegram ({ap_res.get('recipient')}).",
+                "message": msg_text,
             }
 
         return {"status": "error", "error": f"Unknown keenetic tool: {tool_name}"}

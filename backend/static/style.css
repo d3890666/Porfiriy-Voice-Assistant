@@ -1786,3 +1786,211 @@ body {
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* ==========================================================
+   Unified Dark Form Controls & Mobile Portrait Polish
+   ========================================================== */
+.form-group,
+.form-field {
+  min-width: 0;
+}
+
+.form-group label,
+.p2-inline-form label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 6px;
+  line-height: 1.35;
+}
+
+.form-group input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.form-group select,
+.form-group textarea,
+.plugin-config-box input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.plugin-config-box select,
+.plugin-config-box textarea,
+.p2-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.p2-modal-body select,
+.p2-modal-body textarea,
+.p2-inline-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.p2-inline-form select,
+.p2-inline-form textarea {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  background: #0d1117;
+  color: #f0f3f6;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-group select option,
+.plugin-config-box select option,
+.p2-modal-body select option {
+  background: #0d1117;
+  color: #f0f3f6;
+}
+
+.form-group input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):focus,
+.form-group select:focus,
+.form-group textarea:focus,
+.plugin-config-box input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):focus,
+.plugin-config-box select:focus,
+.plugin-config-box textarea:focus,
+.p2-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):focus,
+.p2-modal-body select:focus,
+.p2-modal-body textarea:focus,
+.p2-inline-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.18);
+}
+
+.p2-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.p2-config-grid .full-width {
+  grid-column: 1 / -1;
+}
+
+.p2-advanced-details {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 12px;
+}
+
+.p2-advanced-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+  user-select: none;
+}
+
+.p2-advanced-details[open] summary {
+  color: #38bdf8;
+  margin-bottom: 10px;
+}
+
+@media (max-width: 768px) {
+  body {
+    padding: 12px 10px;
+    overflow-x: hidden;
+  }
+
+  .app-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+  }
+
+  .header-stats {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .stat-pill {
+    flex: 1;
+    justify-content: center;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .nav-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding-bottom: 8px;
+    margin-bottom: 16px;
+    scrollbar-width: none;
+  }
+
+  .nav-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-tab {
+    flex-shrink: 0;
+    padding: 8px 12px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .devices-grid,
+  .users-grid,
+  .settings-grid,
+  .form-grid,
+  .p2-config-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .p2-inline-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .plugin-card,
+  .card {
+    padding: 14px 12px;
+  }
+
+  .account-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .p2-modal-backdrop {
+    padding: 8px;
+  }
+
+  .p2-modal-dialog {
+    max-height: 94vh;
+    border-radius: 10px;
+  }
+
+  .p2-modal-footer {
+    flex-wrap: wrap;
+  }
+
+  .p2-modal-footer .btn {
+    flex: 1;
+    min-width: 120px;
+  }
+
+  .slider-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  input[type="text"],
+  input[type="password"],
+  input[type="number"],
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
