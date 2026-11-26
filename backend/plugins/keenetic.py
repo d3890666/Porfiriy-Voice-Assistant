@@ -247,14 +247,14 @@ class KeeneticPlugin(PorfiriyPlugin):
                 cfg["default_group"] = next(iter(groups.keys()))
                 changed = True
             if changed:
-                db.upsert_provider({
-                    "id": cls.provider_id,
-                    "kind": "builtin",
-                    "title": prov["title"],
-                    "description": prov["description"],
-                    "enabled": prov["enabled"],
-                    "config": cfg,
-                })
+                db.upsert_provider(
+                    provider_id=cls.provider_id,
+                    kind="builtin",
+                    title=prov["title"],
+                    description=prov["description"],
+                    enabled=prov["enabled"],
+                    config=cfg,
+                )
 
             model_str = ""
             if isinstance(ver, dict):
