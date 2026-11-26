@@ -1970,6 +1970,29 @@ class PorfiriyDB:
             finally:
                 conn.close()
 
+    def list_recent_rich_results(self, *, limit: int = 5, ttl_hours: int = 72) -> List[Dict[str, Any]]:
+        """Возвращает последние N тем из кэша rich_results за последние ttl_hours (для системного промпта)."""
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(hours=max(1, int(ttl_hours)))
+        ).isoformat()
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, kind, topic, query, created_at
+                    FROM rich_results
+                    WHERE created_at >= ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (cutoff, max(1, min(20, int(limit)))),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
     def find_rich_result(
         self,
         *,

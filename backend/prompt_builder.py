@@ -136,6 +136,31 @@ async def build_system_prompt(
         except Exception as e:
             logger.warning(f"Failed to build plugin prompt sections: {e}")
 
+    if db_singleton:
+        try:
+            recent_rich = db_singleton.list_recent_rich_results(limit=5, ttl_hours=72)
+            if recent_rich:
+                local_tz = datetime.datetime.now().astimezone().tzinfo
+                rich_lines = [
+                    "### RECENT CACHED SEARCH / RECIPE / MARKETPLACE RESULTS (last 72h):",
+                    "IMPORTANT: The items below are ALREADY saved in cache with full formatted HTML, numbers, and clickable links.",
+                    "If the user asks to send/drop the last search result or any of these topics to Telegram ('скинь это в телегу', 'отправь про ... в телегу', 'пришли вчерашний поиск'), DO NOT call `web_search` again — immediately call `send_to_telegram(target=..., use_last_result=True, result_query='<topic>')`.",
+                ]
+                for item in recent_rich:
+                    ts_str = ""
+                    try:
+                        dt = datetime.datetime.fromisoformat(item["created_at"]).astimezone(local_tz)
+                        ts_str = dt.strftime("%d.%m %H:%M")
+                    except Exception:
+                        ts_str = str(item.get("created_at") or "")[:16]
+                    topic = (item.get("topic") or item.get("query") or "").strip()[:100]
+                    kind = item.get("kind") or "web_search"
+                    if topic:
+                        rich_lines.append(f"- [{ts_str}] ({kind}) {topic}")
+                parts.append("\n".join(rich_lines))
+        except Exception as e:
+            logger.warning(f"Failed to build recent rich_results prompt section: {e}")
+
     if extra_context and extra_context.strip():
         parts.append(extra_context.strip())
 

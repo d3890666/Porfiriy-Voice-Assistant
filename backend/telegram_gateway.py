@@ -311,6 +311,22 @@ class TelegramBotGateway:
         except Exception:
             pass
 
+    async def _delete_message(
+        self,
+        session: aiohttp.ClientSession,
+        bot_token: str,
+        chat_id: str,
+        message_id: int,
+    ) -> None:
+        try:
+            await session.post(
+                f"https://api.telegram.org/bot{bot_token}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": int(message_id)},
+                timeout=aiohttp.ClientTimeout(total=8),
+            )
+        except Exception:
+            pass
+
     @staticmethod
     def _render_main_menu() -> Tuple[str, Dict[str, Any]]:
         txt = (
@@ -322,6 +338,7 @@ class TelegramBotGateway:
                 [{"text": "⏰ Планировщик и радары", "callback_data": "menu:jobs"}],
                 [{"text": "🧠 Память и списки", "callback_data": "menu:memory"}],
                 [{"text": "📊 Статус системы и колонок", "callback_data": "menu:status"}],
+                [{"text": "✖️ Скрыть", "callback_data": "menu:close"}],
             ]
         }
         return txt, kb
@@ -341,7 +358,13 @@ class TelegramBotGateway:
                 "• <i>«Раз в 4 часа следи за ценой ... на Ozon»</i>\n"
                 "• <i>«Каждый будний день в 8:30 шли сводку»</i>"
             )
-            return txt, {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "menu:jobs"}, {"text": "⬅️ Меню", "callback_data": "menu:home"}]]}
+            return txt, {
+                "inline_keyboard": [[
+                    {"text": "🔄 Обновить", "callback_data": "menu:jobs"},
+                    {"text": "⬅️ Меню", "callback_data": "menu:home"},
+                    {"text": "✖️ Скрыть", "callback_data": "menu:close"},
+                ]]
+            }
 
         st_icons = {
             "active": "🟢",
@@ -351,43 +374,147 @@ class TelegramBotGateway:
             "completed": "✅",
             "missed": "⏭",
         }
-        lines = ["⏰ <b>Планировщик и радары</b>\n"]
+        lines = ["⏰ <b>Планировщик и радары</b>\n<i>Нажмите на задачу, чтобы открыть карточку и действия:</i>\n"]
         rows: List[List[Dict[str, str]]] = []
         local_tz = datetime.datetime.now().astimezone().tzinfo
 
         for idx, j in enumerate(shown, start=1):
             st = j.get("status") or "active"
             icon = st_icons.get(st, "•")
-            title = _html.escape(str(j.get("title") or j["id"]))
+            raw_title = str(j.get("title") or j["id"]).strip()
+            title_html = _html.escape(raw_title)
             when = str(j.get("cron_or_run_at") or "")
             nxt_txt = ""
             if j.get("next_run_at"):
                 try:
                     dt = datetime.datetime.fromisoformat(j["next_run_at"]).astimezone(local_tz)
-                    nxt_txt = dt.strftime("%d.%m %H:%M:%S")
+                    nxt_txt = dt.strftime("%d.%m %H:%M")
                 except Exception:
                     nxt_txt = str(j["next_run_at"])[:16]
-            sched_str = nxt_txt or _html.escape(when[:28])
-            err_str = f" — <i>{_html.escape(j['last_error'][:60])}</i>" if j.get("last_error") else ""
-            lines.append(f"<b>{idx}.</b> {icon} {title}\n   <code>{_html.escape(j['job_type'])}</code> • {sched_str}{err_str}")
+            sched_str = nxt_txt or _html.escape(when[:24])
+            lines.append(f"<b>{idx}.</b> {icon} {title_html} — <i>{sched_str}</i>")
 
             jid = j["id"]
-            if st in ("active", "paused", "paused_error", "error"):
-                toggle_lbl = f"⏸ #{idx}" if j.get("enabled") else f"▶ Вкл #{idx}"
-                rows.append([
-                    {"text": f"▶ Запустить #{idx}", "callback_data": f"sched:run:{jid}"},
-                    {"text": toggle_lbl, "callback_data": f"sched:toggle:{jid}"},
-                    {"text": f"🗑️ #{idx}", "callback_data": f"sched:del:{jid}"},
-                ])
-            else:
-                rows.append([
-                    {"text": f"▶ Повторить #{idx}", "callback_data": f"sched:run:{jid}"},
-                    {"text": f"🗑️ Удалить #{idx}", "callback_data": f"sched:del:{jid}"},
-                ])
+            short_title = raw_title[:38] + ("…" if len(raw_title) > 38 else "")
+            rows.append([{"text": f"{icon} {short_title}", "callback_data": f"sched:view:{jid}"}])
 
         rows.append([
             {"text": "🔄 Обновить", "callback_data": "menu:jobs"},
             {"text": "⬅️ Меню", "callback_data": "menu:home"},
+            {"text": "✖️ Скрыть", "callback_data": "menu:close"},
+        ])
+        return "\n".join(lines), {"inline_keyboard": rows}
+
+    @staticmethod
+    def _render_job_detail(jid: str) -> Tuple[str, Dict[str, Any]]:
+        job = db_singleton.get_scheduled_job(jid)
+        if not job:
+            return (
+                "⏰ <b>Задача не найдена</b>\n\nВозможно, она уже удалена.",
+                {
+                    "inline_keyboard": [[
+                        {"text": "⬅️ К списку", "callback_data": "menu:jobs"},
+                        {"text": "✖️ Скрыть", "callback_data": "menu:close"},
+                    ]]
+                },
+            )
+
+        st_map = {
+            "active": "🟢 Активна",
+            "paused": "⏸ На паузе",
+            "paused_error": "⚠️ Ошибка (пауза)",
+            "error": "❌ Ошибка",
+            "completed": "✅ Выполнена",
+            "missed": "⏭ Пропущена",
+            "cancelled": "🚫 Отменена",
+        }
+        st = job.get("status") or "active"
+        st_label = st_map.get(st, st)
+        title = _html.escape(str(job.get("title") or jid))
+        local_tz = datetime.datetime.now().astimezone().tzinfo
+
+        def _fmt_iso(val: Optional[str]) -> str:
+            if not val:
+                return ""
+            try:
+                return datetime.datetime.fromisoformat(val).astimezone(local_tz).strftime("%d.%m.%Y %H:%M:%S")
+            except Exception:
+                return str(val)[:19]
+
+        lines = [
+            f"📌 <b>{title}</b>",
+            f"Статус: <b>{st_label}</b>",
+            f"Тип: <code>{_html.escape(str(job.get('job_type') or ''))}</code>",
+        ]
+        cron_val = str(job.get("cron_or_run_at") or "").strip()
+        if cron_val:
+            lines.append(f"Расписание: <code>{_html.escape(cron_val)}</code>")
+        nxt = _fmt_iso(job.get("next_run_at"))
+        if nxt:
+            lines.append(f"Следующий запуск: <b>{nxt}</b>")
+        last_r = _fmt_iso(job.get("last_run_at"))
+        if last_r:
+            last_st = job.get("last_status") or ""
+            lines.append(f"Последний запуск: {last_r}" + (f" ({_html.escape(last_st)})" if last_st else ""))
+
+        owner = str(job.get("owner_user_id") or "").strip()
+        notify_ch = str(job.get("notify_channel") or "").strip()
+        quiet_h = str(job.get("quiet_hours") or "").strip()
+        if owner or notify_ch:
+            meta_bits = []
+            if owner:
+                meta_bits.append(f"Владелец: <code>{_html.escape(owner)}</code>")
+            if notify_ch:
+                meta_bits.append(f"Канал: <code>{_html.escape(notify_ch)}</code>")
+            lines.append(" • ".join(meta_bits))
+        if quiet_h:
+            lines.append(f"Тихие часы: <code>{_html.escape(quiet_h)}</code>")
+
+        act = job.get("action") or {}
+        if act.get("type") == "ai_prompt":
+            p_txt = _html.escape(str(act.get("prompt") or "")[:400])
+            if p_txt:
+                lines.append(f"\n📝 <b>Инструкция:</b>\n<i>{p_txt}</i>")
+            tools_l = act.get("allowed_tools") or []
+            if tools_l:
+                lines.append(f"Инструменты: <code>{_html.escape(', '.join(str(t) for t in tools_l))}</code>")
+        elif act.get("type") == "direct_tool":
+            t_name = str(act.get("tool") or "")
+            t_args = act.get("args") or {}
+            lines.append(f"\n🔧 <b>Действие:</b> <code>{_html.escape(t_name)}</code>")
+            if t_name == "send_to_telegram":
+                tgt = _html.escape(str(t_args.get("target") or ""))
+                msg_txt = _html.escape(str(t_args.get("text") or "")[:300])
+                lines.append(f"Кому: <code>{tgt}</code>\nТекст: <i>«{msg_txt}»</i>")
+            elif t_name == "call_ha_service":
+                dom = _html.escape(str(t_args.get("domain") or ""))
+                srv = _html.escape(str(t_args.get("service") or ""))
+                ent = _html.escape(str(t_args.get("entity_id") or ""))
+                lines.append(f"Сервис: <code>{dom}.{srv}</code> ({ent})")
+            elif t_name == "alarm_chime":
+                lbl = _html.escape(str(t_args.get("label") or ""))
+                if lbl:
+                    lines.append(f"Метка: <i>{lbl}</i>")
+
+        if job.get("last_error"):
+            lines.append(f"\n⚠️ <b>Последняя ошибка:</b>\n<code>{_html.escape(str(job['last_error'])[:250])}</code>")
+
+        rows: List[List[Dict[str, str]]] = []
+        if st in ("active", "paused", "paused_error", "error"):
+            toggle_lbl = "⏸ На паузу" if job.get("enabled") else "▶ Включить"
+            rows.append([
+                {"text": "▶ Запустить сейчас", "callback_data": f"sched:run:{jid}"},
+                {"text": toggle_lbl, "callback_data": f"sched:toggle:{jid}"},
+            ])
+            rows.append([{"text": "🗑️ Удалить задачу", "callback_data": f"sched:del:{jid}"}])
+        else:
+            rows.append([
+                {"text": "▶ Повторить сейчас", "callback_data": f"sched:run:{jid}"},
+                {"text": "🗑️ Удалить задачу", "callback_data": f"sched:del:{jid}"},
+            ])
+        rows.append([
+            {"text": "⬅️ К списку", "callback_data": "menu:jobs"},
+            {"text": "✖️ Скрыть", "callback_data": "menu:close"},
         ])
         return "\n".join(lines), {"inline_keyboard": rows}
 
@@ -407,7 +534,13 @@ class TelegramBotGateway:
                 content = _html.escape(str(it.get("content") or "")[:90])
                 body = f"<b>{title}</b>: {content}" if title and title != content else content
                 lines.append(f"{idx}. {ic} {lbl}{body}")
-        kb = {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "menu:memory"}, {"text": "⬅️ Меню", "callback_data": "menu:home"}]]}
+        kb = {
+            "inline_keyboard": [[
+                {"text": "🔄 Обновить", "callback_data": "menu:memory"},
+                {"text": "⬅️ Меню", "callback_data": "menu:home"},
+                {"text": "✖️ Скрыть", "callback_data": "menu:close"},
+            ]]
+        }
         return "\n".join(lines), kb
 
     def _render_status_menu(self) -> Tuple[str, Dict[str, Any]]:
@@ -428,7 +561,13 @@ class TelegramBotGateway:
             lines.append(f"   {mark} {_html.escape(str(d.get('name') or d.get('mac')))}")
         lines.append(f"\n⏰ Задач в планировщике: <b>{active_jobs}</b> активных (ошибок: {err_jobs})")
         lines.append(f"🧩 Активные плагины ({len(provs)}): {_html.escape(', '.join(provs) or 'нет')}")
-        kb = {"inline_keyboard": [[{"text": "🔄 Обновить", "callback_data": "menu:status"}, {"text": "⬅️ Меню", "callback_data": "menu:home"}]]}
+        kb = {
+            "inline_keyboard": [[
+                {"text": "🔄 Обновить", "callback_data": "menu:status"},
+                {"text": "⬅️ Меню", "callback_data": "menu:home"},
+                {"text": "✖️ Скрыть", "callback_data": "menu:close"},
+            ]]
+        }
         return "\n".join(lines), kb
 
     async def _handle_menu_callback(self, bot_token: str, cb: Dict[str, Any]) -> None:
@@ -445,8 +584,13 @@ class TelegramBotGateway:
 
         toast_txt = ""
         view = "jobs"
+        detail_jid = ""
         try:
             async with aiohttp.ClientSession() as session:
+                if data == "menu:close":
+                    await self._answer_callback(session, bot_token, cb_id, "")
+                    await self._delete_message(session, bot_token, chat_id, msg_id)
+                    return
                 if data == "menu:home":
                     view = "home"
                 elif data == "menu:jobs":
@@ -455,20 +599,23 @@ class TelegramBotGateway:
                     view = "memory"
                 elif data == "menu:status":
                     view = "status"
+                elif data.startswith("sched:view:"):
+                    detail_jid = data.split(":", 2)[2]
+                    view = "job_detail"
                 elif data.startswith("sched:run:"):
-                    jid = data.split(":", 2)[2]
+                    detail_jid = data.split(":", 2)[2]
                     try:
                         from scheduler import scheduler_singleton
                     except ImportError:
                         from .scheduler import scheduler_singleton
                     await self._answer_callback(session, bot_token, cb_id, "▶ Запускаю задачу...")
                     cb_id = ""
-                    res = await scheduler_singleton.run_job_now(jid)
+                    res = await scheduler_singleton.run_job_now(detail_jid)
                     toast_txt = "Выполнено" if res.get("status") == "ok" else f"Ошибка: {res.get('error')}"
-                    view = "jobs"
+                    view = "job_detail"
                 elif data.startswith("sched:toggle:"):
-                    jid = data.split(":", 2)[2]
-                    job = db_singleton.get_scheduled_job(jid)
+                    detail_jid = data.split(":", 2)[2]
+                    job = db_singleton.get_scheduled_job(detail_jid)
                     if job:
                         new_en = not bool(job.get("enabled"))
                         nxt = job.get("next_run_at")
@@ -479,7 +626,7 @@ class TelegramBotGateway:
                                 from .scheduler import scheduler_singleton
                             nxt = scheduler_singleton._compute_following_run(job["trigger"])
                         db_singleton.upsert_scheduled_job(
-                            job_id=jid,
+                            job_id=detail_jid,
                             job_type=job["job_type"],
                             title=job["title"],
                             owner_user_id=job["owner_user_id"],
@@ -494,7 +641,7 @@ class TelegramBotGateway:
                             next_run_at=nxt,
                         )
                         toast_txt = "Включена" if new_en else "На паузе"
-                    view = "jobs"
+                    view = "job_detail"
                 elif data.startswith("sched:del:"):
                     jid = data.split(":", 2)[2]
                     db_singleton.delete_scheduled_job(jid)
@@ -510,6 +657,8 @@ class TelegramBotGateway:
                     txt, kb = self._render_memory_menu()
                 elif view == "status":
                     txt, kb = self._render_status_menu()
+                elif view == "job_detail":
+                    txt, kb = self._render_job_detail(detail_jid)
                 else:
                     txt, kb = self._render_jobs_menu()
                 await self._send_or_edit_html(session, bot_token, chat_id, txt, reply_markup=kb, edit_message_id=msg_id)
