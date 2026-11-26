@@ -1578,8 +1578,13 @@ class WebServer:
         except Exception:
             data = {}
         model_id = str((data or {}).get("model") or "").strip()
+        enable_search = bool((data or {}).get("enable_google_search", False))
         opts = self.options_callback() if self.options_callback else {}
-        res = await big_model_pool_singleton.test_model(model_id, opts.get("gemini_api_key", ""))
+        res = await big_model_pool_singleton.test_model(
+            model_id,
+            opts.get("gemini_api_key", ""),
+            enable_google_search=enable_search,
+        )
         return web.json_response(res, status=200 if res.get("success") else 400)
 
     async def handle_get_ww_captures(self, request):

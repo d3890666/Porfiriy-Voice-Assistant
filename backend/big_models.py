@@ -28,6 +28,11 @@ def _is_quota_or_rate_error(err_text: str) -> bool:
     )
 
 
+def _is_live_model(model_id: str) -> bool:
+    low = (model_id or "").lower()
+    return ("live" in low) or ("native-audio" in low)
+
+
 class BigModelPool:
     """
     Единый серверный пул больших моделей Google Gemini с приоритетами,
@@ -57,6 +62,67 @@ class BigModelPool:
         self._key_offset = (self._key_offset + 1) % len(keys)
         return keys[start:] + keys[:start]
 
+    async def _call_live_model(
+        self,
+        model_id: str,
+        api_key: str,
+        prompt: str,
+        *,
+        system_instruction: str = "",
+        enable_google_search: bool = False,
+        timeout_s: float = 45.0,
+    ) -> str:
+        if genai is None or types is None:
+            raise RuntimeError("google-genai SDK is not available")
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
+        cfg_kwargs: Dict[str, Any] = {
+            "response_modalities": ["AUDIO"],
+            "output_audio_transcription": types.AudioTranscriptionConfig(),
+        }
+        if system_instruction:
+            cfg_kwargs["system_instruction"] = system_instruction
+        if enable_google_search and hasattr(types, "Tool") and hasattr(types, "GoogleSearch"):
+            cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+
+        live_cfg = types.LiveConnectConfig(**cfg_kwargs)
+        out_parts: List[str] = []
+
+        async def _run_live() -> str:
+            async with client.aio.live.connect(model=model_id, config=live_cfg) as session:
+                await session.send_client_content(
+                    turns=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
+                    turn_complete=True,
+                )
+                done = False
+                while not done:
+                    got = False
+                    async for response in session.receive():
+                        got = True
+                        sc = getattr(response, "server_content", None)
+                        if not sc:
+                            continue
+                        out_tr = getattr(sc, "output_transcription", None)
+                        if out_tr and getattr(out_tr, "text", None):
+                            out_parts.append(out_tr.text)
+                        mt = getattr(sc, "model_turn", None)
+                        if mt and getattr(mt, "parts", None):
+                            for p in mt.parts:
+                                if getattr(p, "thought", False):
+                                    continue
+                                if getattr(p, "text", None):
+                                    out_parts.append(p.text)
+                        if getattr(sc, "turn_complete", False):
+                            done = True
+                            break
+                    if not got:
+                        break
+            return "".join(out_parts).strip()
+
+        clean = await asyncio.wait_for(_run_live(), timeout=timeout_s)
+        if not clean:
+            raise RuntimeError(f"Live model '{model_id}' returned an empty response")
+        return clean
+
     async def _call_single_model(
         self,
         model_id: str,
@@ -67,6 +133,16 @@ class BigModelPool:
         enable_google_search: bool = False,
         timeout_s: float = 45.0,
     ) -> str:
+        if _is_live_model(model_id):
+            return await self._call_live_model(
+                model_id,
+                api_key,
+                prompt,
+                system_instruction=system_instruction,
+                enable_google_search=enable_google_search,
+                timeout_s=timeout_s,
+            )
+
         if genai is None:
             raise RuntimeError("google-genai SDK is not available")
         client = genai.Client(api_key=api_key)
@@ -103,7 +179,13 @@ class BigModelPool:
             raise RuntimeError(f"Model '{model_id}' returned an empty response")
         return clean
 
-    async def test_model(self, model_id: str, api_key_str: str) -> Dict[str, Any]:
+    async def test_model(
+        self,
+        model_id: str,
+        api_key_str: str,
+        *,
+        enable_google_search: bool = False,
+    ) -> Dict[str, Any]:
         mid = (model_id or "").strip()
         if not mid:
             return {"success": False, "error": "Не указана модель"}
@@ -115,13 +197,20 @@ class BigModelPool:
 
         t0 = time.monotonic()
         last_err = ""
+        test_prompt = (
+            "Какая сегодня дата и какой курс доллара к рублю? Ответь одним коротким предложением."
+            if enable_google_search
+            else "Ответь одним словом: ОК"
+        )
+        test_timeout = 30.0 if enable_google_search else 20.0
         for idx, key in enumerate(keys):
             try:
                 txt = await self._call_single_model(
                     mid,
                     key,
-                    "Ответь одним словом: ОК",
-                    timeout_s=20.0,
+                    test_prompt,
+                    enable_google_search=enable_google_search,
+                    timeout_s=test_timeout,
                 )
                 dur = int((time.monotonic() - t0) * 1000)
                 self._record_health(mid, True, dur, "")
@@ -130,7 +219,7 @@ class BigModelPool:
                     "model": mid,
                     "status": "ok",
                     "latency_ms": dur,
-                    "reply": txt[:80],
+                    "reply": txt[:140],
                     "key_index": idx + 1,
                     "health": self.get_health_map(),
                 }
@@ -159,14 +248,27 @@ class BigModelPool:
         system_instruction: str = "",
         enable_google_search: bool = False,
         timeout_s: float = 45.0,
+        preferred_model: str = "",
     ) -> Dict[str, Any]:
         pool_raw = options.get("big_models_pool") or []
-        candidates = [
+        pool_candidates = [
             item
             for item in pool_raw
             if isinstance(item, dict) and item.get("enabled", True) and str(item.get("model") or "").strip()
         ]
-        candidates.sort(key=lambda x: int(x.get("priority", 10)))
+        pool_candidates.sort(key=lambda x: int(x.get("priority", 10)))
+
+        candidates: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        pref = (preferred_model or "").strip()
+        if pref:
+            candidates.append({"model": pref, "priority": 0})
+            seen.add(pref)
+        for item in pool_candidates:
+            m = str(item.get("model") or "").strip()
+            if m and m not in seen:
+                candidates.append(item)
+                seen.add(m)
 
         if not candidates:
             return {

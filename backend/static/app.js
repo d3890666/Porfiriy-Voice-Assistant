@@ -1598,6 +1598,7 @@ function populateGlobalSettingsForm() {
   if (googleSearchChk) {
     googleSearchChk.checked = globalOptions.enable_google_search !== false;
   }
+  populateWebSearchModelDropdown(globalOptions.web_search_model || '');
 
   const bargeInChk = document.getElementById('cfg-barge-in');
   if (bargeInChk) {
@@ -1863,6 +1864,7 @@ async function saveGlobalSettings(e) {
       big_models_enabled: document.getElementById('cfg-big-models-enabled')?.checked || false,
       big_models_threshold_chars: parseInt(document.getElementById('cfg-big-models-threshold')?.value || 4000, 10),
       big_models_pool: bigModelsPoolState,
+      web_search_model: (document.getElementById('cfg-web-search-model')?.value || '').trim(),
       voice_name: document.getElementById('cfg-voice')?.value,
       temperature: parseFloat(document.getElementById('cfg-temperature')?.value || 0.7),
       thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 7),
@@ -4230,9 +4232,9 @@ function renderBigModelsPool() {
       optsHtml += '</optgroup>';
     }
     if (liveModels.length) {
-      optsHtml += '<optgroup label="Live модели">';
+      optsHtml += '<optgroup label="🎙️ Live модели">';
       liveModels.forEach(m => {
-        optsHtml += `<option value="${escapeHtml(m.id)}" ${m.id === mid ? 'selected' : ''}>${escapeHtml(m.name || m.id)}</option>`;
+        optsHtml += `<option value="${escapeHtml(m.id)}" ${m.id === mid ? 'selected' : ''}>🎙️ ${escapeHtml(m.name || m.id)}</option>`;
       });
       optsHtml += '</optgroup>';
     }
@@ -4313,6 +4315,70 @@ async function testBigModelRow(idx) {
   }
 }
 window.testBigModelRow = testBigModelRow;
+
+function populateWebSearchModelDropdown(selectedModel) {
+  const sel = document.getElementById('cfg-web-search-model');
+  if (!sel) return;
+  const cur = selectedModel !== undefined ? selectedModel : (globalOptions.web_search_model || '');
+  const allModels = Array.isArray(availableModels) ? availableModels : [];
+  const textModels = allModels.filter(m => m && !m.is_live);
+  const liveModels = allModels.filter(m => m && m.is_live);
+
+  let html = '<option value="">— Использовать пул больших моделей —</option>';
+  if (liveModels.length) {
+    html += '<optgroup label="🎙️ Live модели">';
+    liveModels.forEach(m => {
+      html += `<option value="${escapeHtml(m.id)}" ${m.id === cur ? 'selected' : ''}>🎙️ ${escapeHtml(m.name || m.id)}</option>`;
+    });
+    html += '</optgroup>';
+  }
+  if (textModels.length) {
+    html += '<optgroup label="🧠 Текстовые / Большие модели">';
+    textModels.forEach(m => {
+      html += `<option value="${escapeHtml(m.id)}" ${m.id === cur ? 'selected' : ''}>${escapeHtml(m.name || m.id)}</option>`;
+    });
+    html += '</optgroup>';
+  }
+  if (cur && !allModels.some(m => m && m.id === cur)) {
+    html += `<option value="${escapeHtml(cur)}" selected>${escapeHtml(cur)}</option>`;
+  }
+  sel.innerHTML = html;
+}
+window.populateWebSearchModelDropdown = populateWebSearchModelDropdown;
+
+async function testWebSearchModel() {
+  const selVal = (document.getElementById('cfg-web-search-model')?.value || '').trim();
+  const fallbackPool = (bigModelsPoolState || []).find(r => r && r.enabled !== false && r.model);
+  const modelId = selVal || (fallbackPool ? fallbackPool.model : '');
+  const stEl = document.getElementById('web-search-test-status');
+  if (!modelId) {
+    if (stEl) stEl.innerHTML = '<span style="color:#fbbf24;">⚠️ Выберите модель или добавьте хотя бы одну в пул больших моделей.</span>';
+    return;
+  }
+  if (stEl) stEl.innerHTML = `<span style="color:#94a3b8;">⏳ Проверяю поиск Google Search на ${escapeHtml(modelId)}...</span>`;
+  showToast(`Тестирую поиск на ${modelId}...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/big_models/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId, enable_google_search: true })
+    });
+    const data = await res.json();
+    if (data.health) bigModelsHealth = data.health;
+    renderBigModelsPool();
+    if (data.success) {
+      if (stEl) stEl.innerHTML = `<span style="color:#34d399;">✅ Поиск работает (${data.latency_ms} мс):</span> <span style="color:#cbd5e1;">${escapeHtml(data.reply || '')}</span>`;
+      showToast(`Поиск на ${modelId} работает (${data.latency_ms} мс)`);
+    } else {
+      if (stEl) stEl.innerHTML = `<span style="color:#f87171;">⚠️ ${escapeHtml(data.error || 'ошибка')}</span>`;
+      showToast(`Ошибка поиска ${modelId}: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    if (stEl) stEl.innerHTML = `<span style="color:#f87171;">⚠️ ${escapeHtml(e.message)}</span>`;
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.testWebSearchModel = testWebSearchModel;
 
 // =========================================================================
 // Сбор звуков срабатываний вейкворда (Яндекс Станция 2)

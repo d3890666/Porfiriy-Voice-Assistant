@@ -316,6 +316,7 @@ class ToolExecutor:
                     search_prompt,
                     options,
                     enable_google_search=True,
+                    preferred_model=str(options.get("web_search_model") or "").strip(),
                 )
                 if turn_state is not None:
                     turn_state["tool_executed"] = True
