@@ -195,6 +195,7 @@ def get_options() -> Dict[str, Any]:
         "big_models_threshold_chars": 4000,
         "big_models_pool": [],
         "web_search_model": "",
+        "serper_api_key": "",
         "system_prompt": "",
         "prompt_persona": DEFAULT_PERSONA,
         "prompt_users": DEFAULT_USERS,

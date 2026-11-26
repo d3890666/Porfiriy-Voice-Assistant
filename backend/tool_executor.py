@@ -298,8 +298,10 @@ class ToolExecutor:
             if name == "web_search":
                 try:
                     from big_models import big_model_pool_singleton
+                    from serper_search import serper_search_singleton
                 except ImportError:
                     from .big_models import big_model_pool_singleton
+                    from .serper_search import serper_search_singleton
                 if on_progress:
                     try:
                         await on_progress("🔍 Ищу актуальную информацию в интернете...")
@@ -308,6 +310,27 @@ class ToolExecutor:
                 q_txt = str(args.get("query") or "").strip()
                 if not q_txt:
                     return {"status": "error", "error": "Укажите поисковый запрос query"}
+
+                serper_key = str(options.get("serper_api_key") or "").strip()
+                if serper_key:
+                    serper_res = await serper_search_singleton.search(q_txt, serper_key)
+                    if serper_res.get("success") and serper_res.get("answer"):
+                        tool_logger.info(
+                            f"Web search via serper.dev completed in {serper_res.get('latency_ms')} ms "
+                            f"({serper_res.get('results_count', 0)} results)"
+                        )
+                        if turn_state is not None:
+                            turn_state["tool_executed"] = True
+                        return {
+                            "status": "ok",
+                            "provider": "serper.dev",
+                            "latency_ms": serper_res.get("latency_ms"),
+                            "answer": serper_res["answer"],
+                        }
+                    tool_logger.warning(
+                        f"Serper.dev failed ({serper_res.get('error')}), falling back to web_search_model / BigModelPool"
+                    )
+
                 search_prompt = (
                     f"Найди актуальную информацию в интернете и дай точный, краткий ответ на русском языке "
                     f"(с датами, цифрами и фактами без воды):\n{q_txt}"

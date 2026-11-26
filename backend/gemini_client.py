@@ -280,10 +280,11 @@ class GeminiProxyClient:
         base_decls = [ha_tool, get_state_tool, search_music_tool, play_music_tool, schedule_action_tool, manage_timers_tool]
         declared_names = {d.name for d in base_decls}
 
-        # Явный инструмент делегирования в пул больших моделей (если включено в настройках)
+        # Явный инструмент делегирования в пул больших моделей и/или быстрый веб-поиск
         try:
             from config import get_options as _get_opts
-            if _get_opts().get("big_models_enabled"):
+            _opts = _get_opts()
+            if _opts.get("big_models_enabled"):
                 big_tool = _make_decl(
                     name="ask_big_model",
                     description=(
@@ -302,11 +303,16 @@ class GeminiProxyClient:
                 base_decls.append(big_tool)
                 declared_names.add("ask_big_model")
 
+            if _opts.get("enable_google_search", True) and (
+                _opts.get("serper_api_key")
+                or _opts.get("web_search_model")
+                or _opts.get("big_models_enabled")
+            ):
                 web_search_tool = _make_decl(
                     name="web_search",
                     description=(
-                        "Search the live Internet via Google Search using the big-model pool "
-                        "(use for fresh news, release dates, albums, prices, weather, facts, or anything post-training)."
+                        "Search the live Internet via Google Search "
+                        "(use for fresh news, release dates, prices, weather, facts, or anything post-training)."
                     ),
                     parameters=types.Schema(
                         type=types.Type.OBJECT,

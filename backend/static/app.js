@@ -1668,6 +1668,17 @@ function populateGlobalSettingsForm() {
     }
   }
 
+  const serperKeyInput = document.getElementById('cfg-serper-api-key');
+  if (serperKeyInput) {
+    if (globalOptions.has_serper_api_key) {
+      serperKeyInput.placeholder = `Ключ задан (${globalOptions.serper_api_key || '••••••••'})`;
+      serperKeyInput.value = '';
+    } else {
+      serperKeyInput.placeholder = 'Вставьте API-ключ с serper.dev (2500 запросов бесплатно)';
+      serperKeyInput.value = '';
+    }
+  }
+
   // 4 Модульных промпта: если в настройках пусто или пробелы, подставляем каноничный шаблон!
   const getPromptVal = (key, fallbackKey) => {
     const val = globalOptions[key];
@@ -1740,6 +1751,11 @@ function toggleKeyVisibility() {
 function toggleMaKeyVisibility() {
   togglePasswordField('cfg-ma-key', 'btn-toggle-ma-key');
 }
+
+function toggleSerperKeyVisibility() {
+  togglePasswordField('cfg-serper-api-key', 'btn-toggle-serper-key');
+}
+window.toggleSerperKeyVisibility = toggleSerperKeyVisibility;
 
 function updateDuckingFactorDisplay(val) {
   const num = parseFloat(val) || 0.25;
@@ -1899,6 +1915,11 @@ async function saveGlobalSettings(e) {
     const newMaKey = document.getElementById('cfg-ma-key')?.value?.trim();
     if (newMaKey !== undefined && newMaKey !== '') {
       payload.ma_api_key = newMaKey;
+    }
+
+    const newSerperKey = document.getElementById('cfg-serper-api-key')?.value?.trim();
+    if (newSerperKey) {
+      payload.serper_api_key = newSerperKey;
     }
 
     const newOpKey = document.getElementById('cfg-openai-api-key')?.value?.trim();
@@ -4494,6 +4515,36 @@ async function testWebSearchModel() {
   }
 }
 window.testWebSearchModel = testWebSearchModel;
+
+async function testSerperSearch() {
+  const typedKey = (document.getElementById('cfg-serper-api-key')?.value || '').trim();
+  const stEl = document.getElementById('serper-test-status');
+  if (!typedKey && !globalOptions.has_serper_api_key) {
+    if (stEl) stEl.innerHTML = '<span style="color:#fbbf24;">⚠️ Вставьте API-ключ Serper.dev или сохраните его сначала.</span>';
+    return;
+  }
+  if (stEl) stEl.innerHTML = '<span style="color:#94a3b8;">⏳ Проверяю быстрый поиск Serper.dev...</span>';
+  showToast('Тестирую поиск Serper.dev...');
+  try {
+    const res = await fetch(`${API_BASE}/api/web_search/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'serper', serper_api_key: typedKey })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (stEl) stEl.innerHTML = `<span style="color:#34d399;">✅ Serper.dev работает (${data.latency_ms} мс, ${data.results_count || 0} рез.):</span> <span style="color:#cbd5e1;">${escapeHtml(data.reply || '')}</span>`;
+      showToast(`Serper.dev работает (${data.latency_ms} мс)`);
+    } else {
+      if (stEl) stEl.innerHTML = `<span style="color:#f87171;">⚠️ ${escapeHtml(data.error || 'ошибка')}</span>`;
+      showToast(`Ошибка Serper.dev: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    if (stEl) stEl.innerHTML = `<span style="color:#f87171;">⚠️ ${escapeHtml(e.message)}</span>`;
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.testSerperSearch = testSerperSearch;
 
 // =========================================================================
 // Сбор звуков срабатываний вейкворда (Яндекс Станция 2)

@@ -36,6 +36,7 @@ except ImportError:
 try:
     from .db import db_singleton
     from .big_models import big_model_pool_singleton
+    from .serper_search import serper_search_singleton
     from .ww_capture import ww_capture_store
     from .plugins.telegram_bot import TelegramBotPlugin
     from .plugins.telegram_userbot import TelegramUserbotPlugin
@@ -45,6 +46,7 @@ try:
 except ImportError:
     from db import db_singleton
     from big_models import big_model_pool_singleton
+    from serper_search import serper_search_singleton
     from ww_capture import ww_capture_store
     from plugins.telegram_bot import TelegramBotPlugin
     from plugins.telegram_userbot import TelegramUserbotPlugin
@@ -174,6 +176,7 @@ class WebServer:
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
         self.app.router.add_get("/api/tools/audit", self.handle_get_tools_audit)
         self.app.router.add_post("/api/big_models/test", self.handle_test_big_model)
+        self.app.router.add_post("/api/web_search/test", self.handle_test_web_search)
         self.app.router.add_get("/api/memory", self.handle_get_memory)
         self.app.router.add_post("/api/memory", self.handle_add_memory)
         self.app.router.add_post("/api/memory/cleanup", self.handle_cleanup_memory)
@@ -411,6 +414,11 @@ class WebServer:
         safe["has_openai_api_key"] = bool(op_key)
         if op_key:
             safe["openai_api_key"] = op_key[:3] + "..." + op_key[-3:] if len(op_key) >= 6 else "******"
+
+        serper_key = safe.get("serper_api_key", "")
+        safe["has_serper_api_key"] = bool(serper_key)
+        if serper_key:
+            safe["serper_api_key"] = serper_key[:4] + "..." + serper_key[-4:] if len(serper_key) >= 8 else "********"
         return safe
 
     async def handle_get_global(self, request):
@@ -451,6 +459,7 @@ class WebServer:
             
             allowed_fields = [
                 "gemini_api_key", "gemini_model", "big_models_enabled", "big_models_threshold_chars", "big_models_pool",
+                "web_search_model", "serper_api_key",
                 "voice_name", "temperature",
                 "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
                 "enable_barge_in", "barge_in_threshold_rms", "prompt_persona", "prompt_users",
@@ -468,7 +477,7 @@ class WebServer:
                         # Если передан пустой или маскированный ключ — оставляем прежний
                         if val and "..." not in str(val) and "*" not in str(val):
                             updated_opts[field] = str(val).strip()
-                    elif field == "ma_api_key":
+                    elif field in ("ma_api_key", "serper_api_key"):
                         if val is not None:
                             sval = str(val).strip()
                             if "..." not in sval and "*" not in sval:
@@ -1603,6 +1612,27 @@ class WebServer:
             enable_google_search=enable_search,
         )
         return web.json_response(res, status=200 if res.get("success") else 400)
+
+    async def handle_test_web_search(self, request):
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        opts = self.options_callback() if self.options_callback else {}
+        raw_key = str((data or {}).get("serper_api_key") or "").strip()
+        if not raw_key or "..." in raw_key or "*" in raw_key:
+            raw_key = str(opts.get("serper_api_key") or "").strip()
+        query = str((data or {}).get("query") or "курс доллара к рублю сегодня").strip()
+        res = await serper_search_singleton.search(query, raw_key)
+        payload = {
+            "success": bool(res.get("success")),
+            "provider": res.get("provider", "serper.dev"),
+            "latency_ms": res.get("latency_ms", 0),
+            "results_count": res.get("results_count", 0),
+            "reply": (res.get("answer") or "")[:240],
+            "error": res.get("error", ""),
+        }
+        return web.json_response(payload, status=200 if payload["success"] else 400)
 
     async def handle_get_ww_captures(self, request):
         mac = request.query.get("mac", "").strip() or None

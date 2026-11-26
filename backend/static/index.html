@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.207">
+  <link rel="stylesheet" href="static/style.css?v=0.0.208">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.207</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.208</span></p>
         </div>
       </div>
       
@@ -495,16 +495,28 @@
               <small class="field-hint">Позволяет Порфирию искать свежие данные и новости в сети</small>
             </div>
 
+            <!-- Serper.dev быстрый поиск Google -->
+            <div class="form-field full-width">
+              <label for="cfg-serper-api-key">⚡ Serper.dev API-ключ (быстрый поиск Google ~0.8 с)</label>
+              <div class="input-with-action">
+                <input type="password" id="cfg-serper-api-key" name="serper_api_key" placeholder="Вставьте API-ключ с serper.dev (2500 запросов бесплатно)">
+                <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-serper-key" onclick="toggleSerperKeyVisibility()" title="Показать/скрыть ключ">👁️</button>
+                <button type="button" class="btn btn-secondary btn-small" onclick="testSerperSearch()" title="Проверить быстрый поиск через Serper.dev">🧪 Тест Serper</button>
+              </div>
+              <small class="field-hint">Если задан, инструмент <code>web_search</code> идёт напрямую в Serper.dev (~0.8 с), а при ошибке или исчерпании лимита автоматически падает на модель поиска ниже.</small>
+              <div id="serper-test-status" style="font-size:12px; margin-top:4px;"></div>
+            </div>
+
             <!-- Модель для поиска в интернете -->
             <div class="form-field full-width">
-              <label for="cfg-web-search-model">🔍 Модель для поиска в интернете (с фолбэком на пул больших моделей)</label>
+              <label for="cfg-web-search-model">🔍 Модель для поиска в интернете (основная без Serper / фолбэк при сбое Serper)</label>
               <div class="input-with-action">
                 <select id="cfg-web-search-model" name="web_search_model">
                   <option value="">— Использовать пул больших моделей —</option>
                 </select>
                 <button type="button" class="btn btn-secondary btn-small" onclick="testWebSearchModel()" title="Проверить реальный поиск Google Search на выбранной модели">🧪 Тест поиска</button>
               </div>
-              <small class="field-hint">Можно выбрать как обычную, так и Live-модель (например, 2.5-flash). Если не сработает — автоматически пойдёт по пулу больших моделей.</small>
+              <small class="field-hint">Используется как резервный вариант (или основной, если ключ Serper.dev не задан). Можно выбрать как обычную, так и Live-модель (например, 2.5-flash).</small>
               <div id="web-search-test-status" style="font-size:12px; margin-top:4px;"></div>
             </div>
 
@@ -1337,6 +1349,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.207"></script>
+  <script src="static/app.js?v=0.0.208"></script>
 </body>
 </html>
