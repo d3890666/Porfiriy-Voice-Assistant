@@ -145,7 +145,7 @@ class BigModelPool:
 
         if genai is None:
             raise RuntimeError("google-genai SDK is not available")
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
         cfg = None
         if types is not None and hasattr(types, "GenerateContentConfig"):
             cfg_kwargs: Dict[str, Any] = {}
