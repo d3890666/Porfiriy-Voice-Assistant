@@ -397,12 +397,21 @@ class DSPProcessor:
 
 
 class LocalOWW:
-    """Полноценный openWakeWord ONNX (melspectrogram + embedding + porfiriy) на 1 потоке."""
+    """Локальный движок вейкворда на 1 потоке ONNX Runtime.
+    Автоматически распознаёт формат модели:
+    - LiveKit WakeWord v2 standalone stateful streaming ONNX (chunk [1, 1280] + state caches -> score + *_out, ~19 мс)
+    - Классический openWakeWord (melspectrogram.onnx + embedding_model.onnx + классификатор [1, N, 96], ~42 мс)
+    """
 
     def __init__(self, models_dir: str, ww_model: str = "porfiriy.onnx", threads: int = 1):
         self.models_dir = models_dir
         self.ww_model = ww_model
         self.threads = threads
+        self.backend_mode = "oww"
+        self.mel_sess = None
+        self.emb_sess = None
+        self.state_specs = []
+        self.state_tensors = {}
         self._load()
 
     def _load(self):
@@ -412,28 +421,78 @@ class LocalOWW:
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
+        ww_path = self.ww_model if os.path.isabs(self.ww_model) else os.path.join(self.models_dir, self.ww_model)
+        self.ww_sess = ort.InferenceSession(ww_path, sess_options=so, providers=["CPUExecutionProvider"])
+        ww_inputs = self.ww_sess.get_inputs()
+        ww_outputs = self.ww_sess.get_outputs()
+
+        # Автодетект LiveKit WakeWord v2 standalone stateful ONNX (вход chunk [1, 1280] + state-кэши)
+        first_shape = ww_inputs[0].shape if ww_inputs else []
+        is_stateful_v2 = (
+            len(ww_inputs) > 1
+            and len(ww_inputs) == len(ww_outputs)
+            and (ww_inputs[0].name == "chunk" or (len(first_shape) == 2 and first_shape[1] == CHUNK_SAMPLES_16K))
+        )
+        if is_stateful_v2:
+            self.backend_mode = "livekit_v2"
+            self.ww_in = ww_inputs[0].name
+            self.state_specs = [
+                (
+                    inp.name,
+                    [d if isinstance(d, int) and d > 0 else 1 for d in inp.shape],
+                    np.int64 if "int64" in inp.type else np.float32,
+                )
+                for inp in ww_inputs[1:]
+            ]
+            print(
+                f"[STATIOND] Loaded LiveKit v2 standalone streaming WW model: {os.path.basename(ww_path)} "
+                f"(states={len(self.state_specs)}, input={self.ww_in}{first_shape})",
+                flush=True,
+            )
+            self.reset()
+            return
+
+        # Классический 3-ступенчатый openWakeWord
+        self.backend_mode = "oww"
         mel_path = os.path.join(self.models_dir, "melspectrogram.onnx")
         emb_path = os.path.join(self.models_dir, "embedding_model.onnx")
-        ww_path = self.ww_model if os.path.isabs(self.ww_model) else os.path.join(self.models_dir, self.ww_model)
 
         self.mel_sess = ort.InferenceSession(mel_path, sess_options=so, providers=["CPUExecutionProvider"])
         self.emb_sess = ort.InferenceSession(emb_path, sess_options=so, providers=["CPUExecutionProvider"])
-        self.ww_sess = ort.InferenceSession(ww_path, sess_options=so, providers=["CPUExecutionProvider"])
 
         self.mel_in = self.mel_sess.get_inputs()[0].name
         self.emb_in = self.emb_sess.get_inputs()[0].name
-        self.ww_in = self.ww_sess.get_inputs()[0].name
-        ww_shape = self.ww_sess.get_inputs()[0].shape
+        self.ww_in = ww_inputs[0].name
+        ww_shape = ww_inputs[0].shape
         self.emb_window = int(ww_shape[1]) if len(ww_shape) >= 2 and isinstance(ww_shape[1], int) else 16
+        print(
+            f"[STATIOND] Loaded openWakeWord model: {os.path.basename(ww_path)} (window={self.emb_window})",
+            flush=True,
+        )
         self.reset()
 
     def reset(self):
+        if self.backend_mode == "livekit_v2":
+            self.state_tensors = {
+                name: np.zeros(shape, dtype=dtype)
+                for name, shape, dtype in self.state_specs
+            }
+            return
         self.raw_tail = np.zeros(480, dtype=np.int16)
         self.mel_buffer = np.ones((76, 32), dtype=np.float32)
         self.emb_buffer = np.zeros((self.emb_window, 96), dtype=np.float32)
         self.frames_seen = 0
 
     def predict(self, samples_i16: np.ndarray) -> float:
+        if self.backend_mode == "livekit_v2":
+            chunk_f32 = (samples_i16.astype(np.float32) / 32768.0)[None, :]
+            feed = {self.ww_in: chunk_f32}
+            feed.update(self.state_tensors)
+            outs = self.ww_sess.run(None, feed)
+            for idx, (name, _, _) in enumerate(self.state_specs, start=1):
+                self.state_tensors[name] = outs[idx]
+            return float(np.squeeze(outs[0]))
+
         audio_in = np.concatenate([self.raw_tail, samples_i16]).astype(np.float32)[None, :]
         self.raw_tail = samples_i16[-480:].copy()
 
@@ -822,7 +881,7 @@ async def run_daemon():
                     "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.5",
+                    "firmware": "stationd-1.6",
                     "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
