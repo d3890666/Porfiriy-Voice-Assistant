@@ -381,15 +381,29 @@ class GeminiProxyClient:
                 )
             )
 
-        return types.LiveConnectConfig(
-            response_modalities=self.response_modalities,
-            system_instruction=types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
-            tools=tools,
-            speech_config=speech_config,
-            realtime_input_config=realtime_input_config,
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig()
-        )
+        thinking_config = None
+        if "extended-thinking" in (self.model or "").lower() and hasattr(types, "ThinkingConfig"):
+            try:
+                thinking_config = types.ThinkingConfig(thinking_level="low")
+            except Exception:
+                try:
+                    thinking_config = types.ThinkingConfig(thinking_budget=1024)
+                except Exception:
+                    thinking_config = None
+
+        live_kwargs: Dict[str, Any] = {
+            "response_modalities": self.response_modalities,
+            "system_instruction": types.Content(parts=[types.Part.from_text(text=self.system_prompt)]),
+            "tools": tools,
+            "speech_config": speech_config,
+            "realtime_input_config": realtime_input_config,
+            "input_audio_transcription": types.AudioTranscriptionConfig(),
+            "output_audio_transcription": types.AudioTranscriptionConfig(),
+        }
+        if thinking_config is not None:
+            live_kwargs["thinking_config"] = thinking_config
+
+        return types.LiveConnectConfig(**live_kwargs)
 
     def connect(self):
         """Возвращает асинхронный контекстный менеджер сессии."""

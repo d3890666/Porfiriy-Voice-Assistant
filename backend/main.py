@@ -1429,8 +1429,11 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                         except Exception:
                                             pass
 
-                            is_turn_done = bool(sc and getattr(sc, "turn_complete", False))
-                            is_gen_done = bool(sc and getattr(sc, "generation_complete", False) and gemini_is_speaking)
+                            in_progress = bool(
+                                sc and "IN_PROGRESS" in str(getattr(sc, "interaction_status", "") or "").upper()
+                            )
+                            is_turn_done = bool(sc and getattr(sc, "turn_complete", False) and not in_progress)
+                            is_gen_done = bool(sc and getattr(sc, "generation_complete", False) and gemini_is_speaking and not in_progress)
                             if is_turn_done or is_gen_done:
                                 full_reply = "".join(output_text_parts).strip()
                                 low_reply = full_reply.lower()

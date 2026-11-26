@@ -597,8 +597,10 @@ class TelegramBotGateway:
                                             if inline and getattr(inline, "data", None):
                                                 pcm_chunks.append(inline.data)
                                     if getattr(sc, "turn_complete", False):
-                                        turn_done = True
-                                        break
+                                        int_st = str(getattr(sc, "interaction_status", "") or "").upper()
+                                        if "IN_PROGRESS" not in int_st:
+                                            turn_done = True
+                                            break
                             if not got_any:
                                 break
 

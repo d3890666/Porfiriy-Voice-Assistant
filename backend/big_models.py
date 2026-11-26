@@ -83,6 +83,14 @@ class BigModelPool:
             cfg_kwargs["system_instruction"] = system_instruction
         if enable_google_search and hasattr(types, "Tool") and hasattr(types, "GoogleSearch"):
             cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+        if "extended-thinking" in (model_id or "").lower() and hasattr(types, "ThinkingConfig"):
+            try:
+                cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+            except Exception:
+                try:
+                    cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=1024)
+                except Exception:
+                    pass
 
         live_cfg = types.LiveConnectConfig(**cfg_kwargs)
         out_parts: List[str] = []
@@ -112,8 +120,10 @@ class BigModelPool:
                                 if getattr(p, "text", None):
                                     out_parts.append(p.text)
                         if getattr(sc, "turn_complete", False):
-                            done = True
-                            break
+                            int_st = str(getattr(sc, "interaction_status", "") or "").upper()
+                            if "IN_PROGRESS" not in int_st:
+                                done = True
+                                break
                     if not got:
                         break
             return "".join(out_parts).strip()
