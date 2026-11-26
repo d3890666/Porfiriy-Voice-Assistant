@@ -20,6 +20,7 @@ try:
 except ImportError:
     GeminiProxyClient = None
 from prompt_builder import build_system_prompt
+from tg_approvals import approval_manager
 
 logger = logging.getLogger("tg_gateway")
 
@@ -132,7 +133,7 @@ class TelegramBotGateway:
                 params = {
                     "timeout": 25,
                     "offset": self._offset,
-                    "allowed_updates": json.dumps(["message"]),
+                    "allowed_updates": json.dumps(["message", "callback_query"]),
                 }
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=35)) as resp:
@@ -159,6 +160,9 @@ class TelegramBotGateway:
                             msg = upd.get("message")
                             if isinstance(msg, dict):
                                 asyncio.create_task(self._dispatch_message(bot_token, cfg, msg))
+                            cb = upd.get("callback_query")
+                            if isinstance(cb, dict):
+                                asyncio.create_task(approval_manager.handle_callback(bot_token, cb))
 
             except asyncio.CancelledError:
                 break

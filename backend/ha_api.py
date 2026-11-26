@@ -149,6 +149,16 @@ class HomeAssistantAPI:
             return result.get("result") or {"status": "success"}
         return {"status": "success"}
 
+    async def get_config_entries(self, domain: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Получить список config_entries из Home Assistant через WebSocket API."""
+        payload: Dict[str, Any] = {"type": "config_entries/get"}
+        if domain:
+            payload["domain"] = domain
+        resp = await self._ws_send_and_receive(payload)
+        if resp and resp.get("success") and isinstance(resp.get("result"), list):
+            return resp["result"]
+        return []
+
     async def get_services(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Получить реестр всех сервисов Home Assistant (с кэшированием на 5 минут)."""
         now = time.time()

@@ -298,6 +298,23 @@ class PorfiriyDB:
                 "Чтение входящих писем и поиск кодов подтверждения из личных и общих почтовых ящиков по IMAP.",
                 json.dumps({"default_limit": 10}, ensure_ascii=False),
             ),
+            (
+                "builtin.keenetic",
+                "builtin",
+                "Keenetic / Netcraze (маршрутизация по доменам)",
+                "Управление списками доменов (object-group fqdn) на роутере через интеграцию keenetic_api в HA, резолв пулов GeoSite/GeoIP и согласование через кнопки в Telegram.",
+                json.dumps(
+                    {
+                        "entry_id": "",
+                        "default_group": "",
+                        "approver_user_id": "",
+                        "confirm_mode": "always",
+                        "geosite_url_template": "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/{name}",
+                        "geoip_url_template": "http://ip-api.com/json/{query}?fields=status,message,country,isp,org,as,query",
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
         ]
         for pid, kind, title, desc, cfg in builtin_providers:
             conn.execute(

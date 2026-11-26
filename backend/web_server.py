@@ -40,6 +40,7 @@ try:
     from .plugins.telegram_bot import TelegramBotPlugin
     from .plugins.telegram_userbot import TelegramUserbotPlugin
     from .plugins.mail_imap import MailImapPlugin
+    from .plugins.keenetic import KeeneticPlugin
 except ImportError:
     from db import db_singleton
     from big_models import big_model_pool_singleton
@@ -47,6 +48,7 @@ except ImportError:
     from plugins.telegram_bot import TelegramBotPlugin
     from plugins.telegram_userbot import TelegramUserbotPlugin
     from plugins.mail_imap import MailImapPlugin
+    from plugins.keenetic import KeeneticPlugin
 
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
@@ -161,6 +163,7 @@ class WebServer:
         self.app.router.add_post("/api/providers/builtin.telegram_userbot/accounts/{account_id}/auth/start", self.handle_tg_userbot_auth_start)
         self.app.router.add_post("/api/providers/builtin.telegram_userbot/accounts/{account_id}/auth/verify", self.handle_tg_userbot_auth_verify)
         self.app.router.add_post("/api/providers/builtin.mail_imap/accounts/{account_id}/test", self.handle_mail_imap_test)
+        self.app.router.add_post("/api/providers/builtin.keenetic/test", self.handle_test_keenetic)
         self.app.router.add_post("/api/providers/{provider_id}/accounts", self.handle_save_provider_account)
         self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
@@ -1563,6 +1566,10 @@ class WebServer:
     async def handle_mail_imap_test(self, request):
         aid = request.match_info.get("account_id", "").strip()
         res = await MailImapPlugin.test_connection(db_singleton, aid)
+        return web.json_response(res, status=200 if res.get("success") else 400)
+
+    async def handle_test_keenetic(self, request):
+        res = await KeeneticPlugin.test_connection(db_singleton, self.ha_api)
         return web.json_response(res, status=200 if res.get("success") else 400)
 
     async def handle_test_big_model(self, request):
