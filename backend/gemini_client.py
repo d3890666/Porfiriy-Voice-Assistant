@@ -15,8 +15,38 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _json_schema_to_genai(schema_dict: Dict[str, Any]) -> types.Schema:
-    """Конвертирует JSON Schema словарь в types.Schema для FunctionDeclaration."""
+def _json_schema_to_genai(schema_dict: Dict[str, Any], root_defs: Dict[str, Any] | None = None) -> types.Schema:
+    """Конвертирует JSON Schema словарь (в т.ч. FastMCP/Pydantic anyOf/$ref) в types.Schema для FunctionDeclaration."""
+    if not isinstance(schema_dict, dict):
+        return types.Schema(type=types.Type.STRING)
+
+    if root_defs is None:
+        defs = {}
+        if isinstance(schema_dict.get("$defs"), dict):
+            defs.update(schema_dict["$defs"])
+        if isinstance(schema_dict.get("definitions"), dict):
+            defs.update(schema_dict["definitions"])
+        root_defs = defs
+
+    # Разворачиваем $ref
+    if "$ref" in schema_dict and isinstance(schema_dict["$ref"], str):
+        ref_name = schema_dict["$ref"].rsplit("/", 1)[-1]
+        if ref_name in root_defs and isinstance(root_defs[ref_name], dict):
+            merged = dict(root_defs[ref_name])
+            if schema_dict.get("description") and not merged.get("description"):
+                merged["description"] = schema_dict["description"]
+            return _json_schema_to_genai(merged, root_defs)
+
+    # Разворачиваем anyOf / oneOf (например, Optional[int] -> [{"type": "integer"}, {"type": "null"}])
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema_dict.get(union_key)
+        if isinstance(variants, list) and variants:
+            non_null = [v for v in variants if isinstance(v, dict) and str(v.get("type") or "").lower() != "null"]
+            chosen = dict(non_null[0] if non_null else variants[0])
+            if schema_dict.get("description") and not chosen.get("description"):
+                chosen["description"] = schema_dict["description"]
+            return _json_schema_to_genai(chosen, root_defs)
+
     type_map = {
         "OBJECT": types.Type.OBJECT,
         "STRING": types.Type.STRING,
@@ -25,23 +55,39 @@ def _json_schema_to_genai(schema_dict: Dict[str, Any]) -> types.Schema:
         "BOOLEAN": types.Type.BOOLEAN,
         "ARRAY": types.Type.ARRAY,
     }
-    raw_type = str(schema_dict.get("type") or "STRING").upper()
+    raw_type_val = schema_dict.get("type")
+    if isinstance(raw_type_val, list):
+        non_null_t = [str(t).upper() for t in raw_type_val if str(t).lower() != "null"]
+        raw_type = non_null_t[0] if non_null_t else "STRING"
+    elif raw_type_val:
+        raw_type = str(raw_type_val).upper()
+    elif isinstance(schema_dict.get("properties"), dict):
+        raw_type = "OBJECT"
+    else:
+        raw_type = "STRING"
+
     g_type = type_map.get(raw_type, types.Type.STRING)
     kwargs: Dict[str, Any] = {"type": g_type}
     if schema_dict.get("description"):
         kwargs["description"] = str(schema_dict["description"])
     if schema_dict.get("enum"):
-        kwargs["enum"] = [str(x) for x in schema_dict["enum"]]
+        kwargs["enum"] = [str(x) for x in schema_dict["enum"] if x is not None]
     if raw_type == "OBJECT" and isinstance(schema_dict.get("properties"), dict):
-        kwargs["properties"] = {
-            k: _json_schema_to_genai(v)
+        props = {
+            k: _json_schema_to_genai(v, root_defs)
             for k, v in schema_dict["properties"].items()
             if isinstance(v, dict)
         }
+        kwargs["properties"] = props
         if schema_dict.get("required"):
-            kwargs["required"] = list(schema_dict["required"])
-    if raw_type == "ARRAY" and isinstance(schema_dict.get("items"), dict):
-        kwargs["items"] = _json_schema_to_genai(schema_dict["items"])
+            req = [r for r in schema_dict["required"] if r in props]
+            if req:
+                kwargs["required"] = req
+    if raw_type == "ARRAY":
+        if isinstance(schema_dict.get("items"), dict):
+            kwargs["items"] = _json_schema_to_genai(schema_dict["items"], root_defs)
+        else:
+            kwargs["items"] = types.Schema(type=types.Type.STRING)
     return types.Schema(**kwargs)
 
 DEFAULT_LIVE_MODELS: List[Dict[str, Any]] = [

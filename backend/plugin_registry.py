@@ -8,9 +8,11 @@ from typing import Any, Dict, List, Optional
 try:
     from .db import PorfiriyDB, db_singleton
     from .big_models import big_model_pool_singleton
+    from .mcp_client import mcp_http_client_singleton
 except ImportError:
     from db import PorfiriyDB, db_singleton
     from big_models import big_model_pool_singleton
+    from mcp_client import mcp_http_client_singleton
 
 logger = logging.getLogger("plugins")
 
@@ -236,8 +238,65 @@ class PluginRegistry:
 
                 return res if isinstance(res, dict) else {"status": "ok", "result": res}
 
+            if prov["kind"] == "mcp_http":
+                cfg = prov.get("config") or {}
+                url = str(cfg.get("url") or "").strip()
+                api_token = str(cfg.get("api_token") or "").strip()
+                extra_headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else None
+                timeout_s = float(cfg.get("timeout_s") or 45.0)
+
+                if ctx_dict.get("on_progress"):
+                    try:
+                        await ctx_dict["on_progress"](f"🔍 Обращаюсь к {prov.get('title') or pid}...")
+                    except Exception:
+                        pass
+
+                res = await mcp_http_client_singleton.call_tool(
+                    url,
+                    tool_name,
+                    clean_args,
+                    api_token=api_token,
+                    timeout_s=timeout_s,
+                    extra_headers=extra_headers,
+                )
+                if isinstance(res, dict) and res.get("status") == "error":
+                    status = "error"
+                    error_text = str(res.get("error") or "")
+                    return res
+
+                # Context Gate для крупных ответов внешних MCP-серверов (маркетплейсы и т.п.)
+                opts = ctx_dict.get("options") or {}
+                if opts.get("big_models_enabled") and isinstance(res, dict) and res.get("status") == "ok":
+                    raw_json = json.dumps(res, ensure_ascii=False)
+                    threshold = max(500, int(opts.get("big_models_threshold_chars") or 4000))
+                    if len(raw_json) > threshold:
+                        if ctx_dict.get("on_progress"):
+                            try:
+                                await ctx_dict["on_progress"]("🔍 Данных много, передаю на анализ большой модели, скоро вернусь...")
+                            except Exception:
+                                pass
+                        user_q = str(ctx_dict.get("user_query") or "").strip()
+                        big_prompt = (
+                            f"Исходный запрос пользователя: {user_q or 'Проанализируй и кратко перескажи данные.'}\n\n"
+                            f"Внешний MCP-инструмент `{tool_name}` ({prov.get('title') or pid}) вернул большой объём данных ({len(raw_json)} символов).\n"
+                            f"Сделай точную, структурированную выжимку для ответа пользователю на русском языке: "
+                            f"сохрани названия, цены, магазины/площадки, рейтинги, ключевые факты и ссылки.\n\n"
+                            f"ДАННЫЕ:\n{raw_json[:180000]}"
+                        )
+                        big_res = await big_model_pool_singleton.run_text_task(big_prompt, opts)
+                        if big_res.get("success"):
+                            res_summary = f" -> mcp={len(raw_json)}ch -> big={big_res['model']}"
+                            return {
+                                "status": "ok",
+                                "delegated_to_big_model": big_res["model"],
+                                "original_chars": len(raw_json),
+                                "summary": big_res["text"],
+                            }
+
+                return res if isinstance(res, dict) else {"status": "ok", "result": res}
+
             status = "not_implemented"
-            error_text = f"External runner ({prov['kind']}) will be enabled in the next milestone"
+            error_text = f"External runner ({prov['kind']}) is not supported yet"
             return {"status": "not_implemented", "error": error_text}
 
         except Exception as e:

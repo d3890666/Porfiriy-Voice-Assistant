@@ -37,6 +37,7 @@ try:
     from .db import db_singleton
     from .big_models import big_model_pool_singleton
     from .serper_search import serper_search_singleton
+    from .mcp_client import mcp_http_client_singleton
     from .ww_capture import ww_capture_store
     from .plugins.telegram_bot import TelegramBotPlugin
     from .plugins.telegram_userbot import TelegramUserbotPlugin
@@ -47,6 +48,7 @@ except ImportError:
     from db import db_singleton
     from big_models import big_model_pool_singleton
     from serper_search import serper_search_singleton
+    from mcp_client import mcp_http_client_singleton
     from ww_capture import ww_capture_store
     from plugins.telegram_bot import TelegramBotPlugin
     from plugins.telegram_userbot import TelegramUserbotPlugin
@@ -163,6 +165,7 @@ class WebServer:
         self.app.router.add_get("/api/providers", self.handle_get_providers)
         self.app.router.add_post("/api/providers", self.handle_save_provider)
         self.app.router.add_post("/api/providers/{provider_id}/toggle", self.handle_toggle_provider)
+        self.app.router.add_post("/api/providers/{provider_id}/sync_tools", self.handle_sync_provider_tools)
         self.app.router.add_post("/api/providers/builtin.telegram_bot/test", self.handle_test_telegram_bot)
         self.app.router.add_post("/api/providers/builtin.telegram_userbot/accounts/{account_id}/auth/start", self.handle_tg_userbot_auth_start)
         self.app.router.add_post("/api/providers/builtin.telegram_userbot/accounts/{account_id}/auth/verify", self.handle_tg_userbot_auth_verify)
@@ -1386,6 +1389,38 @@ class WebServer:
         if not ok:
             return web.json_response({"success": False, "error": "Провайдер не найден"}, status=404)
         return web.json_response({"success": True, "enabled": enabled})
+
+    async def handle_sync_provider_tools(self, request):
+        pid = request.match_info.get("provider_id", "").strip()
+        prov = db_singleton.get_provider(pid, mask_secrets=False)
+        if not prov:
+            return web.json_response({"success": False, "error": "Провайдер не найден"}, status=404)
+        if prov.get("kind") != "mcp_http":
+            return web.json_response({"success": False, "error": "Синхронизация поддерживается только для mcp_http"}, status=400)
+        cfg = prov.get("config") or {}
+        url = str(cfg.get("url") or "").strip()
+        api_token = str(cfg.get("api_token") or "").strip()
+        extra_headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else None
+        res = await mcp_http_client_singleton.list_tools(url, api_token=api_token, extra_headers=extra_headers)
+        if not res.get("success"):
+            return web.json_response(res, status=400)
+        tools = res.get("tools") or []
+        db_singleton.upsert_provider(
+            provider_id=pid,
+            kind=prov["kind"],
+            title=prov["title"],
+            description=prov.get("description") or "",
+            enabled=prov.get("enabled"),
+            config=None,
+            cached_tools=tools,
+        )
+        return web.json_response({
+            "success": True,
+            "count": len(tools),
+            "latency_ms": res.get("latency_ms", 0),
+            "tools": [t["name"] for t in tools],
+            "server_info": res.get("server_info") or {},
+        })
 
     async def handle_delete_provider(self, request):
         pid = request.match_info.get("provider_id", "").strip()

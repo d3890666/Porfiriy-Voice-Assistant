@@ -3607,7 +3607,52 @@ function renderExternalProviderCard(p) {
     llm_delegate: '🧠 LLM Делегат',
   };
   const endpoint = cfg.url || cfg.command || '';
-  const wl = Array.isArray(cfg.enabled_tools) ? cfg.enabled_tools.join(', ') : (cfg.enabled_tools || '');
+  const wlArr = Array.isArray(cfg.enabled_tools)
+    ? cfg.enabled_tools
+    : (typeof cfg.enabled_tools === 'string' && cfg.enabled_tools.trim()
+      ? cfg.enabled_tools.split(',').map(s => s.trim()).filter(Boolean)
+      : []);
+  const wlSet = new Set(wlArr);
+  const cachedTools = Array.isArray(p.cached_tools) ? p.cached_tools : [];
+  const activeCount = wlArr.length ? cachedTools.filter(t => wlSet.has(t.name)).length : cachedTools.length;
+
+  let toolsBlock = '';
+  if (p.kind === 'mcp_http') {
+    const toolsSummary = cachedTools.length
+      ? `🔧 Инструментов: <b>${activeCount}</b> / ${cachedTools.length}${wlArr.length ? ' (по whitelist)' : ' (все активны)'}`
+      : '⚠️ Инструменты ещё не загружены — нажмите «Загрузить инструменты»';
+    const toolsCheckboxes = cachedTools.length
+      ? `
+        <details style="margin-top:8px;">
+          <summary style="cursor:pointer; font-size:12px; color:#93c5fd;">Выбрать активные инструменты (${cachedTools.length})</summary>
+          <div id="mcp-tools-list-${pid}" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px; margin-top:8px; max-height:220px; overflow-y:auto; padding:8px; background:rgba(15,23,42,0.5); border-radius:8px;">
+            ${cachedTools.map(t => {
+              const tName = escapeHtml(t.name || '');
+              const tDesc = escapeHtml((t.description || '').slice(0, 120));
+              const checked = wlArr.length === 0 || wlSet.has(t.name);
+              return `<label style="display:flex; align-items:flex-start; gap:6px; font-size:12px; color:#cbd5e1; cursor:pointer;" title="${tDesc}">
+                <input type="checkbox" class="mcp-tool-chk-${pid}" value="${tName}" ${checked ? 'checked' : ''} style="margin-top:2px;">
+                <span><code>${tName}</code></span>
+              </label>`;
+            }).join('')}
+          </div>
+          <div style="margin-top:8px; display:flex; gap:8px;">
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveExternalProviderTools('${pid}')">💾 Сохранить выбор</button>
+          </div>
+        </details>
+      `
+      : '';
+    toolsBlock = `
+      <div style="margin-top:10px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.06);">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+          <span style="font-size:12px; color:#94a3b8;">${toolsSummary}</span>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="syncExternalProviderTools('${pid}')">🔄 Загрузить инструменты</button>
+        </div>
+        ${toolsCheckboxes}
+      </div>
+    `;
+  }
+
   return `
     <div class="card plugin-card ${p.enabled ? 'plugin-enabled' : ''}">
       <div class="plugin-card-head">
@@ -3618,7 +3663,6 @@ function renderExternalProviderCard(p) {
           </div>
           ${p.description ? `<div class="plugin-desc">${escapeHtml(p.description)}</div>` : ''}
           ${endpoint ? `<div style="font-size:12px; color:#94a3b8; font-family:monospace; margin-top:4px;">${escapeHtml(endpoint)}</div>` : ''}
-          ${wl ? `<div style="font-size:11px; color:#8b949e; margin-top:4px;">Whitelist: <code>${escapeHtml(wl)}</code></div>` : ''}
         </div>
         <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
           <label class="switch" style="margin:0;">
@@ -3628,9 +3672,64 @@ function renderExternalProviderCard(p) {
           <button type="button" class="btn btn-secondary btn-sm" onclick="deleteProvider('${pid}', '${escapeHtml(p.title).replace(/'/g, "\\'")}')" style="color:#f87171; border-color:rgba(248,113,113,0.35);" title="Удалить провайдер">🗑️</button>
         </div>
       </div>
+      ${toolsBlock}
     </div>
   `;
 }
+
+async function syncExternalProviderTools(providerId) {
+  showToast(`Загружаю инструменты с ${providerId}...`);
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/${encodeURIComponent(providerId)}/sync_tools`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Загружено инструментов: ${data.count} (${data.latency_ms || 0} мс)`);
+      fetchProviders();
+    } else {
+      showToast(`Ошибка синхронизации: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.syncExternalProviderTools = syncExternalProviderTools;
+
+async function saveExternalProviderTools(providerId) {
+  const prov = porfiriyProviders.find(p => p.id === providerId);
+  if (!prov) return;
+  const boxes = Array.from(document.querySelectorAll(`.mcp-tool-chk-${CSS.escape(providerId)}`));
+  const selected = boxes.filter(b => b.checked).map(b => b.value);
+  const allCount = boxes.length;
+  const cfg = { ...(prov.config || {}), enabled_tools: selected.length === allCount ? [] : selected };
+  try {
+    const res = await fetch(`${API_BASE}/api/providers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: prov.id,
+        kind: prov.kind,
+        title: prov.title,
+        description: prov.description,
+        enabled: prov.enabled,
+        config: cfg
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Сохранено инструментов: ${selected.length} из ${allCount}`);
+      fetchProviders();
+    } else {
+      showToast(`Ошибка: ${data.error || 'сбой'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.saveExternalProviderTools = saveExternalProviderTools;
 
 async function toggleProvider(providerId, enabled) {
   try {
@@ -3931,6 +4030,9 @@ async function submitExternalProviderModal() {
       closeExternalProviderModal();
       showToast(`Провайдер «${title}» добавлен`);
       fetchProviders();
+      if (kind === 'mcp_http' && data.provider && data.provider.id) {
+        syncExternalProviderTools(data.provider.id);
+      }
     } else {
       showToast(`Ошибка: ${data.error || 'сбой'}`, true);
     }
