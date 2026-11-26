@@ -326,39 +326,50 @@ class GeminiProxyClient:
         schedule_create_tool = _make_decl(
             name="schedule_create",
             description=(
-                "Create a persistent background scheduled job or event watcher (survives reboots). "
-                "Supports delayed messages ('через 10 секунд напиши в телегу...'), recurring price/movie watchers, "
+                "Create a persistent background scheduled job, delayed Telegram message, or HA event watcher (survives reboots). "
+                "Supports delayed messages ('через 45 секунд напиши в телегу...'), recurring price/movie watchers, "
                 "cron briefings, and Home Assistant entity triggers with hold time ('когда Денис придёт домой и не уйдёт 5 минут')."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
                     "title": types.Schema(type=types.Type.STRING, description="Short Russian job title."),
+                    "trigger_type": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["once", "interval", "cron", "ha_event"],
+                        description="Trigger type: 'once' (delay/one-time), 'interval' (every N min), 'cron' (5-field schedule), 'ha_event' (HA state change).",
+                    ),
+                    "delay_seconds": types.Schema(type=types.Type.INTEGER, description="For trigger_type='once': delay in seconds (e.g. 10, 45, 300)."),
+                    "run_at": types.Schema(type=types.Type.STRING, description="For trigger_type='once': optional ISO datetime instead of delay_seconds (e.g. '2026-11-26T19:00:00+03:00')."),
+                    "every_minutes": types.Schema(type=types.Type.INTEGER, description="For trigger_type='interval': repeat interval in minutes (>=60 for marketplaces, >=15 for ai_prompt)."),
+                    "cron_expr": types.Schema(type=types.Type.STRING, description="For trigger_type='cron': 5-field cron e.g. '30 8 * * 1-5'."),
+                    "entity_id": types.Schema(type=types.Type.STRING, description="For trigger_type='ha_event': HA entity_id (e.g. 'person.denis')."),
+                    "to_state": types.Schema(type=types.Type.STRING, description="For trigger_type='ha_event': target state (e.g. 'home')."),
+                    "for_seconds": types.Schema(type=types.Type.INTEGER, description="For trigger_type='ha_event': hold duration in seconds before firing (e.g. 300)."),
+                    "action_type": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["direct_tool", "ai_prompt"],
+                        description="Use 'direct_tool' for sending a Telegram message or calling a single HA service; 'ai_prompt' for smart checks/summaries/radars.",
+                    ),
+                    "tool_name": types.Schema(type=types.Type.STRING, description="For action_type='direct_tool': 'send_to_telegram' or 'call_ha_service'."),
+                    "telegram_target": types.Schema(type=types.Type.STRING, description="For tool_name='send_to_telegram': 'denis', 'sveta', 'family', or numeric chat_id."),
+                    "telegram_text": types.Schema(type=types.Type.STRING, description="For tool_name='send_to_telegram': exact message text to send."),
+                    "ha_domain": types.Schema(type=types.Type.STRING, description="For tool_name='call_ha_service': HA domain (e.g. 'light')."),
+                    "ha_service": types.Schema(type=types.Type.STRING, description="For tool_name='call_ha_service': HA service (e.g. 'turn_off')."),
+                    "ha_entity_id": types.Schema(type=types.Type.STRING, description="For tool_name='call_ha_service': target entity_id."),
+                    "tool_args_json": types.Schema(type=types.Type.STRING, description="Optional JSON string of extra args for direct_tool."),
+                    "prompt": types.Schema(type=types.Type.STRING, description="For action_type='ai_prompt': clear instruction for background execution."),
+                    "allowed_tools": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                        description="For action_type='ai_prompt': tool names allowed during execution (e.g. ['ozon_card','wb_card','kinowatch_search']).",
+                    ),
                     "owner_user_id": types.Schema(type=types.Type.STRING, description="Resident user_id ('denis', 'sveta') or 'family'."),
                     "notify_channel": types.Schema(type=types.Type.STRING, description="Optional delivery target: 'tg_denis', 'tg_sveta', 'tg_family', 'voice', 'tg_and_voice'."),
                     "quiet_hours": types.Schema(type=types.Type.STRING, description="Optional quiet hours 'HH:MM-HH:MM' e.g. '23:00-08:00'."),
                     "one_shot": types.Schema(type=types.Type.BOOLEAN, description="Set true to auto-complete after first trigger."),
-                    "trigger": types.Schema(
-                        type=types.Type.OBJECT,
-                        description=(
-                            "Trigger config. Examples: "
-                            "{'type':'once','delay_seconds':10} or {'type':'once','run_at':'2026-11-26T19:00:00+03:00'}; "
-                            "{'type':'interval','every_minutes':240,'jitter_minutes':15}; "
-                            "{'type':'cron','expr':'30 8 * * 1-5'}; "
-                            "{'type':'ha_event','entity_id':'person.denis','to_state':'home','for_seconds':300}."
-                        ),
-                    ),
-                    "action": types.Schema(
-                        type=types.Type.OBJECT,
-                        description=(
-                            "Action config. Either direct tool call: "
-                            "{'type':'direct_tool','tool':'send_to_telegram','args':{'target':'denis','text':'...'}} "
-                            "or {'type':'direct_tool','tool':'call_ha_service','args':{'domain':'light','service':'turn_off','entity_id':'...'}} "
-                            "OR smart AI job: {'type':'ai_prompt','prompt':'...','allowed_tools':['ozon_card','wb_card','kinowatch_search']}."
-                        ),
-                    ),
                 },
-                required=["title", "trigger", "action"],
+                required=["title", "trigger_type", "action_type"],
             ),
         )
 
@@ -379,11 +390,14 @@ class GeminiProxyClient:
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "operation": types.Schema(type=types.Type.STRING, description="'pause', 'resume', 'delete', 'run_now', or 'update'."),
+                    "operation": types.Schema(type=types.Type.STRING, enum=["pause", "resume", "delete", "run_now", "update"], description="'pause', 'resume', 'delete', 'run_now', or 'update'."),
                     "query": types.Schema(type=types.Type.STRING, description="Job ID or keyword from title."),
                     "title": types.Schema(type=types.Type.STRING, description="Optional new title for 'update'."),
-                    "trigger": types.Schema(type=types.Type.OBJECT, description="Optional new trigger for 'update'."),
-                    "action": types.Schema(type=types.Type.OBJECT, description="Optional new action for 'update'."),
+                    "delay_seconds": types.Schema(type=types.Type.INTEGER, description="Optional new delay_seconds for 'update'."),
+                    "run_at": types.Schema(type=types.Type.STRING, description="Optional new ISO run_at for 'update'."),
+                    "every_minutes": types.Schema(type=types.Type.INTEGER, description="Optional new every_minutes for 'update'."),
+                    "cron_expr": types.Schema(type=types.Type.STRING, description="Optional new cron_expr for 'update'."),
+                    "prompt": types.Schema(type=types.Type.STRING, description="Optional new ai_prompt text for 'update'."),
                     "notify_channel": types.Schema(type=types.Type.STRING, description="Optional new notify_channel for 'update'."),
                     "quiet_hours": types.Schema(type=types.Type.STRING, description="Optional new quiet_hours for 'update'."),
                 },

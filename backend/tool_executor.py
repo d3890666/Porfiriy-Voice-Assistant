@@ -20,6 +20,101 @@ except ImportError:
 tool_logger = logging.getLogger("tools")
 
 
+def _build_schedule_trigger_and_action(
+    args: Dict[str, Any],
+    *,
+    dev: Optional[Dict[str, Any]] = None,
+    base_trigger: Optional[Dict[str, Any]] = None,
+    base_action: Optional[Dict[str, Any]] = None,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Собирает trigger и action как из плоских аргументов Gemini Live, так и из вложенных словарей."""
+    raw_trig = args.get("trigger")
+    if isinstance(raw_trig, str) and raw_trig.strip().startswith("{"):
+        try:
+            raw_trig = json.loads(raw_trig)
+        except Exception:
+            raw_trig = None
+    trig: Dict[str, Any] = dict(raw_trig) if isinstance(raw_trig, dict) and raw_trig else dict(base_trigger or {})
+
+    if args.get("trigger_type"):
+        trig["type"] = str(args["trigger_type"]).strip().lower()
+    if args.get("delay_seconds") is not None:
+        trig["delay_seconds"] = args["delay_seconds"]
+    if args.get("run_at"):
+        trig["run_at"] = str(args["run_at"]).strip()
+    if args.get("every_minutes") is not None:
+        trig["every_minutes"] = args["every_minutes"]
+    if args.get("jitter_minutes") is not None:
+        trig["jitter_minutes"] = args["jitter_minutes"]
+    if args.get("cron_expr"):
+        trig["expr"] = str(args["cron_expr"]).strip()
+    if args.get("entity_id"):
+        trig["entity_id"] = str(args["entity_id"]).strip()
+    if args.get("to_state"):
+        trig["to_state"] = str(args["to_state"]).strip()
+    if args.get("for_seconds") is not None:
+        trig["for_seconds"] = args["for_seconds"]
+
+    raw_act = args.get("action")
+    if isinstance(raw_act, str) and raw_act.strip().startswith("{"):
+        try:
+            raw_act = json.loads(raw_act)
+        except Exception:
+            raw_act = None
+    act: Dict[str, Any] = dict(raw_act) if isinstance(raw_act, dict) and raw_act else dict(base_action or {})
+
+    if args.get("action_type"):
+        act["type"] = str(args["action_type"]).strip().lower()
+    elif not act.get("type"):
+        if args.get("tool_name") or args.get("telegram_text") or (args.get("ha_domain") and args.get("ha_service")):
+            act["type"] = "direct_tool"
+        elif args.get("prompt"):
+            act["type"] = "ai_prompt"
+
+    if act.get("type") == "direct_tool":
+        t_name = str(args.get("tool_name") or act.get("tool") or "").strip()
+        if not t_name:
+            if args.get("telegram_text"):
+                t_name = "send_to_telegram"
+            elif args.get("ha_domain") and args.get("ha_service"):
+                t_name = "call_ha_service"
+        if t_name:
+            act["tool"] = t_name
+        tool_args: Dict[str, Any] = dict(act.get("args") or {})
+        raw_extra = args.get("tool_args_json")
+        if isinstance(raw_extra, str) and raw_extra.strip().startswith("{"):
+            try:
+                parsed_extra = json.loads(raw_extra)
+                if isinstance(parsed_extra, dict):
+                    tool_args.update(parsed_extra)
+            except Exception:
+                pass
+        if t_name == "send_to_telegram":
+            if args.get("telegram_target"):
+                tool_args["target"] = str(args["telegram_target"]).strip()
+            elif not tool_args.get("target"):
+                mac = (dev or {}).get("mac", "")
+                if mac.startswith("tg_") and len(mac) > 3:
+                    tool_args["target"] = mac[3:]
+            if args.get("telegram_text"):
+                tool_args["text"] = str(args["telegram_text"]).strip()
+        elif t_name == "call_ha_service":
+            if args.get("ha_domain"):
+                tool_args["domain"] = str(args["ha_domain"]).strip()
+            if args.get("ha_service"):
+                tool_args["service"] = str(args["ha_service"]).strip()
+            if args.get("ha_entity_id"):
+                tool_args["entity_id"] = str(args["ha_entity_id"]).strip()
+        act["args"] = tool_args
+    elif act.get("type") == "ai_prompt":
+        if args.get("prompt"):
+            act["prompt"] = str(args["prompt"]).strip()
+        if args.get("allowed_tools") is not None:
+            act["allowed_tools"] = args["allowed_tools"]
+
+    return trig, act
+
+
 class ToolExecutor:
     """Единый исполнитель инструментов Gemini Live (Home Assistant, Music Assistant, таймеры)."""
 
@@ -278,15 +373,17 @@ class ToolExecutor:
                     from scheduler import scheduler_singleton
                 except ImportError:
                     from .scheduler import scheduler_singleton
-                trig = args.get("trigger") if isinstance(args.get("trigger"), dict) else {}
-                act = args.get("action") if isinstance(args.get("action"), dict) else {}
+                trig, act = _build_schedule_trigger_and_action(args, dev=dev)
                 title = str(args.get("title") or "").strip()
-                owner = str(args.get("owner_user_id") or "family").strip() or "family"
+                caller_mac = (dev or {}).get("mac", "")
+                default_owner = caller_mac[3:] if caller_mac.startswith("tg_") and len(caller_mac) > 3 else "family"
+                owner = str(args.get("owner_user_id") or default_owner).strip() or "family"
                 notify_ch = str(args.get("notify_channel") or "").strip()
                 quiet_h = str(args.get("quiet_hours") or "").strip()
                 one_shot = args.get("one_shot")
                 if one_shot is not None:
                     one_shot = bool(one_shot)
+                tool_logger.info(f"[SCHEDULER TOOL] schedule_create args={json.dumps(args, ensure_ascii=False)[:400]}")
                 job = await scheduler_singleton.create_job(
                     title=title,
                     trigger=trig,
@@ -365,8 +462,12 @@ class ToolExecutor:
                     return {"status": "ok", "job_id": jid, "run_result": res}
                 if op == "update":
                     new_title = str(args.get("title") or target_job["title"]).strip()
-                    new_trig = args.get("trigger") if isinstance(args.get("trigger"), dict) else target_job["trigger"]
-                    new_act = args.get("action") if isinstance(args.get("action"), dict) else target_job["action"]
+                    new_trig, new_act = _build_schedule_trigger_and_action(
+                        args,
+                        dev=dev,
+                        base_trigger=target_job["trigger"],
+                        base_action=target_job["action"],
+                    )
                     new_ch = str(args.get("notify_channel") if args.get("notify_channel") is not None else target_job["notify_channel"])
                     new_qh = str(args.get("quiet_hours") if args.get("quiet_hours") is not None else target_job["quiet_hours"])
                     upd = await scheduler_singleton.create_job(
