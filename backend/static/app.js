@@ -3439,13 +3439,12 @@ function renderBuiltinConfigForm(p) {
     `;
   }
   if (p.id === 'builtin.kinowatch') {
-    const authMode = cfg.auth_mode || 'web_cookie';
-    const isAuth = cfg.auth_status === 'authorized' && (authMode === 'web_cookie' ? !!cfg.web_cookie : !!cfg.access_token);
+    const isAuth = cfg.auth_status === 'authorized' && !!cfg.access_token;
     const folders = Array.isArray(cfg.cached_folders) ? cfg.cached_folders : [];
     const defFid = String(cfg.default_folder_id || '');
     const folderOpts = folders.length
       ? folders.map(f => `<option value="${escapeHtml(f.id)}" ${defFid === String(f.id) ? 'selected' : ''}>${escapeHtml(f.title)} (${Number(f.count || 0)})</option>`).join('')
-      : `<option value="">— Сохраните Cookie и нажмите «Проверить и загрузить папки» —</option>`;
+      : `<option value="">— Привяжите аккаунт и обновите папки —</option>`;
     const pendingCode = cfg.pending_user_code || '';
     const verifyUri = cfg.verification_uri || 'https://kino.watch/device';
     return `
@@ -3455,59 +3454,43 @@ function renderBuiltinConfigForm(p) {
             <span class="owner-badge owner-home">🏠 Общий для дома</span>
             ${isAuth ? '<span class="p2-chip p2-chip-ok">✅ Авторизован</span>' : '<span class="p2-chip p2-chip-muted">⚪ Не привязан</span>'}
           </div>
-          ${authMode === 'oauth_device' ? `
           <div style="display:flex; gap:6px; flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary btn-sm" onclick="startKinoWatchAuth()">🔗 Получить код входа</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="pollKinoWatchAuth()">✅ Проверить вход</button>
-          </div>` : ''}
+          </div>
         </div>
 
-        <div id="kw-auth-box" style="font-size:12px; color:#cbd5e1; margin-bottom:10px; ${(authMode === 'oauth_device' && pendingCode) ? '' : 'display:none;'} padding:8px 10px; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.28); border-radius:8px;">
+        <div id="kw-auth-box" style="font-size:12px; color:#cbd5e1; margin-bottom:10px; ${pendingCode ? '' : 'display:none;'} padding:8px 10px; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.28); border-radius:8px;">
           ${pendingCode ? `Откройте <a href="${escapeHtml(verifyUri)}" target="_blank" style="color:#38bdf8;">${escapeHtml(verifyUri)}</a> и введите код: <strong style="font-size:15px; font-family:monospace; color:#facc15;">${escapeHtml(pendingCode)}</strong>, затем нажмите «✅ Проверить вход».` : ''}
         </div>
 
         <div class="p2-config-grid">
-          <div class="form-group" style="margin:0;">
-            <label>Режим входа</label>
-            <select id="cfg-kw-auth-mode" onchange="toggleKinoWatchMode(this.value)">
-              <option value="web_cookie" ${authMode === 'web_cookie' ? 'selected' : ''}>🍪 Куки браузера (Chrome + зеркало)</option>
-              <option value="oauth_device" ${authMode === 'oauth_device' ? 'selected' : ''}>🔑 OAuth2 API (код устройства)</option>
-            </select>
-          </div>
-          <div class="form-group" style="margin:0;">
+          <div class="form-group full-width" style="margin:0;">
             <label>Папка закладок / избранного по умолчанию</label>
             <select id="cfg-kw-folder">${folderOpts}</select>
           </div>
         </div>
 
-        <div id="kw-web-fields" class="p2-config-grid" style="margin-top:12px; ${authMode === 'web_cookie' ? '' : 'display:none;'}">
-          <div class="form-group" style="margin:0;">
-            <label>Адрес сайта / зеркало</label>
-            <input type="text" id="cfg-kw-site-url" value="${escapeHtml(cfg.site_url || 'https://kino.watch')}" placeholder="https://kino.watch">
+        <details class="p2-advanced-details" ${(!cfg.client_id || !cfg.client_secret) ? 'open' : ''}>
+          <summary>⚙️ Настройки API (Client ID / Secret / URL)</summary>
+          <div class="p2-config-grid">
+            <div class="form-group full-width" style="margin:0;">
+              <label>API Base URL</label>
+              <input type="text" id="cfg-kw-api-base" value="${escapeHtml(cfg.api_base || 'https://api.service-kp.com')}">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label>Client ID</label>
+              <input type="text" id="cfg-kw-client-id" value="${escapeHtml(cfg.client_id || '')}" placeholder="Например: kodi">
+            </div>
+            <div class="form-group" style="margin:0;">
+              <label>Client Secret</label>
+              <input type="password" id="cfg-kw-client-secret" value="${escapeHtml(cfg.client_secret || '')}" placeholder="Обязательно для OAuth2">
+            </div>
           </div>
-          <div class="form-group" style="margin:0;">
-            <label>Cookie из Chrome (обходит 2FA)</label>
-            <input type="password" id="cfg-kw-cookie" value="${escapeHtml(cfg.web_cookie || '')}" placeholder="F12 -> Network -> заголовок Cookie">
-          </div>
-        </div>
-
-        <div id="kw-oauth-fields" class="p2-config-grid" style="margin-top:12px; ${authMode === 'oauth_device' ? '' : 'display:none;'}">
-          <div class="form-group full-width" style="margin:0;">
-            <label>API Base URL</label>
-            <input type="text" id="cfg-kw-api-base" value="${escapeHtml(cfg.api_base || 'https://api.service-kp.com')}">
-          </div>
-          <div class="form-group" style="margin:0;">
-            <label>Client ID</label>
-            <input type="text" id="cfg-kw-client-id" value="${escapeHtml(cfg.client_id || '')}" placeholder="ID клиента API">
-          </div>
-          <div class="form-group" style="margin:0;">
-            <label>Client Secret</label>
-            <input type="password" id="cfg-kw-client-secret" value="${escapeHtml(cfg.client_secret || '')}" placeholder="Секрет API">
-          </div>
-        </div>
+        </details>
 
         <div style="margin-top:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-          <button type="button" class="btn btn-secondary btn-sm" onclick="syncKinoWatchFolders()">🔌 Проверить вход и загрузить папки</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="syncKinoWatchFolders()">🔄 Обновить папки</button>
           <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить</button>
         </div>
       </div>
@@ -3673,9 +3656,6 @@ async function saveBuiltinConfig(providerId) {
     config.geosite_url_template = (document.getElementById('cfg-keen-geosite')?.value || '').trim();
     config.geoip_url_template = (document.getElementById('cfg-keen-geoip')?.value || '').trim();
   } else if (providerId === 'builtin.kinowatch') {
-    config.auth_mode = document.getElementById('cfg-kw-auth-mode')?.value || 'web_cookie';
-    config.site_url = (document.getElementById('cfg-kw-site-url')?.value || 'https://kino.watch').trim();
-    config.web_cookie = (document.getElementById('cfg-kw-cookie')?.value || '').trim();
     config.default_folder_id = (document.getElementById('cfg-kw-folder')?.value || '').trim();
     config.api_base = (document.getElementById('cfg-kw-api-base')?.value || 'https://api.service-kp.com').trim();
     config.client_id = (document.getElementById('cfg-kw-client-id')?.value || '').trim();
@@ -4026,14 +4006,6 @@ async function testKeeneticPlugin() {
   }
 }
 window.testKeeneticPlugin = testKeeneticPlugin;
-
-function toggleKinoWatchMode(mode) {
-  const webEl = document.getElementById('kw-web-fields');
-  const oaEl = document.getElementById('kw-oauth-fields');
-  if (webEl) webEl.style.display = (mode === 'web_cookie') ? 'grid' : 'none';
-  if (oaEl) oaEl.style.display = (mode === 'oauth_device') ? 'grid' : 'none';
-}
-window.toggleKinoWatchMode = toggleKinoWatchMode;
 
 async function startKinoWatchAuth() {
   const box = document.getElementById('kw-auth-box');
