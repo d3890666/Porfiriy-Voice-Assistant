@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("db")
 
-SECRET_KEY_MARKERS = ("pass", "token", "secret", "hash", "key", "session")
+SECRET_KEY_MARKERS = ("pass", "token", "secret", "hash", "key", "session", "cookie")
 MASK_VALUE = "••••••••"
 
 _CYRILLIC_MAP = {
@@ -322,6 +322,9 @@ class PorfiriyDB:
                 "Общий домашний аккаунт KinoWatch (бывший KinoPub): поиск фильмов и сериалов, проверка качества и озвучек, добавление в закладки и «Буду смотреть».",
                 json.dumps(
                     {
+                        "auth_mode": "web_cookie",
+                        "site_url": "https://kino.watch",
+                        "web_cookie": "",
                         "api_base": "https://api.service-kp.com",
                         "client_id": "",
                         "client_secret": "",
