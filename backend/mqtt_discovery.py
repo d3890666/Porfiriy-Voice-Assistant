@@ -181,6 +181,7 @@ class MQTTDiscoveryManager:
             "esp32": "ESP32-S3 Voice Satellite",
             "pc_streamer": "Porfiriy PC Streamer",
             "yandex_station": "Yandex Station (Quasar Bridge)",
+            "wear_os": "Porfiriy Wear OS Watch",
         }
         
         device_dict = {

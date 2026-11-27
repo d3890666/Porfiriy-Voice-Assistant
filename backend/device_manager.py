@@ -54,6 +54,7 @@ DEFAULT_DEVICE_CONFIG = {
     "led_mode_speak": 1,
     "output_mode": "alice_tts",      # "alice_tts" (возврат текста) или "airplay" (звук в AirPlay)
     "airplay_player": "",            # entity_id плеера HA для AirPlay вывода
+    "user_id": "",                   # Привязанный пользователь (для часов/персональных нод)
     "api_key": ""                    # Опциональный токен авторизации ноды
 }
 
@@ -182,6 +183,13 @@ class DeviceManager:
 
         if dev.get("device_type") == "pc_streamer":
             dev["config"].setdefault("wake_word_mode", "server")
+        elif dev.get("device_type") == "wear_os":
+            # Для часов по умолчанию отключаем дакинг, вейкворд и вывод звука (текст на экран)
+            if not dev["config"].get("_wear_initialized"):
+                dev["config"]["enable_ducking"] = False
+                dev["config"]["wake_word_mode"] = "none"
+                dev["config"]["output_mode"] = "text_only"
+                dev["config"]["_wear_initialized"] = True
             
         dev["target_firmware"] = TARGET_FIRMWARE_VERSION
         dev["has_update"] = (
@@ -452,6 +460,8 @@ class DeviceManager:
             dev["ip"] = str(new_config["ip"]).strip()
         if "name" in new_config and new_config["name"]:
             dev["name"] = str(new_config["name"]).strip()
+        if "area_name" in new_config:
+            dev["area_name"] = str(new_config["area_name"]).strip() or None
         self._save()
         
         # Только для ESP32 держим speaker_volume = 1.0 (pass-through), так как сервер масштабирует PCM напрямую

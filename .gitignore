@@ -31,3 +31,9 @@ options.json
 # Wake word test scripts (not for production)
 detect_from_microphone.py
 debug_recordings/
+
+# Wear OS Android app build artifacts
+wear_os_app/.gradle/
+wear_os_app/build/
+wear_os_app/app/build/
+wear_os_app/local.properties

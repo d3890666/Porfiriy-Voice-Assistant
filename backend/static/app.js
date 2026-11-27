@@ -7,6 +7,7 @@ let availableModels = [];
 let bigModelsHealth = {};
 let bigModelsPoolState = [];
 let availableMediaPlayers = [];
+let availableAreas = [];
 let CANONICAL_PROMPTS = window.CANONICAL_PROMPTS || {};
 
 // Инициализация
@@ -14,7 +15,24 @@ function initApp() {
   setupTabs();
   fetchDevices();
   fetchGlobalOptions();
+  fetchUsers();
+  fetchAreas();
   setupSSE();
+}
+
+async function fetchAreas() {
+  try {
+    const res = await fetch(`${API_BASE}/api/areas`);
+    if (res.ok) {
+      const data = await res.json();
+      availableAreas = data.areas || [];
+      if (devices.some(d => d.device_type === 'wear_os')) {
+        renderDevicesGrid();
+      }
+    }
+  } catch (e) {
+    console.debug('Error fetching areas:', e);
+  }
 }
 
 if (document.readyState === 'loading') {
@@ -529,6 +547,84 @@ function renderDevicesGrid() {
           </div>
           `}
           `;
+        })() : dev.device_type === 'wear_os' ? (() => {
+          const watchColors = [
+            ['idle', 'Покой', '#000000'],
+            ['listen', 'Слушает', '#0000ff'],
+            ['think', 'Думает', '#ffaa00'],
+            ['speak', 'Отвечает', '#00ff00'],
+          ];
+          const boundUid = cfg.user_id || '';
+          const curArea = dev.area_name || '';
+          const lastReply = (dev.last_reply_text || '').trim();
+          return `
+          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(99, 102, 241, 0.14)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <span style="font-weight: 700; font-size: 13px; color: #7dd3fc;">⌚ Pixel Watch 2 (Wear OS)</span>
+            <span style="font-size: 11px; color: #cbd5e1; font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 12px;">Текстовый ответ</span>
+          </div>
+
+          <div style="margin: 10px 0 6px 0; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 106px;">👤 Пользователь:</span>
+              <select style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px;"
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'user_id', this.value)">
+                <option value="">— Не привязан (авто) —</option>
+                ${(porfiriyUsers || []).map(u => `<option value="${escapeHtml(u.id)}" ${boundUid === u.id ? 'selected' : ''}>${escapeHtml(u.name)}${u.telegram_chat_id ? ' ✈️' : ''}</option>`).join('')}
+                ${boundUid && !(porfiriyUsers || []).some(u => u.id === boundUid) ? `<option value="${escapeHtml(boundUid)}" selected>${escapeHtml(boundUid)}</option>` : ''}
+              </select>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 106px;">📍 Комната (опц.):</span>
+              ${availableAreas.length > 0 ? `
+                <select style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px;"
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'area_name', this.value)">
+                  <option value="">— Без комнаты —</option>
+                  ${availableAreas.map(a => {
+                    const aName = typeof a === 'string' ? a : (a.name || a.area_id || '');
+                    return `<option value="${escapeHtml(aName)}" ${curArea === aName ? 'selected' : ''}>${escapeHtml(aName)}</option>`;
+                  }).join('')}
+                  ${curArea && !availableAreas.some(a => (typeof a === 'string' ? a : (a.name || a.area_id || '')) === curArea) ? `<option value="${escapeHtml(curArea)}" selected>${escapeHtml(curArea)}</option>` : ''}
+                </select>
+              ` : `
+                <input type="text" value="${escapeHtml(curArea)}" placeholder="Не привязана"
+                  style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px;"
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'area_name', this.value.trim())">
+              `}
+            </div>
+
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 8px 10px;">
+              <div style="font-size: 11px; color: #94a3b8; font-weight: 600; margin-bottom: 6px;">🎨 Цвета анимации (LED):</div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px;">
+                ${watchColors.map(([k, lbl, defCol]) => {
+                  const cVal = cfg['led_color_' + k] || defCol;
+                  return `
+                    <label style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #cbd5e1; margin: 0; cursor: pointer;">
+                      <span>${lbl}:</span>
+                      <input type="color" value="${cVal}" style="width: 30px; height: 22px; border: none; background: none; cursor: pointer;"
+                        onchange="updateSingleDeviceConfig('${dev.mac}', 'led_color_${k}', this.value)">
+                    </label>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 12px; color: #8b949e; min-width: 106px;">🔑 Токен доступа:</span>
+              <input type="password" id="watch-token-${dev.mac}" value="${escapeHtml(cfg.api_key || '')}" placeholder="Пусто = без проверки"
+                style="flex: 1; background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 5px 8px; border-radius: 6px; font-size: 12px; font-family: monospace;"
+                onchange="updateSingleDeviceConfig('${dev.mac}', 'api_key', this.value.trim())">
+              <button type="button" class="btn btn-secondary btn-sm" style="padding: 4px 8px; font-size: 11px;" title="Показать/скрыть токен"
+                onclick="const inp = document.getElementById('watch-token-${dev.mac}'); if (inp) inp.type = inp.type === 'password' ? 'text' : 'password';">👁️</button>
+            </div>
+
+            ${lastReply ? `
+              <div style="background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.18); border-radius: 8px; padding: 7px 10px; font-size: 11px; color: #cbd5e1; line-height: 1.35;">
+                <span style="color: #7dd3fc; font-weight: 600;">💬 Последний ответ:</span> ${escapeHtml(lastReply.length > 180 ? lastReply.slice(0, 180) + '…' : lastReply)}
+              </div>
+            ` : ''}
+          </div>
+          `;
         })() : `
           <div class="virtual-client-banner">
             <span>💻 Клиент (${escapeHtml(dev.device_type || 'ПК')})</span>
@@ -577,6 +673,7 @@ function renderDevicesGrid() {
           </div>
         ` : ''}
 
+        ${dev.device_type !== 'wear_os' ? `
         <div class="quick-controls">
           ${dev.device_type === 'yandex_station' ? (() => {
             const playerVol = Math.min(1.0, Math.max(0.0, cfg.speaker_volume !== undefined ? cfg.speaker_volume : 0.5));
@@ -610,6 +707,7 @@ function renderDevicesGrid() {
             </div>
           ` : ''}
         </div>
+        ` : ''}
 
         ${dev.device_type !== 'yandex_station' ? `
           <div class="mic-debug-box" id="mic-box-${dev.mac}">
@@ -636,7 +734,7 @@ function renderDevicesGrid() {
           </div>
         ` : ''}
 
-        ${(dev.device_type !== 'pc_streamer' && dev.device_type !== 'yandex_station') ? `
+        ${(dev.device_type !== 'pc_streamer' && dev.device_type !== 'yandex_station' && dev.device_type !== 'wear_os') ? `
           <div class="card-actions">
             <button class="btn btn-secondary btn-icon" onclick="triggerDeviceWake('${dev.mac}')" title="Принудительно вызвать Порфирия (начать слушать)" style="color: #a78bfa; border-color: rgba(167, 139, 250, 0.4); font-weight: 600;">
               ⚡ Вызов
@@ -1318,7 +1416,8 @@ async function updateSingleDeviceConfig(mac, field, value) {
     if (d) {
       if (!d.config) d.config = {};
       d.config[field] = value;
-      if (field === 'audio_output_mode' || field === 'wake_word_mode') {
+      if (field === 'area_name') d.area_name = value || null;
+      if (field === 'audio_output_mode' || field === 'wake_word_mode' || field === 'user_id' || field === 'area_name') {
         renderDevicesGrid();
       }
     }
@@ -3148,6 +3247,9 @@ async function fetchUsers() {
     const famInput = document.getElementById('family-tg-chat-id');
     if (famInput) famInput.value = porfiriyFamilyChannels.telegram_chat || '';
     renderUsersGrid();
+    if (devices.some(d => d.device_type === 'wear_os')) {
+      renderDevicesGrid();
+    }
   } catch (e) {
     console.error('Error fetching users:', e);
   }

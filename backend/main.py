@@ -103,6 +103,20 @@ async def handle_client(websocket):
                         first_data["mac"] = existing_mac
                         first_data["name"] = existing_dev.get("name", first_data.get("name"))
                         break
+        if device_type == "wear_os":
+            existing_dev = device_manager.get_device(client_mac)
+            expected_key = ((existing_dev or {}).get("config") or {}).get("api_key", "").strip()
+            provided_key = str(first_data.get("api_key") or "").strip()
+            if expected_key and provided_key != expected_key:
+                logger.warning(f"[WATCH-WS] Rejected {client_mac} from {remote_ip}: invalid api_key.")
+                try:
+                    await websocket.send(json.dumps({"type": "error", "message": "Неверный токен (API key)"}))
+                    await websocket.close(code=4001, reason="Invalid API key")
+                except Exception:
+                    pass
+                return
+            if not first_data.get("ip"):
+                first_data["ip"] = remote_ip
         device_manager.register_device(client_mac, first_data, ws=websocket)
         if device_type == "pc_streamer":
             logger.info(f"[STREAMER] Routing {client_mac} to server-side wake word handler.")
@@ -111,6 +125,10 @@ async def handle_client(websocket):
         elif device_type == "yandex_station":
             logger.info(f"[YANDEX-WS] Routing {client_mac} to Yandex Station audio streamer.")
             await handle_yandex_station_streamer(websocket, client_mac, first_data)
+            return
+        elif device_type == "wear_os":
+            logger.info(f"[WATCH-WS] Routing {client_mac} to Wear OS watch handler.")
+            await handle_watch_client(websocket, client_mac, first_data)
             return
     elif isinstance(first_msg, bytes):
         # Редкий случай: клиент сразу льёт байты (старый debug_client)
@@ -1703,6 +1721,376 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             session_task.cancel()
         if audio_queue:
             audio_queue.put_nowait(None)
+        device_manager.set_device_offline(client_mac, ws=websocket)
+
+
+async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
+    """
+    Обрабатывает WebSocket-подключение умных часов (Pixel Watch 2 / Wear OS):
+    - On-demand сессия: открывается при нажатии кнопки/запуске экрана на часах.
+    - Принимает поток 16kHz PCM с микрофона часов и передает строго в Gemini Live API.
+    - Аудиоответы отбрасываются; транскрипция ответа стримится на часы в реальном времени (`text_delta`).
+    - Поддерживает привязку к пользователю (`user_id`), продолжение диалога (`new_turn`)
+      и отправку ответа в Telegram (`send_to_tg`).
+    """
+    from db import db_singleton
+    from plugins.telegram_bot import TelegramBotPlugin
+
+    ha_api = ha_api_singleton
+    send_lock = asyncio.Lock()
+
+    async def _send_json(payload: dict):
+        try:
+            async with send_lock:
+                await websocket.send(json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
+
+    def _resolve_watch_user():
+        dev_cfg = device_manager.get_device_config(client_mac)
+        uid = (dev_cfg.get("user_id") or reg_data.get("user_id") or "").strip()
+        user_obj = db_singleton.get_user(uid) if uid else None
+        fam_tg = (db_singleton.get_family_channels().get("telegram_chat") or "").strip()
+        has_tg = bool((user_obj and user_obj.get("telegram_chat_id")) or fam_tg)
+        return uid, user_obj, has_tg
+
+    uid, user_obj, has_tg = _resolve_watch_user()
+    await _send_json({
+        "type": "ready",
+        "mac": client_mac,
+        "user_id": uid,
+        "user_name": (user_obj.get("name") if user_obj else ""),
+        "has_telegram": has_tg,
+        "probe": bool(reg_data.get("probe")),
+    })
+
+    if reg_data.get("probe"):
+        try:
+            async for message in websocket:
+                if isinstance(message, str):
+                    try:
+                        data = json.loads(message)
+                    except Exception:
+                        continue
+                    if data.get("type") == "ping":
+                        await _send_json({"type": "pong"})
+                        break
+        except Exception:
+            pass
+        finally:
+            device_manager.set_device_offline(client_mac, ws=websocket)
+        return
+
+    session_active = False
+    turn_active = True
+    is_tool_pending = False
+    audio_queue: asyncio.Queue = asyncio.Queue()
+    gemini_task: Optional[asyncio.Task] = None
+    last_reply_text = ""
+    utterance_chunks: list[bytes] = []
+    conversation_history: list[tuple[str, str]] = []
+
+    device_manager.set_device_state(client_mac, "listening")
+    await _send_json({"type": "state", "state": "listening"})
+
+    async def _run_watch_gemini_session():
+        nonlocal session_active, turn_active, is_tool_pending, last_reply_text
+        options = get_options()
+        api_key_str = (options.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")).strip()
+        api_key = get_active_api_key(api_key_str)
+        if not api_key:
+            logger.error(f"[WATCH-WS] Gemini API key is empty for {client_mac}")
+            await _send_json({"type": "error", "message": "Gemini API key не настроен на сервере"})
+            return
+
+        dev = device_manager.get_device(client_mac)
+        area_name = device_manager.get_device_area(client_mac)
+        cur_uid, cur_user, _ = _resolve_watch_user()
+
+        ctx_lines = [
+            "### HARDWARE & WATCH CONTEXT:",
+            "- Device Type: Pixel Watch 2 (Wear OS personal smartwatch).",
+            "- Output Mode: Text-only display on a small round AMOLED screen. Do NOT use markdown tables, ASCII art, or bullet clutter. Write crisp, natural Russian (1-4 concise sentences unless user asks for details).",
+        ]
+        if cur_user:
+            ctx_lines.append(
+                f"- CURRENT SPEAKER (FIXED BY WATCH BINDING): {cur_user.get('name')} "
+                f"(user_id='{cur_user.get('id')}', gender='{cur_user.get('gender', 'unknown')}'). "
+                f"Always address them directly by name and use matching grammatical gender without guessing."
+            )
+        if conversation_history:
+            ctx_lines.append("### RECENT WATCH DIALOGUE CONTEXT:")
+            for q_txt, a_txt in conversation_history[-4:]:
+                if q_txt:
+                    ctx_lines.append(f"- User: {q_txt}")
+                if a_txt:
+                    ctx_lines.append(f"- Porfiriy: {a_txt}")
+
+        full_prompt = await build_system_prompt(
+            options,
+            ha_api,
+            dev=dev,
+            area_name=area_name,
+            mode="satellite",
+            extra_context="\n".join(ctx_lines),
+        )
+
+        vad_silence = int(options.get("vad_silence_duration_ms", 600))
+        gemini_client = GeminiProxyClient(
+            api_key=api_key,
+            system_prompt=full_prompt,
+            ha_api=ha_api,
+            voice_name=options.get("voice_name", "Charon"),
+            model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
+            enable_google_search=options.get("enable_google_search", True),
+            vad_silence_duration_ms=vad_silence,
+            response_modalities=["AUDIO"],
+        )
+
+        session_active = True
+        logger.info(f"[WATCH-WS] Connecting Gemini Live ({gemini_client.model}) for {client_mac} (user={cur_uid or 'auto'})")
+
+        try:
+            async with gemini_client.connect() as session:
+                gemini_send_lock = asyncio.Lock()
+
+                async def _mic_sender():
+                    try:
+                        while session_active:
+                            item = await audio_queue.get()
+                            if item is None:
+                                break
+                            if item == "__EOS__":
+                                vad_ms = int(options.get("vad_silence_duration_ms", 600))
+                                needed_chunks = max(24, int((vad_ms + 300) * 32 / 1024) + 1)
+                                silence_chunk = b"\x00" * 1024
+                                async with gemini_send_lock:
+                                    for _ in range(needed_chunks):
+                                        await session.send_realtime_input(
+                                            audio=types.Blob(data=silence_chunk, mime_type="audio/pcm;rate=16000")
+                                        )
+                                continue
+                            if is_tool_pending or not turn_active:
+                                continue
+                            if isinstance(item, (bytes, bytearray)) and item:
+                                async with gemini_send_lock:
+                                    await session.send_realtime_input(
+                                        audio=types.Blob(data=bytes(item), mime_type="audio/pcm;rate=16000")
+                                    )
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as e_tx:
+                        logger.debug(f"[WATCH-WS] Mic sender ended for {client_mac}: {e_tx}")
+
+                async def _gemini_receiver():
+                    nonlocal turn_active, is_tool_pending, last_reply_text
+                    input_parts: list[str] = []
+                    output_parts: list[str] = []
+                    responding_sent = False
+                    turn_state = {
+                        "tool_executed": False,
+                        "playback_changed": False,
+                        "volume_changed": False,
+                        "simple_smarthome_executed": False,
+                    }
+
+                    while session_active:
+                        async for response in session.receive():
+                            if response.tool_call:
+                                is_tool_pending = True
+                                device_manager.set_device_state(client_mac, "thinking")
+                                await _send_json({"type": "state", "state": "thinking"})
+                                function_responses = []
+
+                                async def _watch_progress(msg: str):
+                                    if msg:
+                                        await _send_json({"type": "tool_call", "name": "progress", "label": msg})
+
+                                for fc in response.tool_call.function_calls:
+                                    await _send_json({"type": "tool_call", "name": fc.name})
+                                    tool_res = await tool_executor.execute(
+                                        fc.name,
+                                        dict(fc.args) if fc.args else {},
+                                        options,
+                                        dev=device_manager.get_device(client_mac),
+                                        turn_state=turn_state,
+                                        on_progress=_watch_progress,
+                                    )
+                                    function_responses.append(types.FunctionResponse(
+                                        name=fc.name,
+                                        id=fc.id,
+                                        response=tool_res,
+                                    ))
+
+                                if function_responses:
+                                    async with gemini_send_lock:
+                                        await session.send_tool_response(function_responses=function_responses)
+                                is_tool_pending = False
+                                continue
+
+                            sc = response.server_content
+                            if not sc:
+                                continue
+
+                            if getattr(sc, "input_transcription", None) and getattr(sc.input_transcription, "text", None):
+                                in_txt = sc.input_transcription.text
+                                input_parts.append(in_txt)
+                                await _send_json({"type": "input_transcript", "text": "".join(input_parts).strip()})
+                                if turn_active and not responding_sent:
+                                    device_manager.set_device_state(client_mac, "thinking")
+                                    await _send_json({"type": "state", "state": "thinking"})
+
+                            if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
+                                out_txt = sc.output_transcription.text
+                                if not responding_sent:
+                                    responding_sent = True
+                                    device_manager.set_device_state(client_mac, "speaking")
+                                    await _send_json({"type": "state", "state": "responding"})
+                                output_parts.append(out_txt)
+                                await _send_json({"type": "text_delta", "text": out_txt})
+
+                            if sc.model_turn and not responding_sent:
+                                # Аудио-байты намеренно не отправляем на часы, но обновляем статус
+                                has_audio = any(getattr(p, "inline_data", None) and p.inline_data.data for p in (sc.model_turn.parts or []))
+                                if has_audio:
+                                    responding_sent = True
+                                    device_manager.set_device_state(client_mac, "speaking")
+                                    await _send_json({"type": "state", "state": "responding"})
+
+                            in_progress = "IN_PROGRESS" in str(getattr(sc, "interaction_status", "") or "").upper()
+                            is_turn_done = bool(getattr(sc, "turn_complete", False) and not in_progress)
+                            if is_turn_done:
+                                full_reply = "".join(output_parts).strip()
+                                full_input = "".join(input_parts).strip()
+                                if not full_reply and turn_state.get("tool_executed"):
+                                    full_reply = "Исполнено."
+                                if utterance_chunks:
+                                    device_manager.save_last_utterance(client_mac, b"".join(utterance_chunks))
+                                    utterance_chunks.clear()
+                                last_reply_text = full_reply
+                                if full_input or full_reply:
+                                    conversation_history.append((full_input, full_reply))
+                                    if len(conversation_history) > 6:
+                                        del conversation_history[:-6]
+                                device_manager.update_device_runtime(client_mac, {
+                                    "last_reply_text": full_reply,
+                                    "last_reply_at": time.time(),
+                                })
+                                turn_active = False
+                                responding_sent = False
+                                input_parts.clear()
+                                output_parts.clear()
+                                for k in turn_state:
+                                    turn_state[k] = False
+                                device_manager.set_device_state(client_mac, "idle")
+                                await _send_json({"type": "turn_complete", "text": full_reply})
+                                await _send_json({"type": "state", "state": "idle"})
+                                logger.info(f"[WATCH-WS] Turn complete for {client_mac}: '{full_reply[:80]}'")
+
+                sender_t = asyncio.create_task(_mic_sender())
+                recv_t = asyncio.create_task(_gemini_receiver())
+                try:
+                    await asyncio.gather(sender_t, recv_t)
+                finally:
+                    for t in (sender_t, recv_t):
+                        if not t.done():
+                            t.cancel()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"[WATCH-WS] Gemini session ended for {client_mac}: {e}")
+            if turn_active:
+                await _send_json({"type": "error", "message": f"Сбой сессии Gemini: {e}"})
+        finally:
+            session_active = False
+            is_tool_pending = False
+
+    gemini_task = asyncio.create_task(_run_watch_gemini_session())
+
+    try:
+        async for message in websocket:
+            if isinstance(message, bytes):
+                if turn_active:
+                    if len(utterance_chunks) < 300:
+                        utterance_chunks.append(message)
+                    audio_queue.put_nowait(message)
+                    raw_rms = calculate_pcm_rms(message)
+                    device_manager.update_ww_score(client_mac, 0.0, peak_score=0.0, rms_dbfs=rms_to_dbfs(raw_rms))
+            elif isinstance(message, str):
+                try:
+                    data = json.loads(message)
+                except Exception:
+                    continue
+                mtype = data.get("type")
+                if mtype == "end_of_speech":
+                    if turn_active:
+                        logger.info(f"[WATCH-WS] Manual end_of_speech from {client_mac}")
+                        if utterance_chunks:
+                            device_manager.save_last_utterance(client_mac, b"".join(utterance_chunks))
+                        device_manager.set_device_state(client_mac, "thinking")
+                        await _send_json({"type": "state", "state": "thinking"})
+                        audio_queue.put_nowait("__EOS__")
+                elif mtype == "new_turn":
+                    logger.info(f"[WATCH-WS] Starting new_turn for {client_mac}")
+                    utterance_chunks.clear()
+                    turn_active = True
+                    is_tool_pending = False
+                    while not audio_queue.empty():
+                        try:
+                            audio_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    device_manager.set_device_state(client_mac, "listening")
+                    await _send_json({"type": "state", "state": "listening"})
+                    if not session_active or not gemini_task or gemini_task.done():
+                        gemini_task = asyncio.create_task(_run_watch_gemini_session())
+                elif mtype == "send_to_tg":
+                    tg_text = (data.get("text") or last_reply_text or "").strip()
+                    tg_title = (data.get("title") or "⌚ Порфирий (Часы)").strip()
+                    cur_uid, cur_user, _ = _resolve_watch_user()
+                    target = cur_uid or "family"
+                    if not tg_text:
+                        await _send_json({"type": "tg_sent", "ok": False, "recipient": target, "error": "Пустой текст ответа"})
+                        continue
+                    try:
+                        prov = db_singleton.get_provider("builtin.telegram_bot", mask_secrets=False)
+                        res = await TelegramBotPlugin.send_message(
+                            db=db_singleton,
+                            provider=prov,
+                            ha_api=ha_api,
+                            target=target,
+                            text=tg_text,
+                            title=tg_title,
+                        )
+                        ok = res.get("status") == "ok"
+                        await _send_json({
+                            "type": "tg_sent",
+                            "ok": ok,
+                            "recipient": res.get("target") or (cur_user.get("name") if cur_user else target),
+                            "error": res.get("error", ""),
+                        })
+                    except Exception as e_tg:
+                        logger.error(f"[WATCH-WS] send_to_tg failed for {client_mac}: {e_tg}")
+                        await _send_json({"type": "tg_sent", "ok": False, "recipient": target, "error": str(e_tg)})
+                elif mtype == "ping":
+                    await _send_json({"type": "pong"})
+                elif mtype == "heartbeat":
+                    device_manager.update_heartbeat(
+                        client_mac,
+                        rssi=int(data.get("rssi", -40)),
+                        uptime=int(data.get("uptime", 0)),
+                        state=data.get("state"),
+                    )
+    except ConnectionClosed:
+        logger.info(f"[WATCH-WS] {client_mac} disconnected.")
+    except Exception as e:
+        logger.error(f"[WATCH-WS] Error for {client_mac}: {e}")
+    finally:
+        session_active = False
+        turn_active = False
+        audio_queue.put_nowait(None)
+        if gemini_task and not gemini_task.done():
+            gemini_task.cancel()
         device_manager.set_device_offline(client_mac, ws=websocket)
 
 
