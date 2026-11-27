@@ -11,7 +11,7 @@ from net_utils import normalize_mac
 logger = logging.getLogger("device_manager")
 
 TARGET_FIRMWARE_VERSION = "0.0.108"
-TARGET_WATCH_VERSION = "1.0.1"
+TARGET_WATCH_VERSION = "1.0.2"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""

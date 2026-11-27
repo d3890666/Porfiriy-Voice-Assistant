@@ -4,15 +4,20 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AutomaticGainControl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.sqrt
+import kotlin.math.tanh
 
 class MicRecorder {
     private var recorder: AudioRecord? = null
+    private var agc: AutomaticGainControl? = null
     private var recordJob: Job? = null
 
     @Volatile
@@ -41,11 +46,23 @@ class MicRecorder {
         }
 
         recorder = record
+        try {
+            if (AutomaticGainControl.isAvailable()) {
+                val effect = AutomaticGainControl.create(record.audioSessionId)
+                if (effect != null) {
+                    effect.enabled = true
+                    agc = effect
+                }
+            }
+        } catch (_: Exception) {
+        }
         isRecording = true
         try {
             record.startRecording()
         } catch (e: Exception) {
             isRecording = false
+            try { agc?.release() } catch (_: Exception) {}
+            agc = null
             record.release()
             recorder = null
             onError("Ошибка запуска микрофона: ${e.message}")
@@ -60,8 +77,12 @@ class MicRecorder {
                     val read = record.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         val copy = buffer.copyOf(read)
-                        val rmsNorm = computeNormalizedRms(copy, read)
-                        smoothedRms = smoothedRms * 0.65f + rmsNorm * 0.35f
+                        val rmsNorm = applySoftBoostAndNormalize(copy, read)
+                        smoothedRms = if (rmsNorm > smoothedRms) {
+                            smoothedRms * 0.30f + rmsNorm * 0.70f
+                        } else {
+                            smoothedRms * 0.70f + rmsNorm * 0.30f
+                        }
                         onChunk(copy, smoothedRms)
                     } else if (read < 0) {
                         break
@@ -76,6 +97,11 @@ class MicRecorder {
         isRecording = false
         recordJob?.cancel()
         recordJob = null
+        try {
+            agc?.release()
+        } catch (_: Exception) {
+        }
+        agc = null
         val r = recorder
         recorder = null
         if (r != null) {
@@ -100,8 +126,9 @@ class MicRecorder {
         bufferSize: Int,
     ): AudioRecord? {
         val sources = listOf(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.DEFAULT,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
         )
         for (src in sources) {
             try {
@@ -116,7 +143,7 @@ class MicRecorder {
         return null
     }
 
-    private fun computeNormalizedRms(pcm: ByteArray, len: Int): Float {
+    private fun applySoftBoostAndNormalize(pcm: ByteArray, len: Int, gain: Float = 2.5f): Float {
         val samples = len / 2
         if (samples <= 0) return 0f
         var sumSq = 0.0
@@ -124,12 +151,24 @@ class MicRecorder {
         while (i + 1 < len) {
             val lo = pcm[i].toInt() and 0xFF
             val hi = pcm[i + 1].toInt()
-            val sample = (hi shl 8) or lo
-            sumSq += sample * sample.toDouble()
+            val raw = ((hi shl 8) or lo).toFloat()
+            val boosted = raw * gain
+            val mag = abs(boosted)
+            val limited = if (mag <= 24000f) {
+                boosted
+            } else {
+                val sign = if (boosted >= 0f) 1f else -1f
+                sign * (24000f + 8767f * tanh(((mag - 24000f) / 8767f).toDouble()).toFloat())
+            }
+            val clamped = limited.toInt().coerceIn(-32768, 32767)
+            pcm[i] = (clamped and 0xFF).toByte()
+            pcm[i + 1] = ((clamped shr 8) and 0xFF).toByte()
+            sumSq += clamped * clamped.toDouble()
             i += 2
         }
         val rms = sqrt(sumSq / samples).toFloat()
-        // Map typical voice RMS (100..6500) to 0..1 smoothly
-        return ((rms - 90f) / 4800f).coerceIn(0f, 1f)
+        val dbfs = if (rms < 1f) -90f else (20.0 * log10(rms / 32768.0)).toFloat()
+        // Map -58..-14 dBFS logarithmically to 0..1
+        return ((dbfs + 58f) / 44f).coerceIn(0f, 1f)
     }
 }

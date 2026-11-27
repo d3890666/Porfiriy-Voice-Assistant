@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 enum class WatchUiPhase {
     PERMISSION_NEEDED,
@@ -78,7 +79,7 @@ class PorfiriyController(
 
     private var hasAudioPermission = false
     private var wasBackgrounded = false
-    private var speechChunksCount = 0
+    private val speechChunksCount = AtomicInteger(0)
 
     init {
         scope.launch {
@@ -101,7 +102,7 @@ class PorfiriyController(
             return
         }
         wasBackgrounded = false
-        speechChunksCount = 0
+        speechChunksCount.set(0)
         val settings = settingsStore.settings.value
         _uiState.update {
             it.copy(
@@ -126,7 +127,7 @@ class PorfiriyController(
         if (phase != WatchUiPhase.LISTENING && phase != WatchUiPhase.CONNECTING) return
         mic.stop()
         // Protect against sending pure silence (prevents infinite "thinking")
-        if (speechChunksCount < 2) {
+        if (speechChunksCount.get() < 2) {
             wsClient.sendCancel()
             _uiState.update {
                 it.copy(
@@ -146,7 +147,7 @@ class PorfiriyController(
     fun cancelActiveTurn() {
         mic.stop()
         wsClient.sendCancel()
-        speechChunksCount = 0
+        speechChunksCount.set(0)
         _uiState.update {
             it.copy(
                 phase = WatchUiPhase.IDLE,
@@ -164,7 +165,7 @@ class PorfiriyController(
             startFreshSession()
             return
         }
-        speechChunksCount = 0
+        speechChunksCount.set(0)
         _uiState.update {
             it.copy(
                 phase = WatchUiPhase.LISTENING,
@@ -296,12 +297,12 @@ class PorfiriyController(
     }
 
     private fun startMicCapture() {
-        speechChunksCount = 0
+        speechChunksCount.set(0)
         mic.start(
             scope = scope,
             onChunk = { pcm, rms ->
-                if (rms > 0.06f) {
-                    speechChunksCount++
+                if (rms > 0.04f) {
+                    speechChunksCount.incrementAndGet()
                 }
                 wsClient.sendAudioChunk(pcm)
                 _uiState.update { st ->
