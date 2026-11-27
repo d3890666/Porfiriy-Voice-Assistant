@@ -3685,6 +3685,50 @@ function renderBuiltinConfigForm(p) {
       </div>
     `;
   }
+  if (p.id === 'builtin.yandex_maps') {
+    const hasGeo = !!cfg.geocoder_api_key;
+    const hasSug = !!cfg.geosuggest_api_key;
+    const autoTg = cfg.auto_send_telegram !== false;
+    return `
+      <div class="plugin-config-box">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="owner-badge owner-home">🗺️ Яндекс.Карты</span>
+            ${hasSug ? '<span class="p2-chip p2-chip-ok">✅ Геосаджест</span>' : '<span class="p2-chip p2-chip-muted">⚪ Геосаджест</span>'}
+            ${hasGeo ? '<span class="p2-chip p2-chip-ok">✅ Геокодер</span>' : '<span class="p2-chip p2-chip-muted">⚪ Геокодер</span>'}
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="testYandexMaps()">🧪 Проверить ключи</button>
+        </div>
+        <div class="p2-config-grid">
+          <div class="form-group" style="margin:0;">
+            <label>API-ключ Геосаджеста (организации)</label>
+            <input type="password" id="cfg-ym-geosuggest" value="${escapeHtml(cfg.geosuggest_api_key || '')}" placeholder="suggest-maps.yandex.ru">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>API-ключ Геокодера (адреса)</label>
+            <input type="password" id="cfg-ym-geocoder" value="${escapeHtml(cfg.geocoder_api_key || '')}" placeholder="geocode-maps.yandex.ru">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Город по умолчанию</label>
+            <input type="text" id="cfg-ym-city" value="${escapeHtml(cfg.default_city || 'Москва')}" placeholder="Москва">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Центр поиска (lon,lat)</label>
+            <input type="text" id="cfg-ym-ll" value="${escapeHtml(cfg.default_ll || '37.6173,55.7558')}" placeholder="37.6173,55.7558">
+          </div>
+          <div class="form-group full-width" style="margin:4px 0 0 0;">
+            <label class="checkbox-label" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="cfg-ym-autotg" ${autoTg ? 'checked' : ''}>
+              <span>Автоматически отправлять карточку со ссылкой в Telegram при каждом поиске</span>
+            </label>
+          </div>
+        </div>
+        <div style="margin-top:12px; display:flex; justify-content:flex-end;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="saveBuiltinConfig('${pid}')">💾 Сохранить</button>
+        </div>
+      </div>
+    `;
+  }
   return '';
 }
 
@@ -3948,6 +3992,12 @@ async function saveBuiltinConfig(providerId) {
     config.api_base = (document.getElementById('cfg-kw-api-base')?.value || 'https://api.service-kp.com').trim();
     config.client_id = (document.getElementById('cfg-kw-client-id')?.value || '').trim();
     config.client_secret = (document.getElementById('cfg-kw-client-secret')?.value || '').trim();
+  } else if (providerId === 'builtin.yandex_maps') {
+    config.geosuggest_api_key = (document.getElementById('cfg-ym-geosuggest')?.value || '').trim();
+    config.geocoder_api_key = (document.getElementById('cfg-ym-geocoder')?.value || '').trim();
+    config.default_city = (document.getElementById('cfg-ym-city')?.value || 'Москва').trim() || 'Москва';
+    config.default_ll = (document.getElementById('cfg-ym-ll')?.value || '37.6173,55.7558').trim() || '37.6173,55.7558';
+    config.auto_send_telegram = !!document.getElementById('cfg-ym-autotg')?.checked;
   }
   try {
     const res = await fetch(`${API_BASE}/api/providers`, {
@@ -4349,6 +4399,22 @@ async function syncKinoWatchFolders() {
   }
 }
 window.syncKinoWatchFolders = syncKinoWatchFolders;
+
+async function testYandexMaps() {
+  showToast('Проверяю ключи Яндекс.Карт...');
+  try {
+    const res = await fetch(`${API_BASE}/api/providers/builtin.yandex_maps/test`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✅ ${data.message || 'Ключи Яндекс.Карт работают!'}`);
+    } else {
+      showToast(`⚠️ ${data.message || data.error || 'Ошибка проверки ключей'}`, true);
+    }
+  } catch (e) {
+    showToast(`Сетевая ошибка: ${e.message}`, true);
+  }
+}
+window.testYandexMaps = testYandexMaps;
 
 let _memDebounceTimer = null;
 function debounceFetchMemory() {

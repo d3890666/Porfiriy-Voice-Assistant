@@ -15,7 +15,18 @@ from config import DEFAULT_GEMINI_MODEL, DEFAULT_PERSONA, get_active_api_key
 logger = logging.getLogger("phrases")
 
 FALLBACK_PHRASE_CATALOG: Dict[str, List[str]] = {
-    "thinking": ["Секунду, перевариваю.", "Дай подумать.", "Обрабатываю запрос."],
+    "thinking": [
+        "Секунду, перевариваю.",
+        "Дай подумать.",
+        "Обрабатываю запрос.",
+        "Сейчас раскопаю.",
+        "Терпение, смотрю.",
+        "Минутку, сверяюсь.",
+        "Уже ищу.",
+        "Проверяю факты.",
+        "Держи паузу.",
+        "Секунду, уточняю.",
+    ],
     "network_error": ["Канал отвалился.", "Облако молчит.", "Связь пропала."],
     "device_error": ["Железо не отвечает.", "Устройство зависло.", "Сбой команды."],
     "empty_noise": ["Говори внятнее.", "Один шум.", "Ничего не слышу."],
@@ -29,14 +40,14 @@ def build_generation_prompt(persona_text: str) -> str:
 TASK:
 Generate a JSON dictionary of short spoken Russian phrases that you will speak aloud through the smart speaker during operational pauses and technical hiccups.
 
-CATEGORIES (Generate 3 unique variants for each):
-1. "thinking": Spoken when a complex query or music search takes longer than 7 seconds.
-   Context: A brief, arrogant, or ironically philosophical pause-filler while you compute the answer.
-2. "network_error": Spoken when the external Google Live API or network connection drops, times out, or fails.
+CATEGORIES:
+1. "thinking" (Generate 10 DISTINCT, varied variants): Spoken when a complex query, search, or tool call takes longer than 5 seconds.
+   Context: Brief, varied, ironically calm or witty pause-fillers while you compute or look up the answer. Make all 10 clearly different in wording and rhythm so they never feel repetitive.
+2. "network_error" (Generate 3 unique variants): Spoken when the external Google Live API or network connection drops, times out, or fails.
    Context: Cynical reaction to the failure of external channels or cloud infrastructure.
-3. "device_error": Spoken when a physical smart home device (switch, cover, light) fails to respond in Home Assistant.
+3. "device_error" (Generate 3 unique variants): Spoken when a physical smart home device (switch, cover, light) fails to respond in Home Assistant.
    Context: Mocking observation of physical hardware unreliability.
-4. "empty_noise": Spoken when the wake word was triggered by acoustic background noise or silence.
+4. "empty_noise" (Generate 3 unique variants): Spoken when the wake word was triggered by acoustic background noise or silence.
    Context: Cold, slightly dismissive reaction to empty sound, urging the human to articulate clearly.
 
 STRICT CONSTRAINTS:
@@ -45,7 +56,7 @@ STRICT CONSTRAINTS:
 - Language: Natural spoken Russian.
 - Output Format: Return strictly a valid JSON object without markdown fences, comments, or backticks:
 {{
-  "thinking": ["...", "...", "..."],
+  "thinking": ["...", "...", "...", "...", "...", "...", "...", "...", "...", "..."],
   "network_error": ["...", "...", "..."],
   "device_error": ["...", "...", "..."],
   "empty_noise": ["...", "...", "..."]
@@ -70,6 +81,8 @@ class PhraseManager:
             "empty_noise": []
         }
         self.texts: Dict[str, List[str]] = {}
+        self._bags: Dict[str, List[int]] = {}
+        self._last_idx: Dict[str, int] = {}
         self.is_ready = False
         self._generating_lock = asyncio.Lock()
 
@@ -103,6 +116,8 @@ class PhraseManager:
                                 loaded_count += 1
                                 
             if loaded_count > 0:
+                self._bags.clear()
+                self._last_idx.clear()
                 self.is_ready = True
                 logger.info(f"Loaded {loaded_count} cached Porfiriy phrases from {self.cache_dir}")
                 return True
@@ -129,7 +144,12 @@ class PhraseManager:
                     manifest = json.load(f)
                 if manifest.get("persona_hash") == curr_hash:
                     if self.load_from_cache():
-                        return
+                        if len(self.phrases.get("thinking", [])) >= 8:
+                            return
+                        logger.info(
+                            f"Cached 'thinking' phrases count is {len(self.phrases.get('thinking', []))} (< 8); "
+                            "regenerating expanded 10-phrase catalog..."
+                        )
             except Exception:
                 pass
 
@@ -287,18 +307,41 @@ class PhraseManager:
         logger.info(f"Porfiriy dynamic phrase cache successfully generated via Live WebSocket ({synthesized_total} files)!")
 
     def get_phrase(self, category: str) -> Optional[bytes]:
-        """Возвращает случайный PCM буфер фразы указанной категории."""
+        """Возвращает PCM буфер фразы без повторов до исчерпания всей колоды (shuffle-bag)."""
         items = self.phrases.get(category, [])
-        if items:
-            return random.choice(items)
-        return None
+        n = len(items)
+        if n == 0:
+            return None
+        if n == 1:
+            return items[0]
 
-    async def play_phrase(self, websocket, phrase_bytes: bytes, volume: float = 1.0, cancel_check: Optional[Callable[[], bool]] = None):
-        """Потоковая отправка PCM чанками клиенту (ESP32) с корректным темпом (24кГц, 16 бит)."""
-        try:
-            await websocket.send(json.dumps({"type": "speaking"}))
-        except Exception:
-            pass
+        bag = self._bags.get(category)
+        if not bag:
+            bag = list(range(n))
+            random.shuffle(bag)
+            last = self._last_idx.get(category)
+            if last is not None and bag[-1] == last:
+                bag[0], bag[-1] = bag[-1], bag[0]
+            self._bags[category] = bag
+
+        idx = bag.pop()
+        self._last_idx[category] = idx
+        return items[idx]
+
+    async def play_phrase(
+        self,
+        websocket,
+        phrase_bytes: bytes,
+        volume: float = 1.0,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        send_speaking_event: bool = True,
+    ):
+        """Потоковая отправка PCM чанками клиенту с корректным темпом (24кГц, 16 бит)."""
+        if send_speaking_event:
+            try:
+                await websocket.send(json.dumps({"type": "speaking"}))
+            except Exception:
+                pass
 
         if volume != 1.0:
             phrase_bytes = scale_pcm16(phrase_bytes, volume)
@@ -331,6 +374,8 @@ class PhraseManager:
             logger.info("Manual phrase cache regeneration requested...")
             for cat in self.phrases:
                 self.phrases[cat] = []
+            self._bags.clear()
+            self._last_idx.clear()
             self.texts = {}
             self.is_ready = False
             

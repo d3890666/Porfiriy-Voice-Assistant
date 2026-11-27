@@ -409,6 +409,22 @@ class PorfiriyDB:
                     ensure_ascii=False,
                 ),
             ),
+            (
+                "builtin.yandex_maps",
+                "builtin",
+                "Яндекс.Карты (проверенные ссылки на места и адреса)",
+                "Поиск организаций и точных адресов через API Геосаджеста и API Геокодера Яндекса с проверенной ссылкой и авто-отправкой карточки в Telegram.",
+                json.dumps(
+                    {
+                        "geocoder_api_key": "",
+                        "geosuggest_api_key": "",
+                        "default_city": "Москва",
+                        "default_ll": "37.6173,55.7558",
+                        "auto_send_telegram": True,
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
         ]
         for pid, kind, title, desc, cfg in builtin_providers:
             conn.execute(

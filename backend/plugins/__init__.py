@@ -8,13 +8,14 @@ from .telegram_userbot import TelegramUserbotPlugin
 from .mail_imap import MailImapPlugin
 from .keenetic import KeeneticPlugin
 from .kinowatch import KinoWatchPlugin
+from .yandex_maps import YandexMapsPlugin
 
 logger = logging.getLogger("plugins")
 
 
 def register_builtin_plugins(registry) -> None:
     """Регистрирует все встроенные плагины в едином реестре."""
-    for plugin_cls in (TelegramBotPlugin, MemoryPlugin, TelegramUserbotPlugin, MailImapPlugin, KeeneticPlugin, KinoWatchPlugin):
+    for plugin_cls in (TelegramBotPlugin, MemoryPlugin, TelegramUserbotPlugin, MailImapPlugin, KeeneticPlugin, KinoWatchPlugin, YandexMapsPlugin):
         try:
             registry.register_builtin(plugin_cls())
         except Exception as e:
@@ -28,5 +29,6 @@ __all__ = [
     "MailImapPlugin",
     "KeeneticPlugin",
     "KinoWatchPlugin",
+    "YandexMapsPlugin",
     "register_builtin_plugins",
 ]

@@ -197,9 +197,9 @@ async def handle_client(websocket):
 
                 async def _watchdog():
                     try:
-                        thinking_delay = float(options.get("thinking_timeout_s", 7.0))
+                        thinking_delay = float(options.get("thinking_timeout_s", 5.0))
                         await asyncio.sleep(thinking_delay)
-                        if session_state.get("is_thinking") and not session_state.get("first_audio_sent") and not session_state.get("is_tool_pending"):
+                        if session_state.get("is_thinking") and not session_state.get("first_audio_sent"):
                             phrase = phrase_manager.get_phrase("thinking")
                             if phrase:
                                 logger.info(f"Thinking timeout > {thinking_delay}s: playing dynamic Porfiriy filler phrase...")
@@ -652,17 +652,6 @@ async def handle_client(websocket):
                                     elif not has_data:
                                         await websocket.send(scale_pcm16(SUCCESS_CHIME, speaker_vol))
 
-                                esp_progress_played = False
-
-                                async def _esp_progress(_msg: str):
-                                    nonlocal esp_progress_played
-                                    if esp_progress_played:
-                                        return
-                                    esp_progress_played = True
-                                    phrase = phrase_manager.get_phrase("thinking")
-                                    if phrase:
-                                        await phrase_manager.play_phrase(websocket, phrase, volume=speaker_vol)
-
                                 for fc in response.tool_call.function_calls:
                                     safe_result = await tool_executor.execute(
                                         fc.name,
@@ -670,7 +659,7 @@ async def handle_client(websocket):
                                         options,
                                         dev=device_manager.get_device(client_mac),
                                         on_feedback=_esp_tool_feedback,
-                                        on_progress=_esp_progress,
+                                        on_progress=None,
                                     )
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
@@ -1305,9 +1294,67 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     is_ephemeral=is_eph,
                 )
 
+        thinking_filler_task: Optional[asyncio.Task] = None
+        thinking_filler_started = False
+
+        def _start_thinking_filler() -> None:
+            nonlocal thinking_filler_task, thinking_filler_started
+            if thinking_filler_started:
+                return
+            thinking_filler_started = True
+            delay_s = float(options.get("thinking_timeout_s", 5.0) or 5.0)
+            if delay_s <= 0:
+                return
+
+            async def _filler():
+                try:
+                    await asyncio.sleep(delay_s)
+                    if (
+                        not session_active
+                        or gemini_is_speaking
+                        or turn_state.get("earcon_played")
+                        or quiet_active
+                        or turn_voice_gain <= 0.0
+                        or turn_discarded_silent
+                    ):
+                        return
+                    phrase = phrase_manager.get_phrase("thinking")
+                    if phrase:
+                        logger.info(
+                            f"[YANDEX-WS] Response wait > {delay_s:.1f}s ({client_mac}): playing thinking filler..."
+                        )
+                        await phrase_manager.play_phrase(
+                            websocket,
+                            phrase,
+                            volume=turn_voice_gain,
+                            cancel_check=lambda: (
+                                gemini_is_speaking
+                                or not session_active
+                                or bool(turn_state.get("earcon_played"))
+                            ),
+                            send_speaking_event=False,
+                        )
+                except asyncio.CancelledError:
+                    pass
+                except Exception as ex_f:
+                    logger.debug(f"[YANDEX-WS] Thinking filler error: {ex_f}")
+
+            thinking_filler_task = asyncio.create_task(_filler())
+
+        async def _stop_thinking_filler() -> None:
+            nonlocal thinking_filler_task
+            t = thinking_filler_task
+            thinking_filler_task = None
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+
         async def _run_single_attempt(replay_chunks: Optional[list[bytes]] = None, use_native_turns: bool = True) -> bool:
             """Выполняет сессию Gemini Live (1 ход + до 4 follow-up ходов, если Порфирий задал вопрос)."""
-            nonlocal gemini_is_speaking, gemini_responded, utterance_saved, turn_voice_gain, turn_discarded_silent
+            nonlocal gemini_is_speaking, gemini_responded, utterance_saved, turn_voice_gain, turn_discarded_silent, thinking_filler_started
             attempt_responded = False
 
             eff_prompt = full_prompt
@@ -1403,6 +1450,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 turn_complete=True,
                             )
                             eos_sent_event.set()
+                            _start_thinking_filler()
                             logger.info(
                                 f"[YANDEX-WS] {tag}Sent atomic WAV turn_complete=True "
                                 f"(turn={turn_idx + 1}, {len(wav_turn)} bytes, {dur_s:.2f}s, turns={len(turns_payload)}) ({client_mac})"
@@ -1452,16 +1500,6 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 device_manager.set_device_state(client_mac, "thinking")
                                 await _send_json({"type": "state", "state": "thinking"})
                                 function_responses = []
-                                station_progress_played = False
-
-                                async def _station_progress(_msg: str):
-                                    nonlocal station_progress_played
-                                    if station_progress_played or quiet_active or turn_voice_gain <= 0.0:
-                                        return
-                                    station_progress_played = True
-                                    phrase = phrase_manager.get_phrase("thinking")
-                                    if phrase:
-                                        await phrase_manager.play_phrase(websocket, phrase, volume=turn_voice_gain)
 
                                 for fc in response.tool_call.function_calls:
                                     tool_res = await tool_executor.execute(
@@ -1470,7 +1508,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                         options,
                                         dev=device_manager.get_device(client_mac),
                                         turn_state=turn_state,
-                                        on_progress=_station_progress,
+                                        on_progress=None,
                                     )
                                     function_responses.append(types.FunctionResponse(
                                         name=fc.name,
@@ -1502,6 +1540,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     if earcon_pcm:
                                         gemini_is_speaking = True
                                         turn_state["earcon_played"] = True
+                                        await _stop_thinking_filler()
                                         pcm_response_chunks.append(earcon_pcm)
                                         try:
                                             await websocket.send(earcon_pcm)
@@ -1560,6 +1599,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                                 ):
                                                     if not gemini_is_speaking:
                                                         gemini_is_speaking = True
+                                                        await _stop_thinking_filler()
                                                         device_manager.set_device_state(client_mac, "speaking")
                                                         await _send_json({"type": "state", "state": "speaking"})
                                                     for b_ch in quiet_audio_buf:
@@ -1573,6 +1613,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                             else:
                                                 if not gemini_is_speaking:
                                                     gemini_is_speaking = True
+                                                    await _stop_thinking_filler()
                                                     device_manager.set_device_state(client_mac, "speaking")
                                                     await _send_json({"type": "state", "state": "speaking"})
                                                 pcm_response_chunks.append(out_chunk)
@@ -1599,6 +1640,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     if should_play_quiet:
                                         if not gemini_is_speaking:
                                             gemini_is_speaking = True
+                                            await _stop_thinking_filler()
                                             device_manager.set_device_state(client_mac, "speaking")
                                             await _send_json({"type": "state", "state": "speaking"})
                                         for b_ch in quiet_audio_buf:
@@ -1688,6 +1730,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                         break
 
                     # Готовим буфер для следующего хода (follow-up) в этой же сессии Gemini
+                    await _stop_thinking_filler()
+                    thinking_filler_started = False
                     utterance_chunks.clear()
                     utterance_saved = False
                     gemini_is_speaking = False
@@ -1723,6 +1767,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     else:
                         ww_capture_store.update_outcome(active_capture_id, "listen_timeout", "")
                 _cancel_eos_watchdog()
+                await _stop_thinking_filler()
                 _flush_utterance()
                 session_active = False
                 gemini_is_speaking = False

@@ -227,7 +227,7 @@ def get_options() -> Dict[str, Any]:
         "prompt_smart_home": DEFAULT_SMART_HOME,
         "prompt_general": DEFAULT_GENERAL,
         "voice_name": "Charon",
-        "thinking_timeout_s": 7,
+        "thinking_timeout_s": 5,
         "debug_mode": False,
         "enable_google_search": True,
         "vad_silence_duration_ms": 600,

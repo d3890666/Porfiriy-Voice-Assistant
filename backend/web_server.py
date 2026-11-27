@@ -50,6 +50,7 @@ try:
     from .plugins.mail_imap import MailImapPlugin
     from .plugins.keenetic import KeeneticPlugin
     from .plugins.kinowatch import KinoWatchPlugin
+    from .plugins.yandex_maps import YandexMapsPlugin
 except ImportError:
     from db import db_singleton
     from big_models import big_model_pool_singleton
@@ -62,6 +63,7 @@ except ImportError:
     from plugins.mail_imap import MailImapPlugin
     from plugins.keenetic import KeeneticPlugin
     from plugins.kinowatch import KinoWatchPlugin
+    from plugins.yandex_maps import YandexMapsPlugin
 
 class WebServer:
     def __init__(self, device_manager, ha_api, options_callback, options_save_callback: Optional[Callable[[Dict[str, Any]], None]] = None, phrase_manager=None, models_callback: Optional[Callable[[], List[Dict[str, Any]]]] = None, refresh_models_callback=None, ww_engine_callback=None, port: int = 8099):
@@ -183,6 +185,7 @@ class WebServer:
         self.app.router.add_post("/api/providers/builtin.kinowatch/auth/start", self.handle_kinowatch_auth_start)
         self.app.router.add_post("/api/providers/builtin.kinowatch/auth/poll", self.handle_kinowatch_auth_poll)
         self.app.router.add_post("/api/providers/builtin.kinowatch/folders", self.handle_kinowatch_folders)
+        self.app.router.add_post("/api/providers/builtin.yandex_maps/test", self.handle_test_yandex_maps)
         self.app.router.add_post("/api/providers/{provider_id}/accounts", self.handle_save_provider_account)
         self.app.router.add_delete("/api/providers/accounts/{account_id}", self.handle_delete_provider_account)
         self.app.router.add_delete("/api/providers/{provider_id}", self.handle_delete_provider)
@@ -1704,6 +1707,10 @@ class WebServer:
 
     async def handle_kinowatch_folders(self, request):
         res = await KinoWatchPlugin.sync_folders(db_singleton)
+        return web.json_response(res, status=200 if res.get("success") else 400)
+
+    async def handle_test_yandex_maps(self, request):
+        res = await YandexMapsPlugin.test_connection(db_singleton)
         return web.json_response(res, status=200 if res.get("success") else 400)
 
     async def handle_test_big_model(self, request):
