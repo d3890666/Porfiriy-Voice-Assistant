@@ -11,6 +11,7 @@ from net_utils import normalize_mac
 logger = logging.getLogger("device_manager")
 
 TARGET_FIRMWARE_VERSION = "0.0.108"
+TARGET_WATCH_VERSION = "1.0.1"
 
 def is_newer_version(target: str, current: str) -> bool:
     """Проверяет, новее ли целевая версия, чем текущая (SemVer)."""
@@ -193,11 +194,18 @@ class DeviceManager:
                 dev["config"]["output_mode"] = "text_only"
                 dev["config"]["_wear_initialized"] = True
             
-        dev["target_firmware"] = TARGET_FIRMWARE_VERSION
-        dev["has_update"] = (
-            dev.get("device_type") == "esp32" and 
-            is_newer_version(TARGET_FIRMWARE_VERSION, dev.get("firmware", ""))
-        )
+        if dev.get("device_type") == "wear_os":
+            apk_info = self.get_watch_apk_info()
+            dev["target_firmware"] = TARGET_WATCH_VERSION
+            dev["has_update"] = bool(
+                apk_info.get("available") and is_newer_version(TARGET_WATCH_VERSION, dev.get("firmware", ""))
+            )
+        else:
+            dev["target_firmware"] = TARGET_FIRMWARE_VERSION
+            dev["has_update"] = (
+                dev.get("device_type") == "esp32" and 
+                is_newer_version(TARGET_FIRMWARE_VERSION, dev.get("firmware", ""))
+            )
         # Сброс зависшего статуса OTA при успешном подключении платы
         dev["ota_status"] = None
         dev["ota_progress"] = 0
@@ -353,16 +361,61 @@ class DeviceManager:
                     outdated.append(d)
         return outdated
 
+    def get_watch_apk_path(self) -> Optional[str]:
+        """Поиск пути к собранному Wear OS APK."""
+        candidates = [
+            "/backend/firmware/porfiriy-watch.apk",
+            os.path.join(os.path.dirname(__file__), "firmware", "porfiriy-watch.apk"),
+            os.path.join(os.path.dirname(__file__), "..", "wear_os_app", "app", "build", "outputs", "apk", "release", "app-release.apk"),
+            "/data/porfiriy-watch.apk",
+        ]
+        for c in candidates:
+            if os.path.exists(c) and os.path.isfile(c):
+                return os.path.abspath(c)
+        return None
+
+    def get_watch_apk_info(self) -> Dict[str, Any]:
+        """Информация об актуальном Wear OS APK на сервере."""
+        import hashlib
+        path = self.get_watch_apk_path()
+        exists = bool(path and os.path.exists(path))
+        size = os.path.getsize(path) if exists else 0
+        sha256 = ""
+        if exists and path:
+            try:
+                h = hashlib.sha256()
+                with open(path, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
+                sha256 = h.hexdigest()
+            except Exception:
+                pass
+        return {
+            "target_version": TARGET_WATCH_VERSION,
+            "available": exists,
+            "size": size,
+            "sha256": sha256,
+            "path": path,
+        }
+
     def get_all_devices(self) -> List[Dict[str, Any]]:
         result = []
+        watch_apk_avail = bool(self.get_watch_apk_path())
         for d in self.devices.values():
             dev_copy = dict(d)
-            dev_copy["target_firmware"] = TARGET_FIRMWARE_VERSION
-            dev_copy["has_update"] = (
-                dev_copy.get("device_type") == "esp32" and 
-                dev_copy.get("is_online", False) and 
-                is_newer_version(TARGET_FIRMWARE_VERSION, dev_copy.get("firmware", ""))
-            )
+            if dev_copy.get("device_type") == "wear_os":
+                dev_copy["target_firmware"] = TARGET_WATCH_VERSION
+                dev_copy["apk_available"] = watch_apk_avail
+                dev_copy["has_update"] = bool(
+                    watch_apk_avail and is_newer_version(TARGET_WATCH_VERSION, dev_copy.get("firmware", ""))
+                )
+            else:
+                dev_copy["target_firmware"] = TARGET_FIRMWARE_VERSION
+                dev_copy["has_update"] = (
+                    dev_copy.get("device_type") == "esp32" and 
+                    dev_copy.get("is_online", False) and 
+                    is_newer_version(TARGET_FIRMWARE_VERSION, dev_copy.get("firmware", ""))
+                )
             result.append(dev_copy)
         return result
 
@@ -530,12 +583,26 @@ class DeviceManager:
         return None
 
     async def start_ota_update(self, mac: str) -> bool:
-        """Запуск асинхронной передачи прошивки по WebSocket."""
+        """Запуск асинхронной передачи прошивки/APK по WebSocket."""
         clean_mac = mac.strip().lower()
+        dev = self.devices.get(clean_mac)
         ws = self.active_sockets.get(clean_mac)
         if not ws or getattr(ws, "closed", False):
             logger.error(f"[OTA] Device {clean_mac} is not connected to WebSocket")
             return False
+
+        if dev and dev.get("device_type") == "wear_os":
+            apk_info = self.get_watch_apk_info()
+            if not apk_info.get("available"):
+                logger.error("[OTA] Watch APK not found on server")
+                return False
+            return await self.send_command(clean_mac, {
+                "type": "update_available",
+                "version": apk_info["target_version"],
+                "size": apk_info["size"],
+                "sha256": apk_info["sha256"],
+                "auto_start": True,
+            })
             
         fw_path = self.get_firmware_path()
         if not fw_path or not os.path.exists(fw_path):

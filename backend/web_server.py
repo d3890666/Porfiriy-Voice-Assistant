@@ -133,6 +133,8 @@ class WebServer:
         self.app.router.add_post("/api/phrases/regenerate", self.handle_regenerate_phrases)
         self.app.router.add_get("/api/phrases/status", self.handle_phrases_status)
         self.app.router.add_get("/api/firmware/info", self.handle_firmware_info)
+        self.app.router.add_get("/api/watch/apk/info", self.handle_watch_apk_info)
+        self.app.router.add_get("/api/watch/apk/download", self.handle_watch_apk_download)
         self.app.router.add_post("/api/devices/{mac}/ota", self.handle_device_ota)
         self.app.router.add_post("/api/devices/bulk_ota", self.handle_bulk_ota)
         self.app.router.add_post("/api/devices/{mac}/mic_test/start", self.handle_mic_test_start)
@@ -391,6 +393,24 @@ class WebServer:
     async def handle_firmware_info(self, request):
         info = self.device_manager.get_firmware_info()
         return web.json_response(info)
+
+    async def handle_watch_apk_info(self, request):
+        info = self.device_manager.get_watch_apk_info()
+        safe = {k: v for k, v in info.items() if k != "path"}
+        return web.json_response(safe)
+
+    async def handle_watch_apk_download(self, request):
+        path = self.device_manager.get_watch_apk_path()
+        if not path or not os.path.exists(path):
+            return web.json_response({"error": "Watch APK not found on server"}, status=404)
+        return web.FileResponse(
+            path=path,
+            headers={
+                "Content-Type": "application/vnd.android.package-archive",
+                "Content-Disposition": 'attachment; filename="porfiriy-watch.apk"',
+                "Cache-Control": "no-cache",
+            },
+        )
 
     async def handle_device_ota(self, request):
         mac = request.match_info["mac"]

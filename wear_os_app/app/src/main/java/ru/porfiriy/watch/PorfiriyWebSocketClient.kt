@@ -17,17 +17,27 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 sealed class WatchWsEvent {
     data class Connected(val url: String, val isBackup: Boolean) : WatchWsEvent()
-    data class Ready(val userName: String, val hasTelegram: Boolean) : WatchWsEvent()
+    data class Ready(
+        val userName: String,
+        val hasTelegram: Boolean,
+        val targetVersion: String,
+        val hasUpdate: Boolean,
+        val apkAvailable: Boolean,
+    ) : WatchWsEvent()
     data class StateChanged(val state: String) : WatchWsEvent()
     data class ToolCall(val name: String, val label: String) : WatchWsEvent()
     data class InputTranscript(val text: String) : WatchWsEvent()
     data class TextDelta(val delta: String) : WatchWsEvent()
     data class TurnComplete(val fullText: String) : WatchWsEvent()
     data class TgSent(val ok: Boolean, val recipient: String, val error: String) : WatchWsEvent()
+    data class UpdateAvailable(val version: String, val autoStart: Boolean) : WatchWsEvent()
     data class Error(val message: String) : WatchWsEvent()
     data object Disconnected : WatchWsEvent()
 }
@@ -37,6 +47,16 @@ data class ProbeResult(
     val usedBackup: Boolean = false,
     val latencyMs: Long = 0,
     val userName: String = "",
+    val hasUpdate: Boolean = false,
+    val targetVersion: String = "",
+    val apkAvailable: Boolean = false,
+    val error: String = "",
+)
+
+data class ApkDownloadResult(
+    val ok: Boolean,
+    val file: File? = null,
+    val version: String = "",
     val error: String = "",
 )
 
@@ -47,7 +67,7 @@ class PorfiriyWebSocketClient(
     private val client = OkHttpClient.Builder()
         .connectTimeout(2500, TimeUnit.MILLISECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(5000, TimeUnit.MILLISECONDS)
+        .writeTimeout(10000, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
@@ -61,14 +81,20 @@ class PorfiriyWebSocketClient(
     private var isOpen = false
 
     @Volatile
+    private var intentionalClose = false
+
+    @Volatile
     private var connectJob: Job? = null
 
     private val preRollLock = Any()
     private val preRollQueue = ArrayDeque<ByteArray>()
-    private val maxPreRollChunks = 110 // ~3.5s @ 32ms/chunk
+    private val maxPreRollChunks = 110
+
+    fun isConnected(): Boolean = isOpen && activeSocket != null
 
     fun connect(settings: WatchSettings) {
         disconnect()
+        intentionalClose = false
         synchronized(preRollLock) {
             preRollQueue.clear()
         }
@@ -91,15 +117,17 @@ class PorfiriyWebSocketClient(
                 if (okBackup) return@launch
             }
 
-            _events.tryEmit(
-                WatchWsEvent.Error(
-                    if (backup.isNotEmpty()) {
-                        "Нет связи с основным и резервным сервером"
-                    } else {
-                        "Сервер Порфирия недоступен ($primary)"
-                    }
+            if (!intentionalClose) {
+                _events.tryEmit(
+                    WatchWsEvent.Error(
+                        if (backup.isNotEmpty()) {
+                            "Нет связи с основным и резервным сервером"
+                        } else {
+                            "Сервер недоступен ($primary)"
+                        }
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -111,13 +139,13 @@ class PorfiriyWebSocketClient(
         val openDeferred = CompletableDeferred<Boolean>()
         val request = try {
             Request.Builder().url(url).build()
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return false
         }
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (activeSocket != null && activeSocket !== webSocket) {
+                if (intentionalClose || (activeSocket != null && activeSocket !== webSocket)) {
                     webSocket.close(1000, "Superseded")
                     openDeferred.complete(false)
                     return
@@ -128,12 +156,11 @@ class PorfiriyWebSocketClient(
                     put("mac", settings.deviceMac)
                     put("name", settings.deviceName)
                     put("device_type", "wear_os")
-                    put("firmware", "1.0.0")
+                    put("firmware", BuildConfig.VERSION_NAME)
                     put("api_key", settings.apiKey)
                 }
                 webSocket.send(reg.toString())
 
-                // Flush pre-roll microphone audio captured while connecting
                 synchronized(preRollLock) {
                     while (preRollQueue.isNotEmpty()) {
                         val chunk = preRollQueue.removeFirst()
@@ -150,7 +177,7 @@ class PorfiriyWebSocketClient(
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                // Watch discards audio bytes; server already strips them for wear_os
+                // Audio bytes not used on watch
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -161,7 +188,7 @@ class PorfiriyWebSocketClient(
                 }
                 if (!openDeferred.isCompleted) {
                     openDeferred.complete(false)
-                } else if (wasOpen) {
+                } else if (wasOpen && !intentionalClose) {
                     _events.tryEmit(WatchWsEvent.Error(t.message ?: "Соединение разорвано"))
                 }
             }
@@ -173,7 +200,7 @@ class PorfiriyWebSocketClient(
                 }
                 if (!openDeferred.isCompleted) {
                     openDeferred.complete(false)
-                } else {
+                } else if (!intentionalClose) {
                     _events.tryEmit(WatchWsEvent.Disconnected)
                 }
             }
@@ -209,6 +236,9 @@ class PorfiriyWebSocketClient(
                         WatchWsEvent.Ready(
                             userName = obj.optString("user_name", ""),
                             hasTelegram = obj.optBoolean("has_telegram", false),
+                            targetVersion = obj.optString("target_version", ""),
+                            hasUpdate = obj.optBoolean("has_update", false),
+                            apkAvailable = obj.optBoolean("apk_available", false),
                         )
                     )
                 }
@@ -241,6 +271,14 @@ class PorfiriyWebSocketClient(
                         )
                     )
                 }
+                "update_available" -> {
+                    _events.tryEmit(
+                        WatchWsEvent.UpdateAvailable(
+                            version = obj.optString("version", ""),
+                            autoStart = obj.optBoolean("auto_start", false),
+                        )
+                    )
+                }
                 "error" -> {
                     _events.tryEmit(WatchWsEvent.Error(obj.optString("message", "Ошибка сервера")))
                 }
@@ -270,6 +308,13 @@ class PorfiriyWebSocketClient(
         }
     }
 
+    fun sendCancel() {
+        val ws = activeSocket ?: return
+        if (isOpen) {
+            ws.send(JSONObject().put("type", "cancel").toString())
+        }
+    }
+
     fun sendNewTurn() {
         val ws = activeSocket ?: return
         if (isOpen) {
@@ -277,16 +322,85 @@ class PorfiriyWebSocketClient(
         }
     }
 
-    fun sendToTelegram(text: String) {
+    fun sendToTelegram(text: String, settings: WatchSettings) {
         val ws = activeSocket
         if (ws != null && isOpen) {
             ws.send(JSONObject().put("type", "send_to_tg").put("text", text).toString())
-        } else {
-            _events.tryEmit(WatchWsEvent.TgSent(ok = false, recipient = "", error = "Нет соединения с сервером"))
+            return
+        }
+        // Reconnect transparently in lightweight probe mode to deliver Telegram message
+        scope.launch(Dispatchers.IO) {
+            val candidates = buildCandidates(settings)
+            var lastErr = "Нет соединения с сервером"
+            for ((url, _) in candidates) {
+                val done = CompletableDeferred<WatchWsEvent.TgSent?>()
+                val req = try {
+                    Request.Builder().url(url).build()
+                } catch (_: Exception) {
+                    continue
+                }
+                val tmpWs = client.newWebSocket(req, object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        val reg = JSONObject().apply {
+                            put("type", "register")
+                            put("mac", settings.deviceMac)
+                            put("name", settings.deviceName)
+                            put("device_type", "wear_os")
+                            put("firmware", BuildConfig.VERSION_NAME)
+                            put("api_key", settings.apiKey)
+                            put("probe", true)
+                        }
+                        webSocket.send(reg.toString())
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, raw: String) {
+                        try {
+                            val obj = JSONObject(raw)
+                            when (obj.optString("type")) {
+                                "ready" -> {
+                                    webSocket.send(JSONObject().put("type", "send_to_tg").put("text", text).toString())
+                                }
+                                "tg_sent" -> {
+                                    done.complete(
+                                        WatchWsEvent.TgSent(
+                                            ok = obj.optBoolean("ok", false),
+                                            recipient = obj.optString("recipient", ""),
+                                            error = obj.optString("error", ""),
+                                        )
+                                    )
+                                    webSocket.close(1000, "TG sent")
+                                }
+                                "error" -> {
+                                    done.complete(WatchWsEvent.TgSent(false, "", obj.optString("message", "Ошибка")))
+                                    webSocket.close(1000, "Error")
+                                }
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        if (!done.isCompleted) {
+                            lastErr = t.message ?: "Нет связи"
+                            done.complete(null)
+                        }
+                    }
+                })
+
+                val res = withTimeoutOrNull(8000L) { done.await() }
+                if (res != null) {
+                    _events.tryEmit(res)
+                    return@launch
+                } else {
+                    tmpWs.cancel()
+                }
+            }
+            _events.tryEmit(WatchWsEvent.TgSent(ok = false, recipient = "", error = lastErr))
         }
     }
 
     fun disconnect() {
+        intentionalClose = true
         connectJob?.cancel()
         connectJob = null
         isOpen = false
@@ -295,13 +409,15 @@ class PorfiriyWebSocketClient(
         ws?.close(1000, "Client closed")
     }
 
-    suspend fun probeConnection(settings: WatchSettings): ProbeResult {
-        val candidates = buildList {
-            if (settings.primaryUrl.isNotBlank()) add(settings.primaryUrl.trim() to false)
-            if (settings.backupUrl.isNotBlank() && settings.backupUrl.trim() != settings.primaryUrl.trim()) {
-                add(settings.backupUrl.trim() to true)
-            }
+    private fun buildCandidates(settings: WatchSettings): List<Pair<String, Boolean>> = buildList {
+        if (settings.primaryUrl.isNotBlank()) add(settings.primaryUrl.trim() to false)
+        if (settings.backupUrl.isNotBlank() && settings.backupUrl.trim() != settings.primaryUrl.trim()) {
+            add(settings.backupUrl.trim() to true)
         }
+    }
+
+    suspend fun probeConnection(settings: WatchSettings): ProbeResult {
+        val candidates = buildCandidates(settings)
         if (candidates.isEmpty()) {
             return ProbeResult(ok = false, error = "Не задан URL сервера")
         }
@@ -312,12 +428,16 @@ class PorfiriyWebSocketClient(
             val done = CompletableDeferred<ProbeResult>()
             val req = try {
                 Request.Builder().url(url).build()
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 lastErr = "Некорректный URL: $url"
                 continue
             }
 
             var detectedUser = ""
+            var hasUpd = false
+            var targetVer = ""
+            var apkAvail = false
+
             val ws = client.newWebSocket(req, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     val reg = JSONObject().apply {
@@ -325,7 +445,7 @@ class PorfiriyWebSocketClient(
                         put("mac", settings.deviceMac)
                         put("name", settings.deviceName)
                         put("device_type", "wear_os")
-                        put("firmware", "1.0.0")
+                        put("firmware", BuildConfig.VERSION_NAME)
                         put("api_key", settings.apiKey)
                         put("probe", true)
                     }
@@ -349,11 +469,24 @@ class PorfiriyWebSocketClient(
                             }
                             "ready" -> {
                                 detectedUser = obj.optString("user_name", "")
+                                hasUpd = obj.optBoolean("has_update", false)
+                                targetVer = obj.optString("target_version", "")
+                                apkAvail = obj.optBoolean("apk_available", false)
                                 webSocket.send(JSONObject().put("type", "ping").toString())
                             }
                             "pong" -> {
                                 val dt = System.currentTimeMillis() - t0
-                                done.complete(ProbeResult(ok = true, usedBackup = isBackup, latencyMs = dt, userName = detectedUser))
+                                done.complete(
+                                    ProbeResult(
+                                        ok = true,
+                                        usedBackup = isBackup,
+                                        latencyMs = dt,
+                                        userName = detectedUser,
+                                        hasUpdate = hasUpd,
+                                        targetVersion = targetVer,
+                                        apkAvailable = apkAvail,
+                                    )
+                                )
                                 webSocket.close(1000, "Probe done")
                             }
                             "error" -> {
@@ -386,5 +519,141 @@ class PorfiriyWebSocketClient(
             }
         }
         return ProbeResult(ok = false, error = lastErr)
+    }
+
+    suspend fun downloadApk(
+        settings: WatchSettings,
+        outputFile: File,
+        onProgress: (percent: Int, version: String) -> Unit,
+    ): ApkDownloadResult {
+        val candidates = buildCandidates(settings)
+        if (candidates.isEmpty()) {
+            return ApkDownloadResult(ok = false, error = "Не задан URL сервера")
+        }
+
+        var lastErr = "Сервер недоступен"
+        for ((url, _) in candidates) {
+            val done = CompletableDeferred<ApkDownloadResult>()
+            val req = try {
+                Request.Builder().url(url).build()
+            } catch (_: Exception) {
+                continue
+            }
+
+            outputFile.parentFile?.mkdirs()
+            if (outputFile.exists()) outputFile.delete()
+
+            var fos: FileOutputStream? = null
+            val digest = MessageDigest.getInstance("SHA-256")
+            var totalSize = 0L
+            var received = 0L
+            var expectedSha = ""
+            var version = ""
+
+            val ws = client.newWebSocket(req, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    val reg = JSONObject().apply {
+                        put("type", "register")
+                        put("mac", settings.deviceMac)
+                        put("name", settings.deviceName)
+                        put("device_type", "wear_os")
+                        put("firmware", BuildConfig.VERSION_NAME)
+                        put("api_key", settings.apiKey)
+                        put("probe", true)
+                    }
+                    webSocket.send(reg.toString())
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    try {
+                        val obj = JSONObject(text)
+                        when (obj.optString("type")) {
+                            "ready" -> {
+                                webSocket.send(JSONObject().put("type", "download_apk").toString())
+                            }
+                            "apk_start" -> {
+                                totalSize = obj.optLong("size", 0L)
+                                expectedSha = obj.optString("sha256", "")
+                                version = obj.optString("version", "")
+                                fos = FileOutputStream(outputFile)
+                                onProgress(0, version)
+                            }
+                            "apk_end" -> {
+                                try {
+                                    fos?.flush()
+                                    fos?.close()
+                                } catch (_: Exception) {
+                                }
+                                fos = null
+                                val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+                                if (expectedSha.isNotBlank() && !actualSha.equals(expectedSha, ignoreCase = true)) {
+                                    outputFile.delete()
+                                    done.complete(ApkDownloadResult(ok = false, error = "Ошибка контрольной суммы APK"))
+                                } else {
+                                    onProgress(100, version)
+                                    done.complete(ApkDownloadResult(ok = true, file = outputFile, version = version))
+                                }
+                                webSocket.close(1000, "APK downloaded")
+                            }
+                            "apk_error", "error" -> {
+                                try { fos?.close() } catch (_: Exception) {}
+                                fos = null
+                                done.complete(ApkDownloadResult(ok = false, error = obj.optString("message", "Ошибка загрузки APK")))
+                                webSocket.close(1000, "APK error")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        try { fos?.close() } catch (_: Exception) {}
+                        fos = null
+                        if (!done.isCompleted) {
+                            done.complete(ApkDownloadResult(ok = false, error = e.message ?: "Ошибка записи"))
+                        }
+                    }
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    try {
+                        val arr = bytes.toByteArray()
+                        fos?.write(arr)
+                        digest.update(arr)
+                        received += arr.size
+                        if (totalSize > 0) {
+                            val pct = ((received * 100L) / totalSize).toInt().coerceIn(0, 99)
+                            onProgress(pct, version)
+                        }
+                    } catch (e: Exception) {
+                        try { fos?.close() } catch (_: Exception) {}
+                        fos = null
+                        if (!done.isCompleted) {
+                            done.complete(ApkDownloadResult(ok = false, error = e.message ?: "Ошибка записи"))
+                        }
+                        webSocket.close(1000, "Write error")
+                    }
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    try { fos?.close() } catch (_: Exception) {}
+                    fos = null
+                    if (!done.isCompleted) {
+                        done.complete(ApkDownloadResult(ok = false, error = t.message ?: "Обрыв загрузки"))
+                    }
+                }
+            })
+
+            val res = withTimeoutOrNull(90000L) { done.await() }
+            if (res == null) {
+                try { fos?.close() } catch (_: Exception) {}
+                ws.cancel()
+                lastErr = "Таймаут загрузки APK"
+            } else if (res.ok) {
+                return res
+            } else {
+                lastErr = res.error
+                if (res.error.contains("APK не найден", ignoreCase = true) || res.error.contains("токен", ignoreCase = true)) {
+                    return res
+                }
+            }
+        }
+        return ApkDownloadResult(ok = false, error = lastErr)
     }
 }

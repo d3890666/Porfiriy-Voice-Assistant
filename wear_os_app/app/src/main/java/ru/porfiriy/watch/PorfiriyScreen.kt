@@ -7,7 +7,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,11 +20,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -58,6 +59,7 @@ fun PorfiriyMainScreen(
     uiState: WatchUiState,
     palette: LedPalette,
     onTapOrb: () -> Unit,
+    onCancel: () -> Unit,
     onContinueDialogue: () -> Unit,
     onSendToTelegram: () -> Unit,
     onRetry: () -> Unit,
@@ -70,6 +72,9 @@ fun PorfiriyMainScreen(
                 onRequestMicPermission = onRequestMicPermission,
                 onOpenSettings = onOpenSettings,
             )
+        }
+        WatchUiPhase.UPDATING -> {
+            UpdatingScreen(uiState = uiState)
         }
         WatchUiPhase.RESPONDING, WatchUiPhase.DONE -> {
             ResponseScreen(
@@ -88,11 +93,13 @@ fun PorfiriyMainScreen(
                 onOpenSettings = onOpenSettings,
             )
         }
-        WatchUiPhase.CONNECTING, WatchUiPhase.LISTENING, WatchUiPhase.THINKING -> {
+        WatchUiPhase.IDLE, WatchUiPhase.CONNECTING, WatchUiPhase.LISTENING, WatchUiPhase.THINKING -> {
             ListeningOrbScreen(
                 uiState = uiState,
                 palette = palette,
-                onTapOrb = onTapOrb,
+                onTapOrb = if (uiState.phase == WatchUiPhase.IDLE) onRetry else onTapOrb,
+                onCancel = onCancel,
+                onStartListening = onRetry,
                 onOpenSettings = onOpenSettings,
             )
         }
@@ -104,15 +111,18 @@ private fun ListeningOrbScreen(
     uiState: WatchUiState,
     palette: LedPalette,
     onTapOrb: () -> Unit,
+    onCancel: () -> Unit,
+    onStartListening: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val noRipple = remember { MutableInteractionSource() }
+    val isIdle = uiState.phase == WatchUiPhase.IDLE
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .clickable(interactionSource = noRipple, indication = null) {
-                if (uiState.phase == WatchUiPhase.LISTENING || uiState.phase == WatchUiPhase.CONNECTING) {
+                if (uiState.phase == WatchUiPhase.LISTENING || uiState.phase == WatchUiPhase.CONNECTING || isIdle) {
                     onTapOrb()
                 }
             },
@@ -124,11 +134,11 @@ private fun ListeningOrbScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Top subtle badge (user name + route)
+        // Top subtle badge (user name + route + update dot)
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 18.dp, start = 28.dp, end = 28.dp),
+                .padding(top = 16.dp, start = 26.dp, end = 26.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             val headerTitle = if (uiState.boundUserName.isNotBlank()) {
@@ -154,17 +164,17 @@ private fun ListeningOrbScreen(
             }
         }
 
-        // Bottom live status + settings trigger
+        // Bottom live status + Cancel / Mic + Settings dock
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 14.dp, start = 24.dp, end = 24.dp),
+                .padding(bottom = 12.dp, start = 20.dp, end = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
                 text = uiState.statusText,
                 color = Color.White,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
@@ -172,28 +182,107 @@ private fun ListeningOrbScreen(
             )
             if (uiState.phase == WatchUiPhase.LISTENING) {
                 Text(
-                    text = "Тап по экрану — отправить",
+                    text = "Тап — отправить",
                     color = Color(0xFF94A3B8),
                     fontSize = 10.sp,
                     textAlign = TextAlign.Center,
                 )
             }
-            Spacer(modifier = Modifier.height(4.dp))
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.08f))
-                    .clickable { onOpenSettings() },
-                contentAlignment = Alignment.Center,
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Settings,
-                    contentDescription = "Настройки",
-                    tint = Color(0xFFCBD5E1),
-                    modifier = Modifier.size(15.dp),
-                )
+                if (isIdle) {
+                    Button(
+                        onClick = onStartListening,
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = Color(0xFF0284C7),
+                            contentColor = Color.White,
+                        ),
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Mic,
+                            contentDescription = "Говорить",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                } else {
+                    Button(
+                        onClick = onCancel,
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = Color(0xFF7F1D1D).copy(alpha = 0.85f),
+                            contentColor = Color(0xFFFECACA),
+                        ),
+                        modifier = Modifier.size(34.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Отмена",
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = onOpenSettings,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = if (uiState.hasUpdate) Color(0xFF1E3A8A) else Color.White.copy(alpha = 0.10f),
+                        contentColor = if (uiState.hasUpdate) Color(0xFF93C5FD) else Color(0xFFCBD5E1),
+                    ),
+                    modifier = Modifier.size(30.dp),
+                ) {
+                    Icon(
+                        imageVector = if (uiState.hasUpdate) Icons.Rounded.SystemUpdate else Icons.Rounded.Settings,
+                        contentDescription = "Настройки",
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun UpdatingScreen(uiState: WatchUiState) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator(
+            progress = (uiState.updateProgress / 100f).coerceIn(0f, 1f),
+            modifier = Modifier.fillMaxSize().padding(10.dp),
+            strokeWidth = 5.dp,
+            indicatorColor = Color(0xFF38BDF8),
+            trackColor = Color(0xFF1E293B),
+        )
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(24.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.SystemUpdate,
+                contentDescription = null,
+                tint = Color(0xFF38BDF8),
+                modifier = Modifier.size(26.dp),
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "${uiState.updateProgress}%",
+                color = Color.White,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = uiState.updateStatus.ifBlank { "Загрузка APK…" },
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
@@ -214,7 +303,6 @@ private fun ResponseScreen(
         focusRequester.requestFocus()
     }
 
-    // Gentle auto-scroll down while text streams in
     LaunchedEffect(uiState.replyText.length) {
         if (uiState.phase == WatchUiPhase.RESPONDING && scrollState.maxValue > 0) {
             scrollState.animateScrollTo(scrollState.maxValue)
@@ -242,7 +330,6 @@ private fun ResponseScreen(
                 .focusRequester(focusRequester)
                 .focusable(),
         ) {
-            // Scrollable text column
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -296,7 +383,6 @@ private fun ResponseScreen(
                 )
             }
 
-            // Bottom gradient dock so action buttons stay crisp over scrolled text
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -317,7 +403,6 @@ private fun ResponseScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // Always-present "Send to TG" pill button
                     val tgColor = when (uiState.tgStatus) {
                         TgSendStatus.SENT -> Color(0xFF10B981)
                         TgSendStatus.FAILED -> Color(0xFFEF4444)
@@ -354,7 +439,7 @@ private fun ResponseScreen(
                                 }
                                 else -> {
                                     Icon(
-                                        imageVector = Icons.Rounded.Send,
+                                        imageVector = Icons.AutoMirrored.Rounded.Send,
                                         contentDescription = "В Telegram",
                                         modifier = Modifier.size(14.dp),
                                     )
@@ -374,7 +459,6 @@ private fun ResponseScreen(
                         }
                     }
 
-                    // Continue dialogue button
                     Button(
                         onClick = onContinueDialogue,
                         colors = ButtonDefaults.buttonColors(
@@ -390,7 +474,6 @@ private fun ResponseScreen(
                         )
                     }
 
-                    // Discreet settings button
                     Button(
                         onClick = onOpenSettings,
                         colors = ButtonDefaults.buttonColors(

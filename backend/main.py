@@ -1925,6 +1925,8 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
         return uid, user_obj, has_tg
 
     uid, user_obj, has_tg = _resolve_watch_user()
+    apk_info = device_manager.get_watch_apk_info()
+    dev_now = device_manager.get_device(client_mac) or {}
     await _send_json({
         "type": "ready",
         "mac": client_mac,
@@ -1932,7 +1934,83 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
         "user_name": (user_obj.get("name") if user_obj else ""),
         "has_telegram": has_tg,
         "probe": bool(reg_data.get("probe")),
+        "target_version": apk_info.get("target_version", ""),
+        "apk_available": bool(apk_info.get("available")),
+        "apk_size": int(apk_info.get("size", 0)),
+        "has_update": bool(dev_now.get("has_update")),
     })
+
+    last_reply_text = ""
+
+    async def _handle_send_to_tg(data: dict):
+        tg_text = (data.get("text") or last_reply_text or "").strip()
+        tg_title = (data.get("title") or "⌚ Порфирий (Часы)").strip()
+        cur_uid, cur_user, _ = _resolve_watch_user()
+        target = cur_uid or "family"
+        if not tg_text:
+            await _send_json({"type": "tg_sent", "ok": False, "recipient": target, "error": "Пустой текст ответа"})
+            return
+        try:
+            prov = db_singleton.get_provider("builtin.telegram_bot", mask_secrets=False)
+            res = await TelegramBotPlugin.send_message(
+                db=db_singleton,
+                provider=prov,
+                ha_api=ha_api,
+                target=target,
+                text=tg_text,
+                title=tg_title,
+            )
+            ok = res.get("status") == "ok"
+            await _send_json({
+                "type": "tg_sent",
+                "ok": ok,
+                "recipient": res.get("target") or (cur_user.get("name") if cur_user else target),
+                "error": res.get("error", ""),
+            })
+        except Exception as e_tg:
+            logger.error(f"[WATCH-WS] send_to_tg failed for {client_mac}: {e_tg}")
+            await _send_json({"type": "tg_sent", "ok": False, "recipient": target, "error": str(e_tg)})
+
+    async def _stream_watch_apk():
+        info = device_manager.get_watch_apk_info()
+        apk_path = info.get("path")
+        if not info.get("available") or not apk_path or not os.path.exists(apk_path):
+            await _send_json({"type": "apk_error", "message": "APK не найден на сервере"})
+            return
+        total_size = int(info["size"])
+        sha256 = info.get("sha256", "")
+        target_ver = info.get("target_version", "")
+        logger.info(f"[WATCH-OTA] Streaming porfiriy-watch.apk v{target_ver} ({total_size} bytes) to {client_mac}")
+        device_manager.update_device_runtime(client_mac, {"ota_status": "flashing", "ota_progress": 0})
+        await _send_json({
+            "type": "apk_start",
+            "version": target_ver,
+            "size": total_size,
+            "sha256": sha256,
+        })
+        sent = 0
+        last_pct = 0
+        try:
+            with open(apk_path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    async with send_lock:
+                        await websocket.send(chunk)
+                    sent += len(chunk)
+                    pct = int((sent / max(1, total_size)) * 100)
+                    if pct >= last_pct + 5 or sent == total_size:
+                        last_pct = pct
+                        device_manager.update_device_runtime(client_mac, {"ota_status": "flashing", "ota_progress": pct})
+                    await asyncio.sleep(0.002)
+            await _send_json({"type": "apk_end", "size": sent, "sha256": sha256})
+            device_manager.update_device_runtime(client_mac, {"ota_status": None, "ota_progress": 100})
+            logger.info(f"[WATCH-OTA] Finished streaming APK ({sent}/{total_size} bytes) to {client_mac}")
+        except Exception as e_apk:
+            logger.error(f"[WATCH-OTA] APK stream failed for {client_mac}: {e_apk}")
+            device_manager.update_device_runtime(client_mac, {"ota_status": "error", "ota_progress": 0})
+            await _send_json({"type": "apk_error", "message": f"Ошибка передачи APK: {e_apk}"})
 
     if reg_data.get("probe"):
         try:
@@ -1942,8 +2020,14 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                         data = json.loads(message)
                     except Exception:
                         continue
-                    if data.get("type") == "ping":
+                    mtype = data.get("type")
+                    if mtype == "ping":
                         await _send_json({"type": "pong"})
+                    elif mtype == "send_to_tg":
+                        await _handle_send_to_tg(data)
+                        break
+                    elif mtype == "download_apk":
+                        await _stream_watch_apk()
                         break
         except Exception:
             pass
@@ -1956,8 +2040,33 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
     is_tool_pending = False
     audio_queue: asyncio.Queue = asyncio.Queue()
     gemini_task: Optional[asyncio.Task] = None
-    last_reply_text = ""
+    thinking_watchdog_task: Optional[asyncio.Task] = None
     utterance_chunks: list[bytes] = []
+
+    def _cancel_thinking_watchdog():
+        nonlocal thinking_watchdog_task
+        if thinking_watchdog_task and not thinking_watchdog_task.done():
+            thinking_watchdog_task.cancel()
+        thinking_watchdog_task = None
+
+    def _start_thinking_watchdog(timeout_s: float = 15.0):
+        nonlocal thinking_watchdog_task
+        _cancel_thinking_watchdog()
+
+        async def _watchdog():
+            nonlocal turn_active
+            try:
+                await asyncio.sleep(timeout_s)
+                if turn_active and not is_tool_pending:
+                    logger.warning(f"[WATCH-WS] Thinking watchdog ({timeout_s}s) triggered for {client_mac} — no response from Gemini.")
+                    turn_active = False
+                    device_manager.set_device_state(client_mac, "idle")
+                    await _send_json({"type": "error", "message": "Не расслышал, попробуй ещё раз"})
+                    await _send_json({"type": "state", "state": "idle"})
+            except asyncio.CancelledError:
+                pass
+
+        thinking_watchdog_task = asyncio.create_task(_watchdog())
     conversation_history: list[tuple[str, str]] = []
     try:
         recent_watch = db_singleton.get_recent_dialogue(channel="watch", scope_id=client_mac, limit=6, ttl_seconds=600)
@@ -2078,6 +2187,7 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                     while session_active:
                         async for response in session.receive():
                             if response.tool_call:
+                                _cancel_thinking_watchdog()
                                 is_tool_pending = True
                                 device_manager.set_device_state(client_mac, "thinking")
                                 await _send_json({"type": "state", "state": "thinking"})
@@ -2122,6 +2232,7 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                                     await _send_json({"type": "state", "state": "thinking"})
 
                             if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
+                                _cancel_thinking_watchdog()
                                 out_txt = sc.output_transcription.text
                                 if not responding_sent:
                                     responding_sent = True
@@ -2141,6 +2252,7 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                             in_progress = "IN_PROGRESS" in str(getattr(sc, "interaction_status", "") or "").upper()
                             is_turn_done = bool(getattr(sc, "turn_complete", False) and not in_progress)
                             if is_turn_done:
+                                _cancel_thinking_watchdog()
                                 full_reply = "".join(output_parts).strip()
                                 full_input = "".join(input_parts).strip()
                                 if not full_reply and turn_state.get("tool_executed"):
@@ -2227,8 +2339,23 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                         device_manager.set_device_state(client_mac, "thinking")
                         await _send_json({"type": "state", "state": "thinking"})
                         audio_queue.put_nowait("__EOS__")
+                        _start_thinking_watchdog(15.0)
+                elif mtype == "cancel":
+                    logger.info(f"[WATCH-WS] Turn cancelled by {client_mac}")
+                    _cancel_thinking_watchdog()
+                    turn_active = False
+                    is_tool_pending = False
+                    utterance_chunks.clear()
+                    while not audio_queue.empty():
+                        try:
+                            audio_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    device_manager.set_device_state(client_mac, "idle")
+                    await _send_json({"type": "state", "state": "idle"})
                 elif mtype == "new_turn":
                     logger.info(f"[WATCH-WS] Starting new_turn for {client_mac}")
+                    _cancel_thinking_watchdog()
                     utterance_chunks.clear()
                     turn_active = True
                     is_tool_pending = False
@@ -2242,33 +2369,11 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                     if not session_active or not gemini_task or gemini_task.done():
                         gemini_task = asyncio.create_task(_run_watch_gemini_session())
                 elif mtype == "send_to_tg":
-                    tg_text = (data.get("text") or last_reply_text or "").strip()
-                    tg_title = (data.get("title") or "⌚ Порфирий (Часы)").strip()
-                    cur_uid, cur_user, _ = _resolve_watch_user()
-                    target = cur_uid or "family"
-                    if not tg_text:
-                        await _send_json({"type": "tg_sent", "ok": False, "recipient": target, "error": "Пустой текст ответа"})
-                        continue
-                    try:
-                        prov = db_singleton.get_provider("builtin.telegram_bot", mask_secrets=False)
-                        res = await TelegramBotPlugin.send_message(
-                            db=db_singleton,
-                            provider=prov,
-                            ha_api=ha_api,
-                            target=target,
-                            text=tg_text,
-                            title=tg_title,
-                        )
-                        ok = res.get("status") == "ok"
-                        await _send_json({
-                            "type": "tg_sent",
-                            "ok": ok,
-                            "recipient": res.get("target") or (cur_user.get("name") if cur_user else target),
-                            "error": res.get("error", ""),
-                        })
-                    except Exception as e_tg:
-                        logger.error(f"[WATCH-WS] send_to_tg failed for {client_mac}: {e_tg}")
-                        await _send_json({"type": "tg_sent", "ok": False, "recipient": target, "error": str(e_tg)})
+                    await _handle_send_to_tg(data)
+                elif mtype == "download_apk":
+                    _cancel_thinking_watchdog()
+                    turn_active = False
+                    await _stream_watch_apk()
                 elif mtype == "ping":
                     await _send_json({"type": "pong"})
                 elif mtype == "heartbeat":
@@ -2283,6 +2388,7 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
     except Exception as e:
         logger.error(f"[WATCH-WS] Error for {client_mac}: {e}")
     finally:
+        _cancel_thinking_watchdog()
         session_active = False
         turn_active = False
         audio_queue.put_nowait(None)

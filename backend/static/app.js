@@ -575,9 +575,26 @@ function renderDevicesGrid() {
           const curArea = dev.area_name || '';
           const lastReply = (dev.last_reply_text || '').trim();
           return `
-          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(99, 102, 241, 0.14)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-            <span style="font-weight: 700; font-size: 13px; color: #7dd3fc;">⌚ Pixel Watch 2 (Wear OS)</span>
-            <span style="font-size: 11px; color: #cbd5e1; font-family: monospace; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 12px;">Текстовый ответ</span>
+          <div class="virtual-client-banner" style="background: linear-gradient(135deg, rgba(56, 189, 248, 0.16), rgba(99, 102, 241, 0.14)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-weight: 700; font-size: 13px; color: #7dd3fc;">⌚ Pixel Watch 2 (Wear OS)</span>
+              <span class="fw-badge ${dev.has_update ? 'fw-update-available' : 'fw-up-to-date'}" style="font-size: 10px; padding: 2px 7px;">
+                <strong>v${escapeHtml(dev.firmware || '1.0.0')}</strong>
+                ${dev.has_update ? `<span class="ota-device-badge" title="Доступна новая версия v${escapeHtml(dev.target_firmware || '')}">➔ v${escapeHtml(dev.target_firmware || '')}</span>` : '<span style="color: var(--accent-green); font-size: 11px;">✓</span>'}
+              </span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              ${dev.has_update && dev.is_online ? `
+                <button class="btn btn-sm ota-pulse-btn" onclick="triggerDeviceOta('${dev.mac}')" style="font-size: 11px; padding: 3px 9px; border-radius: 6px;" title="Отправить обновление APK на часы по WebSocket">
+                  ⚡ Обновить
+                </button>
+              ` : ''}
+              ${dev.apk_available ? `
+                <a href="${API_BASE}/api/watch/apk/download" download="porfiriy-watch.apk" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px; border-radius: 6px; text-decoration: none;" title="Скачать актуальный APK для установки с телефона">
+                  ⬇ APK
+                </a>
+              ` : ''}
+            </div>
           </div>
 
           <div style="margin: 10px 0 6px 0; display: flex; flex-direction: column; gap: 8px;">

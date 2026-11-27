@@ -34,10 +34,10 @@ fun PorfiriyOrbCanvas(
 ) {
     val targetColor = when (phase) {
         WatchUiPhase.CONNECTING, WatchUiPhase.LISTENING -> palette.listenColor
-        WatchUiPhase.THINKING -> palette.thinkColor
+        WatchUiPhase.THINKING, WatchUiPhase.UPDATING -> palette.thinkColor
         WatchUiPhase.RESPONDING, WatchUiPhase.DONE -> palette.speakColor
         WatchUiPhase.ERROR -> Color(0xFFEF4444)
-        WatchUiPhase.PERMISSION_NEEDED -> palette.idleColor
+        WatchUiPhase.IDLE, WatchUiPhase.PERMISSION_NEEDED -> palette.idleColor
     }
 
     val activeColor by animateColorAsState(

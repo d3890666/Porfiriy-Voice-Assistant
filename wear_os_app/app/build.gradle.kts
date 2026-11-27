@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val releaseKeystoreFile = file("${System.getProperty("user.home")}/.android/porfiriy-watch.jks")
+
 android {
     namespace = "ru.porfiriy.watch"
     compileSdk = 34
@@ -11,17 +13,34 @@ android {
         applicationId = "ru.porfiriy.watch"
         minSdk = 30
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (releaseKeystoreFile.exists()) {
+                storeFile = releaseKeystoreFile
+                storePassword = System.getenv("PORFIRIY_KS_PASS") ?: "porfiriy2026"
+                keyAlias = "porfiriy"
+                keyPassword = System.getenv("PORFIRIY_KEY_PASS") ?: "porfiriy2026"
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = if (releaseKeystoreFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -36,6 +55,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {

@@ -20,11 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Watch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -69,11 +70,14 @@ fun SettingsScreen(
     settings: WatchSettings,
     probeStatus: String,
     isProbing: Boolean,
+    hasUpdate: Boolean,
+    targetVersion: String,
     onUpdatePrimaryUrl: (String) -> Unit,
     onUpdateBackupUrl: (String) -> Unit,
     onUpdateApiKey: (String) -> Unit,
     onUpdateDeviceName: (String) -> Unit,
     onProbeConnection: () -> Unit,
+    onStartAppUpdate: () -> Unit,
     onBack: () -> Unit,
 ) {
     val listState = rememberScalingLazyListState()
@@ -144,7 +148,6 @@ fun SettingsScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     Spacer(modifier = Modifier.height(6.dp))
-                    // Preview LED palette synced from server
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -155,6 +158,29 @@ fun SettingsScreen(
                         LedDot(settings.palette.speakColor)
                     }
                 }
+            }
+
+            item {
+                Chip(
+                    onClick = onStartAppUpdate,
+                    label = {
+                        Text(
+                            if (hasUpdate && targetVersion.isNotBlank()) "Обновить до v$targetVersion" else "Обновить APK",
+                            maxLines = 1,
+                        )
+                    },
+                    secondaryLabel = {
+                        Text(
+                            if (hasUpdate) "Доступна новая версия" else "Скачать с Порфирия",
+                            maxLines = 1,
+                        )
+                    },
+                    icon = { Icon(Icons.Rounded.SystemUpdate, contentDescription = null) },
+                    colors = ChipDefaults.primaryChipColors(
+                        backgroundColor = if (hasUpdate) Color(0xFF059669) else Color(0xFF1E3A8A),
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             item {
@@ -244,7 +270,7 @@ fun SettingsScreen(
                 Chip(
                     onClick = onBack,
                     label = { Text("Назад к Порфирию", maxLines = 1) },
-                    icon = { Icon(Icons.Rounded.ArrowBack, contentDescription = null) },
+                    icon = { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null) },
                     colors = ChipDefaults.secondaryChipColors(backgroundColor = Color(0xFF1E293B)),
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -252,7 +278,7 @@ fun SettingsScreen(
 
             item {
                 Text(
-                    text = "ID: ${settings.deviceMac}",
+                    text = "v${BuildConfig.VERSION_NAME} • ${settings.deviceMac}",
                     color = Color(0xFF64748B),
                     fontSize = 10.sp,
                     textAlign = TextAlign.Center,

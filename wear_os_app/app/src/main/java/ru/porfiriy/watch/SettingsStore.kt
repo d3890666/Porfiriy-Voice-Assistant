@@ -45,7 +45,7 @@ data class WatchSettings(
     val palette: LedPalette = LedPalette(),
 ) {
     companion object {
-        const val DEFAULT_PRIMARY_URL = "ws://192.168.1.50:8765"
+        const val DEFAULT_PRIMARY_URL = "ws://192.168.110.50:8765"
         const val DEFAULT_DEVICE_NAME = "Pixel Watch 2"
     }
 }

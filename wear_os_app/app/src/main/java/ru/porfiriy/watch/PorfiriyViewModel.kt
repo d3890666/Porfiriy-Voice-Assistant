@@ -14,14 +14,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 
 enum class WatchUiPhase {
     PERMISSION_NEEDED,
+    IDLE,
     CONNECTING,
     LISTENING,
     THINKING,
     RESPONDING,
     DONE,
+    UPDATING,
     ERROR,
 }
 
@@ -46,9 +49,17 @@ data class WatchUiState(
     val errorMessage: String = "",
     val probeStatus: String = "",
     val isProbing: Boolean = false,
+    val hasUpdate: Boolean = false,
+    val targetVersion: String = "",
+    val apkAvailable: Boolean = false,
+    val updateProgress: Int = 0,
+    val updateStatus: String = "",
 )
 
-class PorfiriyController(context: Context) {
+class PorfiriyController(
+    context: Context,
+    private val onInstallApkReady: (File) -> Unit = {},
+) {
     private val appContext = context.applicationContext
     val settingsStore = SettingsStore(appContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -66,6 +77,8 @@ class PorfiriyController(context: Context) {
     val uiState: StateFlow<WatchUiState> = _uiState.asStateFlow()
 
     private var hasAudioPermission = false
+    private var wasBackgrounded = false
+    private var speechChunksCount = 0
 
     init {
         scope.launch {
@@ -77,7 +90,7 @@ class PorfiriyController(context: Context) {
         hasAudioPermission = granted
         if (!granted) {
             _uiState.update { it.copy(phase = WatchUiPhase.PERMISSION_NEEDED, statusText = "Нужен микрофон") }
-        } else if (autoStart && (_uiState.value.phase == WatchUiPhase.PERMISSION_NEEDED || _uiState.value.phase == WatchUiPhase.CONNECTING)) {
+        } else if (autoStart) {
             startFreshSession()
         }
     }
@@ -87,14 +100,20 @@ class PorfiriyController(context: Context) {
             _uiState.update { it.copy(phase = WatchUiPhase.PERMISSION_NEEDED, statusText = "Нужен микрофон") }
             return
         }
+        wasBackgrounded = false
+        speechChunksCount = 0
         val settings = settingsStore.settings.value
         _uiState.update {
-            WatchUiState(
+            it.copy(
                 phase = WatchUiPhase.CONNECTING,
+                rms = 0f,
                 statusText = "Подключение…",
                 routeBadge = "",
-                boundUserName = it.boundUserName,
-                hasTelegram = it.hasTelegram,
+                inputTranscript = "",
+                replyText = "",
+                tgStatus = TgSendStatus.IDLE,
+                tgMessage = "",
+                errorMessage = "",
             )
         }
         startMicCapture()
@@ -103,15 +122,49 @@ class PorfiriyController(context: Context) {
     }
 
     fun finishSpeaking() {
-        if (_uiState.value.phase != WatchUiPhase.LISTENING && _uiState.value.phase != WatchUiPhase.CONNECTING) return
+        val phase = _uiState.value.phase
+        if (phase != WatchUiPhase.LISTENING && phase != WatchUiPhase.CONNECTING) return
         mic.stop()
+        // Protect against sending pure silence (prevents infinite "thinking")
+        if (speechChunksCount < 2) {
+            wsClient.sendCancel()
+            _uiState.update {
+                it.copy(
+                    phase = WatchUiPhase.IDLE,
+                    rms = 0f,
+                    statusText = "Ничего не услышал",
+                )
+            }
+            hapticTick()
+            return
+        }
         wsClient.sendEndOfSpeech()
         _uiState.update { it.copy(phase = WatchUiPhase.THINKING, rms = 0f, statusText = "Думаю…") }
         hapticTick()
     }
 
+    fun cancelActiveTurn() {
+        mic.stop()
+        wsClient.sendCancel()
+        speechChunksCount = 0
+        _uiState.update {
+            it.copy(
+                phase = WatchUiPhase.IDLE,
+                rms = 0f,
+                statusText = "Отменено",
+                errorMessage = "",
+            )
+        }
+        hapticTick()
+    }
+
     fun continueDialogue() {
         if (!hasAudioPermission) return
+        if (!wsClient.isConnected()) {
+            startFreshSession()
+            return
+        }
+        speechChunksCount = 0
         _uiState.update {
             it.copy(
                 phase = WatchUiPhase.LISTENING,
@@ -134,7 +187,7 @@ class PorfiriyController(context: Context) {
         if (text.isEmpty() || _uiState.value.tgStatus == TgSendStatus.SENDING) return
         _uiState.update { it.copy(tgStatus = TgSendStatus.SENDING, tgMessage = "Отправляю…") }
         hapticTick()
-        wsClient.sendToTelegram(text)
+        wsClient.sendToTelegram(text, settingsStore.settings.value)
     }
 
     fun runConnectionProbe() {
@@ -149,12 +202,87 @@ class PorfiriyController(context: Context) {
             } else {
                 "✕ ${res.error}"
             }
-            _uiState.update { it.copy(isProbing = false, probeStatus = msg) }
+            _uiState.update {
+                it.copy(
+                    isProbing = false,
+                    probeStatus = msg,
+                    hasUpdate = if (res.ok) res.hasUpdate else it.hasUpdate,
+                    targetVersion = if (res.ok && res.targetVersion.isNotBlank()) res.targetVersion else it.targetVersion,
+                    apkAvailable = if (res.ok) res.apkAvailable else it.apkAvailable,
+                )
+            }
         }
     }
 
-    fun pauseActiveMic() {
+    fun startAppUpdate() {
+        if (_uiState.value.phase == WatchUiPhase.UPDATING) return
         mic.stop()
+        wsClient.disconnect()
+        _uiState.update {
+            it.copy(
+                phase = WatchUiPhase.UPDATING,
+                rms = 0f,
+                updateProgress = 0,
+                updateStatus = "Скачивание APK…",
+                errorMessage = "",
+            )
+        }
+        scope.launch {
+            val targetFile = File(File(appContext.cacheDir, "updates"), "porfiriy-watch.apk")
+            val res = wsClient.downloadApk(
+                settings = settingsStore.settings.value,
+                outputFile = targetFile,
+                onProgress = { pct, ver ->
+                    _uiState.update {
+                        it.copy(
+                            updateProgress = pct,
+                            targetVersion = ver.ifBlank { it.targetVersion },
+                            updateStatus = if (ver.isNotBlank()) "Обновление v$ver ($pct%)" else "Загрузка ($pct%)",
+                        )
+                    }
+                },
+            )
+            if (res.ok && res.file != null) {
+                _uiState.update {
+                    it.copy(
+                        phase = WatchUiPhase.IDLE,
+                        updateProgress = 100,
+                        updateStatus = "Открываю установщик…",
+                        statusText = "Установка v${res.version}",
+                    )
+                }
+                hapticDouble()
+                onInstallApkReady(res.file)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        phase = WatchUiPhase.ERROR,
+                        errorMessage = res.error.ifBlank { "Не удалось скачать APK" },
+                        updateStatus = res.error,
+                    )
+                }
+            }
+        }
+    }
+
+    fun onBackgrounded() {
+        wasBackgrounded = true
+        mic.stop()
+        if (_uiState.value.phase != WatchUiPhase.UPDATING) {
+            wsClient.disconnect()
+        }
+    }
+
+    fun onForegrounded(isInSettings: Boolean) {
+        if (!wasBackgrounded) return
+        wasBackgrounded = false
+        if (isInSettings || !hasAudioPermission) return
+        val cur = _uiState.value.phase
+        if (cur == WatchUiPhase.DONE || cur == WatchUiPhase.UPDATING) {
+            // Keep finished response visible so user can read it or tap "В ТГ"
+            return
+        }
+        startFreshSession()
     }
 
     fun closeSession() {
@@ -168,9 +296,13 @@ class PorfiriyController(context: Context) {
     }
 
     private fun startMicCapture() {
+        speechChunksCount = 0
         mic.start(
             scope = scope,
             onChunk = { pcm, rms ->
+                if (rms > 0.06f) {
+                    speechChunksCount++
+                }
                 wsClient.sendAudioChunk(pcm)
                 _uiState.update { st ->
                     if (st.phase == WatchUiPhase.LISTENING || st.phase == WatchUiPhase.CONNECTING) {
@@ -201,6 +333,9 @@ class PorfiriyController(context: Context) {
                     it.copy(
                         boundUserName = ev.userName,
                         hasTelegram = ev.hasTelegram,
+                        targetVersion = ev.targetVersion.ifBlank { it.targetVersion },
+                        hasUpdate = ev.hasUpdate,
+                        apkAvailable = ev.apkAvailable,
                     )
                 }
             }
@@ -275,6 +410,14 @@ class PorfiriyController(context: Context) {
                     hapticTick()
                 }
             }
+            is WatchWsEvent.UpdateAvailable -> {
+                _uiState.update {
+                    it.copy(hasUpdate = true, targetVersion = ev.version.ifBlank { it.targetVersion })
+                }
+                if (ev.autoStart) {
+                    startAppUpdate()
+                }
+            }
             is WatchWsEvent.Error -> {
                 mic.stop()
                 _uiState.update {
@@ -287,10 +430,11 @@ class PorfiriyController(context: Context) {
                 }
             }
             WatchWsEvent.Disconnected -> {
-                if (_uiState.value.phase == WatchUiPhase.CONNECTING || _uiState.value.phase == WatchUiPhase.LISTENING) {
+                val cur = _uiState.value.phase
+                if (cur == WatchUiPhase.CONNECTING || cur == WatchUiPhase.LISTENING || cur == WatchUiPhase.THINKING) {
                     mic.stop()
                     _uiState.update {
-                        it.copy(phase = WatchUiPhase.ERROR, errorMessage = "Соединение закрыто", statusText = "Офлайн")
+                        it.copy(phase = WatchUiPhase.IDLE, rms = 0f, statusText = "Нажмите 🎤")
                     }
                 }
             }
