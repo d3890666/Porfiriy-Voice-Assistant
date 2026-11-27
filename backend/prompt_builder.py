@@ -248,6 +248,13 @@ async def build_system_prompt(
         "- Use `schedule_list` and `schedule_manage` to check, pause, resume, run, or cancel timers and scheduled tasks."
     )
 
+    parts.append(
+        "### FACTUAL VERIFICATION & TEMPORAL ACCURACY:\n"
+        "- Timeliness is an essential property of truth. Always evaluate dates, schedules, statuses, prices, and versions against CURRENT LOCAL DATE & TIME below.\n"
+        "- Never present an outdated snippet as current reality. If search results conflict or suggest something is closed/ended/unavailable when the user asks about now or the near future, "
+        "run one targeted follow-up `web_search` to verify whether it was extended, moved, or updated before giving a final verdict."
+    )
+
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")
     parts.append(f"### CURRENT LOCAL DATE & TIME:\n{now_str}")
 

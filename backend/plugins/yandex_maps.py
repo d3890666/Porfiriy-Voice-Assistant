@@ -452,7 +452,11 @@ class YandexMapsPlugin(PorfiriyPlugin):
 
         card_html, plain_text = _build_place_card_html(query, places)
         dev = ctx.get("dev")
-        mac = str(getattr(dev, "mac", "") or ctx.get("device_mac") or "")
+        mac = (
+            str(dev.get("mac") or "")
+            if isinstance(dev, dict)
+            else str(getattr(dev, "mac", "") or "")
+        ) or str(ctx.get("device_mac") or "")
 
         # Сохраняем в единый кэш rich_results (TTL 72ч, поиск по теме, без новой таблицы)
         try:
@@ -469,8 +473,10 @@ class YandexMapsPlugin(PorfiriyPlugin):
 
         # Авто-отправка карточки в Telegram каждый раз (если включено и бот активен)
         tg_sent = False
-        tg_target = mac[3:] if mac.startswith("tg_") and len(mac) > 3 else "family"
-        tg_dest_label = "этот Telegram-чат" if mac.startswith("tg_") else "общий семейный Telegram-чат"
+        tg_chat_id = ""
+        is_tg = mac.startswith("tg_") and len(mac) > 3
+        tg_target = mac[3:] if is_tg else "family"
+        tg_dest_label = "этот Telegram-чат" if is_tg else "общий семейный Telegram-чат"
         if auto_send_tg:
             try:
                 try:
@@ -488,11 +494,28 @@ class YandexMapsPlugin(PorfiriyPlugin):
                         parse_mode="HTML",
                         disable_web_page_preview=True,
                     )
-                    tg_sent = bool(tg_res.get("success"))
+                    tg_sent = (tg_res.get("status") == "ok")
+                    tg_chat_id = str(tg_res.get("chat_id") or "")
+                    if not tg_sent:
+                        logger.warning(f"Yandex Maps Telegram send failed ({tg_target}): {tg_res.get('error')}")
             except Exception as e_tg:
                 logger.warning(f"Failed to auto-send Yandex Maps card to Telegram: {e_tg}")
 
         top = places[0]
+        if tg_sent and is_tg:
+            instr = (
+                "Карточка с проверенной ссылкой на Яндекс.Карты УЖЕ отправлена прямо в этот Telegram-чат. "
+                "НЕ пиши 'отправлено в мессенджер/Telegram'. Если пользователь просил только ссылку — "
+                "ответь сверхкратко (например: 'Точка выше.'), если задавал доп. вопросы — ответь только на них."
+            )
+        elif tg_sent:
+            instr = (
+                f"Точка найдена и проверена. Карточка со ссылкой уже отправлена в {tg_dest_label}. "
+                f"В голосовом ответе кратко назови место ({top.get('title')}), адрес и скажи, что ссылка на Яндекс.Карты отправлена в Telegram."
+            )
+        else:
+            instr = f"Точка найдена: {top.get('title')} ({top.get('address') or top.get('subtitle')}), ссылка: {top.get('url')}."
+
         return {
             "status": "ok",
             "title": top.get("title"),
@@ -505,10 +528,7 @@ class YandexMapsPlugin(PorfiriyPlugin):
                 for p in places[1:3]
             ],
             "sent_to_telegram": tg_sent,
-            "instruction": (
-                f"Точка найдена и проверена. Карточка со ссылкой уже отправлена в {tg_dest_label}. "
-                f"В голосовом ответе кратко назови место ({top.get('title')}), адрес и скажи, что ссылка на Яндекс.Карты отправлена в Telegram."
-                if tg_sent
-                else f"Точка найдена: {top.get('title')} ({top.get('address') or top.get('subtitle')}), ссылка: {top.get('url')}."
-            ),
+            "telegram_chat_id": tg_chat_id,
+            "card_sent_in_same_chat": bool(tg_sent and is_tg),
+            "instruction": instr,
         }

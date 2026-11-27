@@ -544,6 +544,7 @@ class ToolExecutor:
                         "mode": mode,
                         "source_url": source_url,
                         "sent_to_telegram": tg_sent,
+                        "card_sent_in_same_chat": bool(tg_sent and mac.startswith("tg_")),
                         "telegram_target": tg_dest_label,
                         "instruction": (
                             f"Полный оформленный рецепт со всеми точными граммовками и шагами УЖЕ отправлен в {tg_dest_label}. "
@@ -563,14 +564,50 @@ class ToolExecutor:
                         pass
 
                 if serper_key:
-                    serper_res = await serper_search_singleton.search(q_txt, serper_key)
+                    serper_res = await serper_search_singleton.search(q_txt, serper_key, num=8)
                     if serper_res.get("success") and serper_res.get("answer"):
                         tool_logger.info(
                             f"Web search via serper.dev completed in {serper_res.get('latency_ms')} ms "
-                            f"({serper_res.get('results_count', 0)} results)"
+                            f"({serper_res.get('results_count', 0)} results, answer_box={serper_res.get('has_answer_box')})"
                         )
                         items = serper_res.get("items") or []
-                        answer_txt = serper_res["answer"]
+                        raw_snippets = serper_res["answer"]
+                        today_str = datetime.datetime.now().strftime("%Y-%m-%d (%d.%m.%Y)")
+                        answer_txt = f"[Актуальная дата: {today_str}]\n{raw_snippets}"
+                        verified_by = ""
+
+                        # Умный слой фактчекинга: для нетривиальных запросов (без быстрого answerBox)
+                        # прогоняем 8 сниппетов через пул текстовых моделей для сверки дат, статусов и противоречий
+                        if not serper_res.get("has_answer_box") and options.get("big_models_enabled"):
+                            verify_prompt = (
+                                f"Текущая дата: {today_str}.\n"
+                                f"Запрос пользователя: {q_txt}\n\n"
+                                f"Ниже 8 результатов поиска Google с датами и доменами.\n"
+                                f"Задача (строгий фактчек и синтез):\n"
+                                f"1. Сопоставь ВСЕ источники относительно текущей даты ({today_str}).\n"
+                                f"2. Актуальность — ключевое свойство факта: если старый источник пишет одно (например, ранний срок или закрытие), "
+                                f"а более свежий или официальный — продление, перенос, обновление или иной статус, приоритет у актуального; "
+                                f"если есть реальное противоречие — явно отметь его.\n"
+                                f"3. Дай сжатую, точную, проверенную выжимку на русском языке: ключевые факты, точные даты, цифры, адреса, цены, режим работы и актуальный статус.\n"
+                                f"4. Без воды, без приветствий и без выдумок — опирайся строго на факты из выдачи.\n\n"
+                                f"РЕЗУЛЬТАТЫ ПОИСКА:\n{raw_snippets[:12000]}"
+                            )
+                            try:
+                                v_res = await big_model_pool_singleton.run_text_task(
+                                    verify_prompt,
+                                    options,
+                                    enable_google_search=False,
+                                    preferred_model=pref_model,
+                                )
+                                if v_res.get("success") and (v_res.get("text") or "").strip():
+                                    answer_txt = v_res["text"].strip()
+                                    verified_by = str(v_res.get("model") or "big_model_pool")
+                                    tool_logger.info(
+                                        f"Web search fact-checked via {verified_by} ({len(answer_txt)} chars)"
+                                    )
+                            except Exception as v_ex:
+                                tool_logger.warning(f"Web search fact-check skipped: {v_ex}")
+
                         try:
                             db_singleton.save_rich_result(
                                 kind="web_search",
@@ -584,12 +621,16 @@ class ToolExecutor:
                             tool_logger.warning(f"Failed to cache serper rich result: {cache_ex}")
                         if turn_state is not None:
                             turn_state["tool_executed"] = True
-                        return {
+                        out_payload: Dict[str, Any] = {
                             "status": "ok",
                             "provider": "serper.dev",
                             "latency_ms": serper_res.get("latency_ms"),
+                            "today": today_str,
                             "answer": answer_txt,
                         }
+                        if verified_by:
+                            out_payload["verified_by"] = verified_by
+                        return out_payload
                     tool_logger.warning(
                         f"Serper.dev failed ({serper_res.get('error')}), falling back to web_search_model / BigModelPool"
                     )

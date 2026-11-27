@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -69,9 +70,18 @@ class SerperSearchClient:
                 title = str(item.get("title") or "").strip()
                 date_str = str(item.get("date") or "").strip()
                 snippet = str(item.get("snippet") or "").strip()
+                link = str(item.get("link") or "").strip()
+                domain = ""
+                if link:
+                    try:
+                        domain = (urlparse(link).netloc or "").replace("www.", "")
+                    except Exception:
+                        domain = ""
                 header = f"{idx}. {title}" if title else f"{idx}."
                 if date_str:
                     header += f" [{date_str}]"
+                if domain:
+                    header += f" ({domain})"
                 if snippet:
                     parts.append(f"{header}: {snippet}")
                 elif title:
@@ -86,7 +96,7 @@ class SerperSearchClient:
         *,
         gl: str = "ru",
         hl: str = "ru",
-        num: int = 5,
+        num: int = 8,
         timeout_s: float = 8.0,
     ) -> Dict[str, Any]:
         """Выполняет поиск через Serper.dev и возвращает компактный текстовый контекст."""
@@ -146,6 +156,7 @@ class SerperSearchClient:
                 "error": "Serper.dev вернул пустую выдачу",
             }
 
+        has_answer_box = isinstance(data, dict) and isinstance(data.get("answerBox"), dict) and bool(data.get("answerBox"))
         return {
             "success": True,
             "provider": "serper.dev",
@@ -153,6 +164,7 @@ class SerperSearchClient:
             "answer": formatted,
             "items": items,
             "results_count": results_count,
+            "has_answer_box": has_answer_box,
             "credits": data.get("credits", 1) if isinstance(data, dict) else 1,
         }
 

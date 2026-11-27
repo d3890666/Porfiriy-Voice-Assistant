@@ -191,6 +191,19 @@ class TelegramBotGateway:
         if not chat_id:
             return
 
+        # Авто-обработка миграции обычной группы в супергруппу (Telegram меняет chat_id на -100...)
+        migrate_to = msg.get("migrate_to_chat_id")
+        if migrate_to:
+            new_chat_id = str(migrate_to).strip()
+            fam_chat = str(db_singleton.get_family_channels().get("telegram_chat") or "").strip()
+            if new_chat_id and fam_chat == chat_id:
+                try:
+                    db_singleton.set_family_channel("telegram_chat", new_chat_id)
+                    logger.info(f"[TG-GW] Auto-migrated family group chat_id: {chat_id} -> {new_chat_id}")
+                except Exception as e_mig:
+                    logger.warning(f"[TG-GW] Failed to auto-migrate family chat_id: {e_mig}")
+            return
+
         # Игнорируем сообщения от ботов
         from_obj = msg.get("from") or {}
         if from_obj.get("is_bot"):
@@ -1140,7 +1153,9 @@ class TelegramBotGateway:
                                 got_any = True
                                 if response.tool_call:
                                     fn_resps = []
-                                    for call in response.tool_call.function_calls:
+                                    calls = list(response.tool_call.function_calls or [])
+                                    fast_card_done = False
+                                    for call in calls:
                                         call_args = dict(call.args) if call.args else {}
                                         current_q = text_in or "".join(input_transcript_parts).strip()
                                         res = await self.tool_executor.execute(
@@ -1154,6 +1169,18 @@ class TelegramBotGateway:
                                         )
                                         if call.name == "send_to_telegram" and str(res.get("chat_id") or "") == chat_id:
                                             sent_to_same_chat = True
+                                        if (
+                                            not is_voice
+                                            and len(calls) == 1
+                                            and isinstance(res, dict)
+                                            and (
+                                                (call.name == "yandex_maps_find_place" and res.get("card_sent_in_same_chat") and len(text_in) <= 75)
+                                                or (call.name == "web_search" and res.get("card_sent_in_same_chat"))
+                                                or (call.name == "compare_prices" and res.get("sent_to_telegram"))
+                                            )
+                                        ):
+                                            sent_to_same_chat = True
+                                            fast_card_done = True
                                         fn_resps.append(
                                             types.FunctionResponse(
                                                 id=call.id,
@@ -1161,6 +1188,9 @@ class TelegramBotGateway:
                                                 response=res,
                                             )
                                         )
+                                    if fast_card_done:
+                                        turn_done = True
+                                        break
                                     await session.send_tool_response(function_responses=fn_resps)
                                     continue
 
