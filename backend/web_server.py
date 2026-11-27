@@ -34,6 +34,11 @@ except ImportError:
     from station_ducking import StationDuckingManager
 
 try:
+    from .quiet_mode import quiet_mode_singleton
+except ImportError:
+    from quiet_mode import quiet_mode_singleton
+
+try:
     from .db import db_singleton
     from .big_models import big_model_pool_singleton
     from .serper_search import serper_search_singleton
@@ -195,6 +200,9 @@ class WebServer:
         self.app.router.add_post("/api/schedules/{job_id}/toggle", self.handle_toggle_schedule)
         self.app.router.add_post("/api/schedules/{job_id}/run", self.handle_run_schedule)
         self.app.router.add_get("/api/schedules/{job_id}/runs", self.handle_get_schedule_runs)
+        # Умный ночной тихий режим
+        self.app.router.add_get("/api/quiet_mode/candidates", self.handle_get_quiet_candidates)
+        self.app.router.add_get("/api/quiet_mode/status", self.handle_get_quiet_status)
 
     def _on_device_event(self, event_type: str, device: Dict[str, Any]):
         """Рассылка SSE события всем открытым вкладкам веб-интерфейса."""
@@ -480,7 +488,13 @@ class WebServer:
                 "ducking_mode", "enable_media_ducking", "ducking_volume_factor", "default_media_player",
                 "ma_api_key", "regenerate_phrases",
                 "ww_server_threshold",
-                "openai_api_enabled", "openai_api_port", "openai_api_key", "default_airplay_player"
+                "openai_api_enabled", "openai_api_port", "openai_api_key", "default_airplay_player",
+                "earcon_volume_enabled", "earcon_volume_preset",
+                "earcon_smarthome_enabled", "earcon_smarthome_preset", "earcon_wake_preset",
+                "quiet_mode_enabled", "quiet_mode_start", "quiet_mode_end",
+                "quiet_mode_entities", "quiet_mode_ww_threshold",
+                "quiet_mode_mute_wake_earcon", "quiet_mode_volume",
+                "quiet_mode_silence_dbfs", "quiet_mode_force",
             ]
             
             for field in allowed_fields:
@@ -527,8 +541,26 @@ class WebServer:
                                     engine.set_threshold(new_thr)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled", "earcon_volume_enabled", "earcon_smarthome_enabled", "quiet_mode_enabled", "quiet_mode_mute_wake_earcon"]:
                         updated_opts[field] = bool(val)
+                    elif field == "quiet_mode_entities":
+                        if isinstance(val, list):
+                            updated_opts[field] = [str(x).strip() for x in val if str(x).strip()]
+                    elif field in ["quiet_mode_ww_threshold", "quiet_mode_volume", "quiet_mode_silence_dbfs"]:
+                        try:
+                            fval = float(val)
+                            if field == "quiet_mode_ww_threshold":
+                                fval = max(0.05, min(0.98, fval))
+                            elif field == "quiet_mode_volume":
+                                fval = max(0.0, min(1.0, fval))
+                            else:
+                                fval = max(-70.0, min(-15.0, fval))
+                            updated_opts[field] = fval
+                        except (ValueError, TypeError):
+                            pass
+                    elif field == "quiet_mode_force":
+                        if str(val).strip().lower() in ("auto", "on", "off"):
+                            updated_opts[field] = str(val).strip().lower()
                     elif field == "big_models_threshold_chars":
                         try:
                             updated_opts[field] = max(500, min(100000, int(val)))
@@ -557,6 +589,7 @@ class WebServer:
             # 1. Мгновенно сохраняем в памяти бэкенда (Hot Reload) и локальный файл
             if self.options_save_callback:
                 self.options_save_callback(updated_opts)
+            asyncio.create_task(quiet_mode_singleton.on_config_changed())
             
             # 2. Синхронизируем с Home Assistant Supervisor API только те поля, что объявлены в schema config.yaml
             supervisor_token = os.environ.get("SUPERVISOR_TOKEN")
@@ -1021,6 +1054,11 @@ class WebServer:
             await scheduler_singleton.on_ha_state_changed(entity_id, new_state, old_state)
         except Exception as e:
             logger.warning(f"[SCHEDULER] HA state hook error for {entity_id}: {e}")
+
+        try:
+            await quiet_mode_singleton.on_ha_state_changed(entity_id, new_state, old_state)
+        except Exception as e:
+            logger.warning(f"[QUIET] HA state hook error for {entity_id}: {e}")
 
         if new_state != "playing":
             return
@@ -1834,6 +1872,20 @@ class WebServer:
                 "Cache-Control": "no-store",
             },
         )
+
+    async def handle_get_quiet_candidates(self, request):
+        try:
+            data = await quiet_mode_singleton.get_candidates()
+            return web.json_response(data)
+        except Exception as e:
+            logger.warning(f"[QUIET] Failed to list candidates: {e}")
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def handle_get_quiet_status(self, request):
+        try:
+            return web.json_response({"success": True, "status": quiet_mode_singleton.get_status()})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
 
 
 

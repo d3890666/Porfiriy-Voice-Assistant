@@ -17,6 +17,7 @@ function initApp() {
   fetchGlobalOptions();
   fetchUsers();
   fetchAreas();
+  if (typeof loadQuietModeCandidates === 'function') loadQuietModeCandidates();
   setupSSE();
 }
 
@@ -59,6 +60,9 @@ function setupTabs() {
           }
           if (typeof startWwMonitorPolling === 'function') {
             startWwMonitorPolling();
+          }
+          if (typeof loadQuietModeCandidates === 'function') {
+            loadQuietModeCandidates();
           }
         } else {
           if (typeof stopWwMonitorPolling === 'function') {
@@ -242,6 +246,8 @@ function renderDevicesGrid() {
           const aecOn = cfg.aec_enabled !== false;
           const bargeInOn = Boolean(cfg.barge_in_enabled);
           const followUpOn = Boolean(cfg.follow_up_enabled);
+          const adaptiveVolOn = Boolean(cfg.adaptive_volume_enabled);
+          const adaptiveVolMode = cfg.adaptive_volume_mode || 'medium';
           const ledBright = cfg.led_brightness !== undefined ? cfg.led_brightness : 80;
           return `
           <div class="virtual-client-banner" style="background: linear-gradient(135deg, ${aliceDisabled ? 'rgba(16, 185, 129, 0.18), rgba(59, 130, 246, 0.14)' : 'rgba(139, 92, 246, 0.18), rgba(99, 102, 241, 0.12)'}); border: 1px solid ${aliceDisabled ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.35)'}; border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -404,6 +410,17 @@ function renderDevicesGrid() {
                 <input type="checkbox" ${followUpOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'follow_up_enabled', this.checked)">
                 <span>💬 Follow-up (диалог)</span>
               </label>
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;" title="Только приглушает голос Порфирия при тихой речи пользователя (никогда не усиливает громче текущей шкалы колонки)">
+                <label style="display:flex; align-items:center; gap:5px; cursor:pointer; margin:0;">
+                  <input type="checkbox" ${adaptiveVolOn ? 'checked' : ''} onchange="updateSingleDeviceConfig('${dev.mac}', 'adaptive_volume_enabled', this.checked)">
+                  <span>🔉 Адаптивная громкость</span>
+                </label>
+                <select onchange="updateSingleDeviceConfig('${dev.mac}', 'adaptive_volume_mode', this.value)" style="padding:2px 6px; font-size:11px; border-radius:6px; background:#0d1117; color:#cbd5e1; border:1px solid #30363d;">
+                  <option value="weak" ${adaptiveVolMode === 'weak' ? 'selected' : ''}>Слабый (60–95%)</option>
+                  <option value="medium" ${adaptiveVolMode === 'medium' ? 'selected' : ''}>Средний (38–90%)</option>
+                  <option value="strong" ${adaptiveVolMode === 'strong' ? 'selected' : ''}>Сильный (22–80%)</option>
+                </select>
+              </div>
             </div>
 
             <!-- Встроенная мини-отладка openWakeWord прямо в карточке -->
@@ -1735,6 +1752,29 @@ function populateGlobalSettingsForm() {
   setVal('cfg-earcon-smarthome-preset', earAlias[globalOptions.earcon_smarthome_preset] || globalOptions.earcon_smarthome_preset || 'google_home');
   setVal('cfg-earcon-wake-preset', earAlias[globalOptions.earcon_wake_preset] || globalOptions.earcon_wake_preset || 'google_listen');
 
+  // Настройки умного тихого режима
+  const qEn = document.getElementById('cfg-quiet-enabled');
+  if (qEn) qEn.checked = Boolean(globalOptions.quiet_mode_enabled);
+  setVal('cfg-quiet-force', globalOptions.quiet_mode_force || 'auto');
+  setVal('cfg-quiet-start', globalOptions.quiet_mode_start || '23:00');
+  setVal('cfg-quiet-end', globalOptions.quiet_mode_end || '08:00');
+  const qWw = globalOptions.quiet_mode_ww_threshold !== undefined ? Number(globalOptions.quiet_mode_ww_threshold) : 0.42;
+  setVal('cfg-quiet-ww-thr', qWw.toFixed(2));
+  const valQWw = document.getElementById('val-quiet-ww-thr');
+  if (valQWw) valQWw.innerText = qWw.toFixed(2);
+  const qVolPct = Math.round((globalOptions.quiet_mode_volume !== undefined ? Number(globalOptions.quiet_mode_volume) : 0.30) * 100);
+  setVal('cfg-quiet-volume', qVolPct);
+  const valQVol = document.getElementById('val-quiet-volume');
+  if (valQVol) valQVol.innerText = `${qVolPct}%`;
+  const qSil = globalOptions.quiet_mode_silence_dbfs !== undefined ? Number(globalOptions.quiet_mode_silence_dbfs) : -42;
+  setVal('cfg-quiet-silence-dbfs', qSil);
+  const valQSil = document.getElementById('val-quiet-silence-dbfs');
+  if (valQSil) valQSil.innerText = `${qSil} dBFS`;
+  const qMute = document.getElementById('cfg-quiet-mute-wake');
+  if (qMute) qMute.checked = globalOptions.quiet_mode_mute_wake_earcon !== false;
+  if (typeof renderQuietModeEntities === 'function') renderQuietModeEntities();
+  if (typeof refreshQuietModeStatus === 'function') refreshQuietModeStatus();
+
   // Настройки OpenAI API / Яндекс Станция (Quasar Bridge)
   const opEnabled = globalOptions.openai_api_enabled !== false;
   const opCheckbox = document.getElementById('cfg-openai-api-enabled');
@@ -2003,7 +2043,16 @@ async function saveGlobalSettings(e) {
       earcon_volume_preset: document.getElementById('cfg-earcon-volume-preset')?.value || 'alice_click',
       earcon_smarthome_enabled: document.getElementById('cfg-earcon-smarthome-enabled')?.checked !== false,
       earcon_smarthome_preset: document.getElementById('cfg-earcon-smarthome-preset')?.value || 'marimba_tudun',
-      earcon_wake_preset: document.getElementById('cfg-earcon-wake-preset')?.value || 'soft_chime'
+      earcon_wake_preset: document.getElementById('cfg-earcon-wake-preset')?.value || 'soft_chime',
+      quiet_mode_enabled: document.getElementById('cfg-quiet-enabled')?.checked || false,
+      quiet_mode_force: document.getElementById('cfg-quiet-force')?.value || 'auto',
+      quiet_mode_start: document.getElementById('cfg-quiet-start')?.value || '23:00',
+      quiet_mode_end: document.getElementById('cfg-quiet-end')?.value || '08:00',
+      quiet_mode_ww_threshold: parseFloat(document.getElementById('cfg-quiet-ww-thr')?.value || 0.42),
+      quiet_mode_volume: Math.max(0, Math.min(1, parseFloat(document.getElementById('cfg-quiet-volume')?.value || 30) / 100.0)),
+      quiet_mode_silence_dbfs: parseFloat(document.getElementById('cfg-quiet-silence-dbfs')?.value || -42),
+      quiet_mode_mute_wake_earcon: document.getElementById('cfg-quiet-mute-wake')?.checked !== false,
+      quiet_mode_entities: Array.from(document.querySelectorAll('input[name="quiet_entity"]:checked')).map(el => el.value)
     };
 
     const newKey = document.getElementById('cfg-api-key')?.value?.trim();
@@ -4850,3 +4899,122 @@ function downloadWwCapturesArchive(mac) {
   window.location.href = `${API_BASE}/api/ww_captures/archive?mac=${encodeURIComponent(mac)}`;
 }
 window.downloadWwCapturesArchive = downloadWwCapturesArchive;
+
+// ---------------------------------------------------------------------------
+// Умный ночной тихий режим
+// ---------------------------------------------------------------------------
+let quietModeCandidates = null;
+
+function updateQuietStatusBadge(status) {
+  const badge = document.getElementById('quiet-mode-status-badge');
+  if (!badge || !status) return;
+  if (!status.enabled) {
+    badge.textContent = '⚪ Выключен';
+    badge.style.background = 'rgba(148, 163, 184, 0.15)';
+    badge.style.color = '#94a3b8';
+    badge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+  } else if (status.active) {
+    badge.textContent = `🌙 Активен (${status.reason || 'тихий режим'})`;
+    badge.style.background = 'rgba(99, 102, 241, 0.22)';
+    badge.style.color = '#c4b5fd';
+    badge.style.borderColor = 'rgba(99, 102, 241, 0.45)';
+  } else {
+    badge.textContent = `☀️ Дневной (${status.reason || 'не активен'})`;
+    badge.style.background = 'rgba(245, 158, 11, 0.16)';
+    badge.style.color = '#fcd34d';
+    badge.style.borderColor = 'rgba(245, 158, 11, 0.35)';
+  }
+}
+
+async function refreshQuietModeStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/api/quiet_mode/status`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.status) updateQuietStatusBadge(data.status);
+    }
+  } catch (_) {}
+}
+
+function renderQuietModeEntities(overrideSelected = null) {
+  const box = document.getElementById('quiet-entities-container');
+  if (!box) return;
+  if (!quietModeCandidates) {
+    box.innerHTML = '<span style="color: #8b949e;">Загрузка объектов Home Assistant...</span>';
+    return;
+  }
+
+  let selectedSet;
+  if (overrideSelected) {
+    selectedSet = new Set(overrideSelected);
+  } else {
+    const domChecked = Array.from(box.querySelectorAll('input[name="quiet_entity"]'));
+    if (domChecked.length > 0) {
+      selectedSet = new Set(domChecked.filter(c => c.checked).map(c => c.value));
+    } else {
+      selectedSet = new Set(Array.isArray(globalOptions.quiet_mode_entities) ? globalOptions.quiet_mode_entities : []);
+    }
+  }
+
+  const groupMeta = [
+    ['lights', '💡 Освещение'],
+    ['media', '📺 Телевизоры и медиа'],
+    ['covers', '🪟 Шторы'],
+    ['sensors', '🔘 Датчики и режимы']
+  ];
+
+  const htmlParts = [];
+  for (const [key, label] of groupMeta) {
+    const items = quietModeCandidates[key] || [];
+    if (items.length === 0) continue;
+    htmlParts.push(`<div style="margin-bottom: 10px;"><div style="font-weight: 700; color: #e2e8f0; margin-bottom: 6px;">${label} (${items.length})</div><div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px;">`);
+    for (const it of items) {
+      const chk = selectedSet.has(it.entity_id) ? 'checked' : '';
+      const dot = it.awake ? '🟡' : '⚫';
+      const room = it.room ? ` · ${escapeHtml(it.room)}` : '';
+      htmlParts.push(
+        `<label style="display:flex; align-items:center; gap:6px; padding:5px 8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:6px; cursor:pointer; margin:0;" title="${escapeHtml(it.entity_id)} (${escapeHtml(it.state)})">` +
+        `<input type="checkbox" name="quiet_entity" value="${escapeHtml(it.entity_id)}" ${chk}>` +
+        `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${dot} ${escapeHtml(it.name)}<span style="color:#8b949e; font-size:11px;">${room}</span></span>` +
+        `</label>`
+      );
+    }
+    htmlParts.push('</div></div>');
+  }
+
+  box.innerHTML = htmlParts.length > 0 ? htmlParts.join('') : '<span style="color: #8b949e;">Подходящие объекты Home Assistant не найдены.</span>';
+}
+
+async function loadQuietModeCandidates() {
+  try {
+    const res = await fetch(`${API_BASE}/api/quiet_mode/candidates`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.success && data.groups) {
+      quietModeCandidates = data.groups;
+      renderQuietModeEntities();
+      if (data.status) updateQuietStatusBadge(data.status);
+    }
+  } catch (err) {
+    console.debug('Error loading quiet_mode candidates:', err);
+  }
+}
+
+function selectQuietGroup(groupKey) {
+  if (!quietModeCandidates || !quietModeCandidates[groupKey]) return;
+  const box = document.getElementById('quiet-entities-container');
+  const cur = new Set(Array.from(box ? box.querySelectorAll('input[name="quiet_entity"]:checked') : []).map(c => c.value));
+  for (const it of quietModeCandidates[groupKey]) {
+    cur.add(it.entity_id);
+  }
+  renderQuietModeEntities(Array.from(cur));
+}
+
+function clearQuietEntities() {
+  renderQuietModeEntities([]);
+}
+
+window.loadQuietModeCandidates = loadQuietModeCandidates;
+window.selectQuietGroup = selectQuietGroup;
+window.clearQuietEntities = clearQuietEntities;
+window.refreshQuietModeStatus = refreshQuietModeStatus;

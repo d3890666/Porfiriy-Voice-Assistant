@@ -5,13 +5,16 @@ from typing import Any, Dict, Optional
 try:
     from .db import db_singleton
     from .plugin_registry import plugin_registry_singleton
+    from .quiet_mode import quiet_mode_singleton
 except ImportError:
     try:
         from db import db_singleton
         from plugin_registry import plugin_registry_singleton
+        from quiet_mode import quiet_mode_singleton
     except ImportError:
         db_singleton = None
         plugin_registry_singleton = None
+        quiet_mode_singleton = None
 
 logger = logging.getLogger("prompt_builder")
 
@@ -175,5 +178,14 @@ async def build_system_prompt(
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S (%A)")
     parts.append(f"### CURRENT LOCAL DATE & TIME:\n{now_str}")
+
+    if quiet_mode_singleton and quiet_mode_singleton.is_active(options):
+        parts.append(
+            "### QUIET NIGHT MODE (ACTIVE NOW):\n"
+            "- Night quiet mode is currently active (people may be asleep; accidental false wake triggers are possible).\n"
+            "- If the audio contains ONLY background noise, breathing, coughing, snoring, silence, or unintelligible fragments with NO clear Russian request or smart-home command, "
+            "output strictly `[SILENCE]` and nothing else.\n"
+            "- If there IS a clear request (e.g. 'подними шторы', 'сколько времени', 'выключи розетку'), execute it immediately, calmly, and concisely."
+        )
 
     return "\n\n".join(parts)

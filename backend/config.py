@@ -116,9 +116,7 @@ DEFAULT_GENERAL = (
     "- ИСКЛЮЧЕНИЕ: Для рецептов, пошаговых инструкций, сводок новостей, сравнений и подробных объяснений давай ровно столько объёма, "
     "сколько нужно для полной практической пользы (со всеми граммовками, цифрами и фактами) — без воды, но и без обрезания сути.\n"
     "- На команды остановки («хватит», «стоп», «молчи», «замолчи») отвечай строго одним словом «Умолкаю.» и сразу завершай ход.\n"
-    "- Локация и часовой пояс: Москва (Moscow time).\n\n"
-    "PING:\n"
-    "- Reply strictly: \"PONG\"."
+    "- Локация и часовой пояс: Москва (Moscow time)."
 )
 
 CANONICAL_PROMPTS: Dict[str, str] = {
@@ -249,6 +247,15 @@ def get_options() -> Dict[str, Any]:
         "earcon_smarthome_enabled": True,
         "earcon_smarthome_preset": "google_home",
         "earcon_wake_preset": "google_listen",
+        "quiet_mode_enabled": False,
+        "quiet_mode_start": "23:00",
+        "quiet_mode_end": "08:00",
+        "quiet_mode_entities": [],
+        "quiet_mode_ww_threshold": 0.42,
+        "quiet_mode_mute_wake_earcon": True,
+        "quiet_mode_volume": 0.30,
+        "quiet_mode_silence_dbfs": -42.0,
+        "quiet_mode_force": "auto",
     }
 
     for k, v in defaults.items():

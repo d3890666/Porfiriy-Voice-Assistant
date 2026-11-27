@@ -819,7 +819,15 @@ class SchedulerEngine:
         html_text: str = "",
         voice_text: str = "",
     ) -> None:
-        in_quiet = _is_in_quiet_hours(job.get("quiet_hours") or "")
+        try:
+            try:
+                from quiet_mode import quiet_mode_singleton
+            except ImportError:
+                from .quiet_mode import quiet_mode_singleton
+            global_quiet = quiet_mode_singleton.is_active()
+        except Exception:
+            global_quiet = False
+        in_quiet = _is_in_quiet_hours(job.get("quiet_hours") or "") or global_quiet
         channel = (job.get("notify_channel") or "").strip().lower()
         owner = (job.get("owner_user_id") or "family").strip().lower()
 

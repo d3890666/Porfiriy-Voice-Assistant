@@ -55,7 +55,9 @@ DEFAULT_DEVICE_CONFIG = {
     "output_mode": "alice_tts",      # "alice_tts" (возврат текста) или "airplay" (звук в AirPlay)
     "airplay_player": "",            # entity_id плеера HA для AirPlay вывода
     "user_id": "",                   # Привязанный пользователь (для часов/персональных нод)
-    "api_key": ""                    # Опциональный токен авторизации ноды
+    "api_key": "",                   # Опциональный токен авторизации ноды
+    "adaptive_volume_enabled": False,# Адаптивная громкость голоса (только ослабление <= шкалы колонки)
+    "adaptive_volume_mode": "medium" # "weak" (60-95%), "medium" (38-90%), "strong" (22-80%)
 }
 
 class DeviceManager:

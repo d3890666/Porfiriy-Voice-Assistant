@@ -50,6 +50,51 @@ def scale_pcm16(pcm_data: bytes, volume: float) -> bytes:
         return arr.tobytes()
 
 
+ADAPTIVE_VOLUME_MODES: Dict[str, tuple] = {
+    "weak": (0.60, 0.95),
+    "medium": (0.38, 0.90),
+    "strong": (0.22, 0.80),
+}
+
+
+def measure_speech_dbfs(pcm_data: bytes, sample_rate: int = 16000) -> float:
+    """Оценивает громкость речи пользователя по 80-му перцентилю 80мс кадров (игнорируя тишину по краям)."""
+    if not pcm_data or len(pcm_data) < 2:
+        return -100.0
+    frame_bytes = max(320, int(sample_rate * 0.08) * 2)
+    rms_list = []
+    for off in range(0, len(pcm_data) - frame_bytes + 1, frame_bytes):
+        rms_list.append(calculate_pcm_rms(pcm_data[off : off + frame_bytes]))
+    if not rms_list:
+        rms_list.append(calculate_pcm_rms(pcm_data))
+    rms_list.sort()
+    p80 = rms_list[min(len(rms_list) - 1, int(len(rms_list) * 0.80))]
+    return rms_to_dbfs(p80)
+
+
+def compute_adaptive_voice_gain(speech_dbfs: float, mode: str = "medium") -> float:
+    """Адаптивный коэффициент громкости ответа <= 1.0 (только ослабление, никогда не усиливает выше шкалы колонки)."""
+    min_g, max_g = ADAPTIVE_VOLUME_MODES.get((mode or "medium").strip().lower(), ADAPTIVE_VOLUME_MODES["medium"])
+    t = max(0.0, min(1.0, (float(speech_dbfs) + 36.0) / 22.0))
+    return round(min_g + t * (max_g - min_g), 2)
+
+
+def compute_response_voice_gain(
+    speech_dbfs: float,
+    dev_cfg: Dict[str, Any],
+    options: Dict[str, Any],
+    quiet_active: bool,
+) -> float:
+    """Итоговый коэффициент громкости ответа с учётом адаптивной громкости колонки и ночного тихого режима."""
+    gain = 1.0
+    if isinstance(dev_cfg, dict) and dev_cfg.get("adaptive_volume_enabled"):
+        gain = compute_adaptive_voice_gain(speech_dbfs, str(dev_cfg.get("adaptive_volume_mode") or "medium"))
+    if quiet_active:
+        q_vol = max(0.0, min(1.0, float((options or {}).get("quiet_mode_volume", 0.30))))
+        gain = 0.0 if q_vol <= 0.0 else min(gain, q_vol)
+    return round(max(0.0, min(1.0, gain)), 2)
+
+
 def generate_beep(freq: int, duration_ms: int, sample_rate: int = 16000, volume: float = 0.5) -> bytes:
     """Генерация сырого 16-bit PCM аудио сигнала (синусоиды)."""
     num_samples = int(sample_rate * (duration_ms / 1000.0))

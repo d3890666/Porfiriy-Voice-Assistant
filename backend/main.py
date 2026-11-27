@@ -13,11 +13,14 @@ from audio_utils import (
     calculate_pcm_rms,
     rms_to_dbfs,
     scale_pcm16,
+    measure_speech_dbfs,
+    compute_response_voice_gain,
     pcm16_to_wav,
     get_earcon_pcm,
     SUCCESS_CHIME,
     ERROR_CHIME,
 )
+from quiet_mode import quiet_mode_singleton
 from config import (
     DEFAULT_GEMINI_MODEL,
     get_options,
@@ -1184,11 +1187,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         except Exception:
             pass
 
-    # Сразу отправляем Станции актуальный конфиг (openWakeWord + DSP + LED)
+    # Сразу отправляем Станции актуальный конфиг (openWakeWord + DSP + LED + ночной порог если активен тихий режим)
     try:
         opts_init = get_options()
         init_cfg = dict(device_manager.get_device_config(client_mac))
         init_cfg["earcon_wake_preset"] = opts_init.get("earcon_wake_preset", "soft_chime")
+        init_cfg["ww_threshold"] = quiet_mode_singleton.get_effective_ww_threshold(init_cfg, opts_init)
         await _send_json({"type": "set_config", "config": init_cfg})
     except Exception:
         pass
@@ -1196,21 +1200,26 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
     async def _run_gemini_session(my_sid: int):
         nonlocal session_active, audio_queue, gemini_is_speaking, gemini_responded
         options = get_options()
+        quiet_active = quiet_mode_singleton.is_active(options)
+        turn_voice_gain = 1.0
+        turn_discarded_silent = False
         session_active = True
         gemini_is_speaking = False
         gemini_responded = False
         device_manager.set_device_state(client_mac, "listening")
         await _send_json({"type": "state", "state": "listening"})
 
-        # Опциональный мягкий сигнал активации «слушаю» (тихий 0.30, чтобы не глушить начало речи через AEC)
+        # Опциональный мягкий сигнал активации «слушаю» (отключается или приглушается в тихом режиме)
         wake_preset = options.get("earcon_wake_preset", "soft_chime")
-        if wake_preset and wake_preset != "none":
-            wake_pcm = get_earcon_pcm("wake", wake_preset, sample_rate=24000, volume=0.30)
-            if wake_pcm:
-                try:
-                    await websocket.send(wake_pcm)
-                except Exception:
-                    pass
+        if wake_preset and wake_preset != "none" and not (quiet_active and options.get("quiet_mode_mute_wake_earcon", True)):
+            wake_vol = 0.30 * (max(0.0, min(1.0, float(options.get("quiet_mode_volume", 0.30)))) if quiet_active else 1.0)
+            if wake_vol > 0.0:
+                wake_pcm = get_earcon_pcm("wake", wake_preset, sample_rate=24000, volume=wake_vol)
+                if wake_pcm:
+                    try:
+                        await websocket.send(wake_pcm)
+                    except Exception:
+                        pass
 
         api_key_str = (options.get("gemini_api_key") or "").strip()
         api_key = get_active_api_key(api_key_str)
@@ -1257,7 +1266,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
         async def _run_single_attempt(replay_chunks: Optional[list[bytes]] = None) -> bool:
             """Выполняет сессию Gemini Live (1 ход + до 4 follow-up ходов, если Порфирий задал вопрос)."""
-            nonlocal gemini_is_speaking, gemini_responded, utterance_saved
+            nonlocal gemini_is_speaking, gemini_responded, utterance_saved, turn_voice_gain, turn_discarded_silent
             attempt_responded = False
 
             t_conn = time.monotonic()
@@ -1272,12 +1281,18 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                 for turn_idx in range(5):
                     turn_responded = False
                     turn_should_follow_up = False
+                    turn_discarded_silent = False
                     eos_sent_event = asyncio.Event()
                     output_text_parts: list[str] = []
+                    quiet_audio_buf: list[bytes] = []
+                    quiet_audio_flushed = False
+                    quiet_suppressed = False
+                    had_input_speech = False
                     for k in turn_state:
                         turn_state[k] = False
 
                     async def _stream_turn_audio():
+                        nonlocal turn_voice_gain, turn_discarded_silent
                         turn_pcm_parts: list[bytes] = []
                         try:
                             if replay_chunks is not None and turn_idx == 0:
@@ -1297,6 +1312,30 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 return
 
                             raw_turn_pcm = b"".join(turn_pcm_parts)
+                            dur_s = len(raw_turn_pcm) / 32000.0
+                            speech_dbfs = measure_speech_dbfs(raw_turn_pcm, sample_rate=16000)
+                            q_sil = float(options.get("quiet_mode_silence_dbfs", -42.0))
+                            sil_limit = q_sil if quiet_active else min(-46.0, q_sil - 4.0)
+                            if dur_s < 0.35 or speech_dbfs < sil_limit:
+                                logger.info(
+                                    f"[YANDEX-WS] Ignored silent/short utterance "
+                                    f"(dur={dur_s:.2f}s, speech={speech_dbfs:.1f}dBFS < {sil_limit:.1f}dBFS, quiet={quiet_active})"
+                                )
+                                turn_discarded_silent = True
+                                try:
+                                    recv_task.cancel()
+                                except Exception:
+                                    pass
+                                return
+
+                            dev_cfg_now = device_manager.get_device_config(client_mac)
+                            turn_voice_gain = compute_response_voice_gain(speech_dbfs, dev_cfg_now, options, quiet_active)
+                            logger.info(
+                                f"[YANDEX-WS] Voice gain: speech={speech_dbfs:.1f}dBFS "
+                                f"adaptive={bool(dev_cfg_now.get('adaptive_volume_enabled'))}/{dev_cfg_now.get('adaptive_volume_mode', 'medium')} "
+                                f"quiet={quiet_active} -> {turn_voice_gain:.2f}"
+                            )
+
                             wav_turn = pcm16_to_wav(raw_turn_pcm, sample_rate=16000)
                             await session.send_client_content(
                                 turns=[
@@ -1310,7 +1349,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             eos_sent_event.set()
                             logger.info(
                                 f"[YANDEX-WS] {tag}Sent atomic WAV turn_complete=True "
-                                f"(turn={turn_idx + 1}, {len(wav_turn)} bytes, {len(raw_turn_pcm)/32000.0:.2f}s) ({client_mac})"
+                                f"(turn={turn_idx + 1}, {len(wav_turn)} bytes, {dur_s:.2f}s) ({client_mac})"
                             )
                         except asyncio.CancelledError:
                             pass
@@ -1319,6 +1358,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
                     async def _receive_turn():
                         nonlocal gemini_is_speaking, gemini_responded, attempt_responded, turn_responded, turn_should_follow_up
+                        nonlocal quiet_audio_flushed, quiet_suppressed, had_input_speech
                         rx_count = 0
                         async for response in session.receive():
                             rx_count += 1
@@ -1360,12 +1400,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
                                 async def _station_progress(_msg: str):
                                     nonlocal station_progress_played
-                                    if station_progress_played:
+                                    if station_progress_played or quiet_active or turn_voice_gain <= 0.0:
                                         return
                                     station_progress_played = True
                                     phrase = phrase_manager.get_phrase("thinking")
                                     if phrase:
-                                        await phrase_manager.play_phrase(websocket, phrase, volume=1.0)
+                                        await phrase_manager.play_phrase(websocket, phrase, volume=turn_voice_gain)
 
                                 for fc in response.tool_call.function_calls:
                                     tool_res = await tool_executor.execute(
@@ -1394,7 +1434,14 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     earcon_preset = options.get("earcon_smarthome_preset", "marimba_tudun")
 
                                 if earcon_cat and earcon_preset:
-                                    earcon_pcm = get_earcon_pcm(earcon_cat, earcon_preset, sample_rate=24000, volume=1.0)
+                                    if turn_voice_gain <= 0.0:
+                                        turn_state["earcon_played"] = True
+                                        logger.info(f"[YANDEX-WS] Silent night execution ({earcon_cat}), volume=0")
+                                        gemini_is_speaking = False
+                                        turn_should_follow_up = False
+                                        await _send_json({"type": "turn_complete"})
+                                        break
+                                    earcon_pcm = get_earcon_pcm(earcon_cat, earcon_preset, sample_rate=24000, volume=turn_voice_gain)
                                     if earcon_pcm:
                                         gemini_is_speaking = True
                                         turn_state["earcon_played"] = True
@@ -1403,7 +1450,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                             await websocket.send(earcon_pcm)
                                         except Exception:
                                             pass
-                                        logger.info(f"[YANDEX-WS] Played earcon {earcon_cat}/{earcon_preset} instead of voice reply")
+                                        logger.info(f"[YANDEX-WS] Played earcon {earcon_cat}/{earcon_preset} (vol={turn_voice_gain:.2f}) instead of voice reply")
                                         gemini_is_speaking = False
                                         turn_should_follow_up = False
                                         await _send_json({"type": "turn_complete"})
@@ -1415,6 +1462,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     attempt_responded = True
                                     turn_responded = True
                                     in_txt = sc.input_transcription.text
+                                    if in_txt.strip():
+                                        had_input_speech = True
                                     if active_capture_id and turn_idx == 0:
                                         active_capture_transcript.append(in_txt)
                                         ww_capture_store.update_outcome(
@@ -1426,6 +1475,10 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 if getattr(sc, "output_transcription", None) and getattr(sc.output_transcription, "text", None):
                                     out_txt = sc.output_transcription.text
                                     output_text_parts.append(out_txt)
+                                    joined_low = "".join(output_text_parts).strip().lower()
+                                    if "[silence]" in joined_low or (quiet_active and not had_input_speech and joined_low in ("pong", "pong.")):
+                                        quiet_suppressed = True
+                                        quiet_audio_buf.clear()
                                     logger.info(f"[YANDEX-WS] Gemini Speech ({client_mac}): {out_txt}")
 
                             if sc and sc.model_turn:
@@ -1434,27 +1487,72 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 turn_responded = True
                                 _cancel_eos_watchdog()
                                 _flush_utterance()
-                                if not gemini_is_speaking:
-                                    gemini_is_speaking = True
-                                    device_manager.set_device_state(client_mac, "speaking")
-                                    await _send_json({"type": "state", "state": "speaking"})
-                                for part in sc.model_turn.parts:
-                                    if part.inline_data and part.inline_data.data:
-                                        chunk = part.inline_data.data
-                                        pcm_response_chunks.append(chunk)
-                                        try:
-                                            await websocket.send(chunk)
-                                        except Exception:
-                                            pass
+                                if turn_voice_gain > 0.0 and not quiet_suppressed:
+                                    for part in sc.model_turn.parts:
+                                        if part.inline_data and part.inline_data.data:
+                                            chunk = part.inline_data.data
+                                            out_chunk = scale_pcm16(chunk, turn_voice_gain) if turn_voice_gain < 0.99 else chunk
+                                            if quiet_active and not quiet_audio_flushed:
+                                                quiet_audio_buf.append(out_chunk)
+                                                joined_tr = "".join(output_text_parts).strip()
+                                                if (
+                                                    (len(joined_tr) >= 10 and "[silence]" not in joined_tr.lower() and joined_tr.lower() not in ("pong", "pong."))
+                                                    or (len(quiet_audio_buf) >= 10 and (had_input_speech or turn_state.get("tool_executed")))
+                                                ):
+                                                    if not gemini_is_speaking:
+                                                        gemini_is_speaking = True
+                                                        device_manager.set_device_state(client_mac, "speaking")
+                                                        await _send_json({"type": "state", "state": "speaking"})
+                                                    for b_ch in quiet_audio_buf:
+                                                        pcm_response_chunks.append(b_ch)
+                                                        try:
+                                                            await websocket.send(b_ch)
+                                                        except Exception:
+                                                            pass
+                                                    quiet_audio_buf.clear()
+                                                    quiet_audio_flushed = True
+                                            else:
+                                                if not gemini_is_speaking:
+                                                    gemini_is_speaking = True
+                                                    device_manager.set_device_state(client_mac, "speaking")
+                                                    await _send_json({"type": "state", "state": "speaking"})
+                                                pcm_response_chunks.append(out_chunk)
+                                                try:
+                                                    await websocket.send(out_chunk)
+                                                except Exception:
+                                                    pass
 
                             in_progress = bool(
                                 sc and "IN_PROGRESS" in str(getattr(sc, "interaction_status", "") or "").upper()
                             )
                             is_turn_done = bool(sc and getattr(sc, "turn_complete", False) and not in_progress)
-                            is_gen_done = bool(sc and getattr(sc, "generation_complete", False) and gemini_is_speaking and not in_progress)
+                            is_gen_done = bool(sc and getattr(sc, "generation_complete", False) and (gemini_is_speaking or bool(quiet_audio_buf)) and not in_progress)
                             if is_turn_done or is_gen_done:
                                 full_reply = "".join(output_text_parts).strip()
                                 low_reply = full_reply.lower()
+                                if quiet_active and quiet_audio_buf and not quiet_audio_flushed:
+                                    should_play_quiet = (
+                                        not quiet_suppressed
+                                        and "[silence]" not in low_reply
+                                        and low_reply not in ("", "pong", "pong.")
+                                        and (had_input_speech or turn_state.get("tool_executed"))
+                                    )
+                                    if should_play_quiet:
+                                        if not gemini_is_speaking:
+                                            gemini_is_speaking = True
+                                            device_manager.set_device_state(client_mac, "speaking")
+                                            await _send_json({"type": "state", "state": "speaking"})
+                                        for b_ch in quiet_audio_buf:
+                                            pcm_response_chunks.append(b_ch)
+                                            try:
+                                                await websocket.send(b_ch)
+                                            except Exception:
+                                                pass
+                                        quiet_audio_flushed = True
+                                    else:
+                                        logger.info(f"[YANDEX-WS] Suppressed quiet-mode hallucination/noise reply: '{full_reply}'")
+                                    quiet_audio_buf.clear()
+
                                 is_dismissal = any(
                                     kw in low_reply
                                     for kw in (
@@ -1468,6 +1566,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     follow_up_on
                                     and not turn_state.get("earcon_played")
                                     and bool(full_reply)
+                                    and not quiet_suppressed
+                                    and "[silence]" not in low_reply
                                     and not is_dismissal
                                     and turn_idx < 4
                                 )
@@ -1505,6 +1605,8 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     try:
                         await asyncio.wait_for(recv_task, timeout=90.0)
                     except asyncio.CancelledError:
+                        if turn_discarded_silent:
+                            return True
                         if not turn_responded and replay_chunks is None and turn_idx == 0:
                             return False
                         raise
@@ -1516,7 +1618,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                         if recv_task and not recv_task.done():
                             recv_task.cancel()
 
-                    if not turn_should_follow_up:
+                    if turn_discarded_silent or not turn_should_follow_up:
                         break
 
                     # Готовим буфер для следующего хода (follow-up) в этой же сессии Gemini
@@ -1528,7 +1630,9 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
 
         try:
             ok = await _run_single_attempt(replay_chunks=None)
-            if not ok and session_active and utterance_chunks:
+            if turn_discarded_silent:
+                await _send_json({"type": "turn_complete"})
+            elif not ok and session_active and utterance_chunks:
                 logger.info(f"[YANDEX-WS] Retrying once with {len(utterance_chunks)} buffered chunks for {client_mac}...")
                 ok2 = await _run_single_attempt(replay_chunks=list(utterance_chunks))
                 if not ok2:
@@ -2152,8 +2256,14 @@ async def main():
     else:
         logger.warning("[WW] Server-side wake word engine NOT ready. Check porfiriy.onnx and openwakeword install.")
 
-    # 2. Запуск MQTT Discovery Manager
+    # 2. Запуск MQTT Discovery Manager и менеджера тихого режима
     ha_api = ha_api_singleton
+    quiet_mode_singleton.configure(
+        ha_api=ha_api,
+        device_manager=device_manager,
+        options_callback=get_options,
+    )
+    asyncio.create_task(quiet_mode_singleton.start())
     mqtt_manager = MQTTDiscoveryManager(device_manager, options)
     asyncio.create_task(mqtt_manager.start())
     
