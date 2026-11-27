@@ -21,7 +21,7 @@ try:
     from gemini_client import GeminiProxyClient
 except ImportError:
     GeminiProxyClient = None
-from prompt_builder import build_system_prompt
+from prompt_builder import build_live_history_turns, build_system_prompt, format_dialogue_context_block
 from tg_approvals import approval_manager
 
 logger = logging.getLogger("tg_gateway")
@@ -94,21 +94,24 @@ class TelegramBotGateway:
         return allowed, sender_map
 
     def _get_history_for_chat(self, chat_id: str, ttl_s: float = 600.0) -> List[Tuple[str, str]]:
-        cached = self._dialogue_history.get(chat_id)
-        if not cached:
-            return []
-        if time.time() - cached.get("timestamp", 0.0) > ttl_s:
-            return []
-        return list(cached.get("pairs", []))
+        msgs = db_singleton.get_recent_dialogue(channel="tg", scope_id=str(chat_id), limit=6, ttl_seconds=int(ttl_s))
+        pairs: List[Tuple[str, str]] = []
+        pending_u = ""
+        for m in msgs:
+            if m.get("role") == "user":
+                pending_u = m.get("text") or ""
+            else:
+                pairs.append((pending_u, m.get("text") or ""))
+                pending_u = ""
+        return pairs[-4:]
 
     def _save_turn(self, chat_id: str, user_text: str, reply_text: str) -> None:
-        if not chat_id or not user_text or not reply_text:
+        if not chat_id:
             return
-        pairs = self._get_history_for_chat(chat_id, ttl_s=600.0)
-        pairs.append((user_text[:400], reply_text[:500]))
-        if len(pairs) > 4:
-            pairs = pairs[-4:]
-        self._dialogue_history[chat_id] = {"timestamp": time.time(), "pairs": pairs}
+        if user_text:
+            db_singleton.save_dialogue_message(channel="tg", scope_id=str(chat_id), role="user", text=user_text)
+        if reply_text:
+            db_singleton.save_dialogue_message(channel="tg", scope_id=str(chat_id), role="model", sender_name="Порфирий", text=reply_text)
 
     async def start(self) -> None:
         self._running = True
@@ -698,20 +701,47 @@ class TelegramBotGateway:
         except Exception:
             pass
 
-    async def _send_tg_text(self, session: aiohttp.ClientSession, bot_token: str, chat_id: str, text: str) -> Optional[int]:
+    async def _send_tg_text(
+        self,
+        session: aiohttp.ClientSession,
+        bot_token: str,
+        chat_id: str,
+        text: str,
+        *,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[int]:
         clean = (text or "").strip()
         if not clean:
             return None
         last_msg_id: Optional[int] = None
         # Разбиваем слишком длинные ответы на части <= 4000 символов
         chunks = [clean[i : i + 4000] for i in range(0, len(clean), 4000)]
-        for chunk in chunks:
+        for idx, chunk in enumerate(chunks):
+            payload: Dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if idx == 0 and reply_to_message_id:
+                payload["reply_to_message_id"] = int(reply_to_message_id)
             async with session.post(
                 f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk},
+                json=payload,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
-                if resp.status != 200:
+                if resp.status == 400 and "reply_to_message_id" in payload:
+                    payload.pop("reply_to_message_id", None)
+                    async with session.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as resp2:
+                        if resp2.status == 200:
+                            try:
+                                data2 = await resp2.json(content_type=None)
+                                last_msg_id = (data2.get("result") or {}).get("message_id")
+                            except Exception:
+                                pass
+                        else:
+                            body2 = await resp2.text()
+                            logger.warning(f"[TG-GW] sendMessage retry failed ({resp2.status}): {body2[:300]}")
+                elif resp.status != 200:
                     body = await resp.text()
                     logger.warning(f"[TG-GW] sendMessage failed ({resp.status}): {body[:300]}")
                 else:
@@ -735,25 +765,60 @@ class TelegramBotGateway:
             pass
 
     async def _send_tg_voice(
-        self, session: aiohttp.ClientSession, bot_token: str, chat_id: str, ogg_bytes: bytes, caption: str = ""
-    ) -> bool:
-        form = aiohttp.FormData()
-        form.add_field("chat_id", chat_id)
-        form.add_field("voice", ogg_bytes, filename="reply.ogg", content_type="audio/ogg")
-        if caption and len(caption) <= 950:
-            form.add_field("caption", caption)
+        self,
+        session: aiohttp.ClientSession,
+        bot_token: str,
+        chat_id: str,
+        ogg_bytes: bytes,
+        caption: str = "",
+        *,
+        reply_to_message_id: Optional[int] = None,
+    ) -> Optional[int]:
+        def _make_form(with_reply: bool) -> aiohttp.FormData:
+            form = aiohttp.FormData()
+            form.add_field("chat_id", chat_id)
+            form.add_field("voice", ogg_bytes, filename="reply.ogg", content_type="audio/ogg")
+            if with_reply and reply_to_message_id:
+                form.add_field("reply_to_message_id", str(int(reply_to_message_id)))
+            if caption and len(caption) <= 950:
+                form.add_field("caption", caption)
+            return form
+
+        sent_voice_id: Optional[int] = None
         async with session.post(
             f"https://api.telegram.org/bot{bot_token}/sendVoice",
-            data=form,
+            data=_make_form(True),
             timeout=aiohttp.ClientTimeout(total=20),
         ) as resp:
-            if resp.status != 200:
+            if resp.status == 400 and reply_to_message_id:
+                async with session.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendVoice",
+                    data=_make_form(False),
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp2:
+                    if resp2.status != 200:
+                        body2 = await resp2.text()
+                        logger.warning(f"[TG-GW] sendVoice retry failed ({resp2.status}): {body2[:300]}")
+                        return None
+                    try:
+                        d2 = await resp2.json(content_type=None)
+                        sent_voice_id = (d2.get("result") or {}).get("message_id")
+                    except Exception:
+                        pass
+            elif resp.status != 200:
                 body = await resp.text()
                 logger.warning(f"[TG-GW] sendVoice failed ({resp.status}): {body[:300]}")
-                return False
+                return None
+            else:
+                try:
+                    d1 = await resp.json(content_type=None)
+                    sent_voice_id = (d1.get("result") or {}).get("message_id")
+                except Exception:
+                    pass
         if caption and len(caption) > 950:
-            await self._send_tg_text(session, bot_token, chat_id, caption)
-        return True
+            last_txt_id = await self._send_tg_text(session, bot_token, chat_id, caption)
+            return last_txt_id or sent_voice_id
+        return sent_voice_id
 
     @staticmethod
     def is_forwarded_message(msg: Dict[str, Any]) -> bool:
@@ -933,16 +998,65 @@ class TelegramBotGateway:
                 f"'{text_in[:100] if text_in else '<audio>'}'"
             )
 
+            incoming_msg_id = msg.get("message_id")
+            reply_obj = msg.get("reply_to_message")
+            reply_parent_id: Optional[int] = (
+                int(reply_obj["message_id"])
+                if isinstance(reply_obj, dict) and reply_obj.get("message_id") is not None
+                else None
+            )
+            is_reply_mode = reply_parent_id is not None
+
+            thread_msgs: List[Dict[str, Any]] = []
+            if reply_parent_id is not None:
+                thread_msgs = db_singleton.get_reply_thread(
+                    scope_id=chat_id,
+                    start_msg_id=reply_parent_id,
+                    channel="tg",
+                    max_depth=16,
+                    ttl_days=14,
+                )
+                if not thread_msgs and isinstance(reply_obj, dict):
+                    raw_parent_txt = (reply_obj.get("text") or reply_obj.get("caption") or "").strip()
+                    from_r = reply_obj.get("from") or {}
+                    r_role = "model" if from_r.get("is_bot") else "user"
+                    r_name = (
+                        "Порфирий"
+                        if r_role == "model"
+                        else (from_r.get("first_name") or from_r.get("username") or "Пользователь")
+                    )
+                    if not raw_parent_txt and isinstance(reply_obj.get("voice") or reply_obj.get("audio"), dict):
+                        raw_parent_txt = "[Голосовое сообщение]"
+                    if raw_parent_txt:
+                        thread_msgs = [{"role": r_role, "sender_name": r_name, "text": raw_parent_txt[:2000]}]
+                        db_singleton.save_dialogue_message(
+                            channel="tg",
+                            scope_id=chat_id,
+                            external_msg_id=reply_parent_id,
+                            role=r_role,
+                            sender_name=r_name,
+                            text=raw_parent_txt[:2000],
+                        )
+            else:
+                thread_msgs = db_singleton.get_recent_dialogue(
+                    channel="tg",
+                    scope_id=chat_id,
+                    limit=6,
+                    ttl_seconds=600,
+                )
+
             chat_desc = (
                 f"Shared family Telegram group chat (chat_id='{chat_id}')"
                 if chat_meta.get("is_family")
                 else f"Personal Telegram chat with {chat_meta.get('user_name')} (user_id='{chat_meta.get('user_id')}', chat_id='{chat_id}')"
             )
-            history_pairs = self._get_history_for_chat(chat_id)
-            history_block = ""
-            if history_pairs:
-                hist_lines = "\n".join(f"- User: {u}\n  Porfiriy: {a}" for u, a in history_pairs)
-                history_block = f"\n\n### RECENT TELEGRAM DIALOGUE (same chat):\n{hist_lines}"
+            thread_directive = (
+                "- REPLY THREAD CONTINUATION: The user explicitly replied to an earlier message branch "
+                "(provided in conversation history). Continue that exact branch directly and answer in its context."
+                if is_reply_mode
+                else "- DIALOGUE CONTINUITY: Recent turns from this chat may appear in conversation history. "
+                "If the user switches to a completely different topic, answer the new request directly without forcing old context."
+            )
 
             extra_context = (
                 f"### CHANNEL CONTEXT (TELEGRAM):\n"
@@ -952,8 +1066,8 @@ class TelegramBotGateway:
                 f"DO NOT call `send_to_telegram` to reply to the sender in this chat. "
                 f"Call `send_to_telegram` ONLY if the user explicitly asks to forward/send something to a DIFFERENT recipient or chat "
                 f"(e.g., 'отправь Свете', 'скинь в общий чат').\n"
+                f"{thread_directive}\n"
                 f"- Execute any smart home, music, timer, memory, list, or plugin requests normally just as if spoken to a smart speaker."
-                f"{history_block}"
             )
 
             dev_ctx = {"mac": f"tg_{chat_id}", "name": f"Telegram ({speaker_name})", "area_name": ""}
@@ -968,17 +1082,6 @@ class TelegramBotGateway:
             model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
             voice_name = options.get("voice_name", "Charon")
 
-            proxy = GeminiProxyClient(
-                api_key=api_key,
-                system_prompt=system_prompt,
-                ha_api=self.ha_api,
-                voice_name=voice_name,
-                model=model,
-                enable_google_search=options.get("enable_google_search", True),
-                response_modalities=["AUDIO"],
-                manual_vad=True,
-            )
-
             if is_voice and wav_bytes:
                 user_parts = [types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav")]
                 if text_in:
@@ -987,7 +1090,12 @@ class TelegramBotGateway:
             else:
                 current_turn = types.Content(role="user", parts=[types.Part.from_text(text=text_in)])
 
-            payload_turns = [current_turn]
+            payload_turns = build_live_history_turns(
+                thread_msgs,
+                current_turn,
+                include_sender=bool(chat_meta.get("is_family")),
+            )
+
             input_transcript_parts: List[str] = []
             output_text_parts: List[str] = []
             pcm_chunks: List[bytes] = []
@@ -1000,9 +1108,28 @@ class TelegramBotGateway:
                 if status_msg_id is None:
                     status_msg_id = await self._send_tg_text(http_sess, bot_token, chat_id, progress_text)
 
-            try:
+            async def _run_tg_live(turns_to_send: List[Any], prompt_txt: str) -> None:
+                nonlocal sent_to_same_chat
+                input_transcript_parts.clear()
+                output_text_parts.clear()
+                pcm_chunks.clear()
+                sent_to_same_chat = False
+                for k in turn_state:
+                    turn_state[k] = False
+
+                proxy = GeminiProxyClient(
+                    api_key=api_key,
+                    system_prompt=prompt_txt,
+                    ha_api=self.ha_api,
+                    voice_name=voice_name,
+                    model=model,
+                    enable_google_search=options.get("enable_google_search", True),
+                    response_modalities=["AUDIO"],
+                    manual_vad=True,
+                )
+
                 async with proxy.connect() as session:
-                    await session.send_client_content(turns=payload_turns, turn_complete=True)
+                    await session.send_client_content(turns=turns_to_send, turn_complete=True)
 
                     async def _consume():
                         nonlocal sent_to_same_chat
@@ -1061,16 +1188,45 @@ class TelegramBotGateway:
 
                     await asyncio.wait_for(_consume(), timeout=100.0)
 
+            try:
+                await _run_tg_live(payload_turns, system_prompt)
             except Exception as e:
-                await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
-                logger.error(f"[TG-GW] Gemini Live error for chat_id={chat_id}: {e}", exc_info=True)
-                await self._send_tg_text(http_sess, bot_token, chat_id, f"Ошибка обработки запроса: {e}")
-                return
+                if len(payload_turns) > 1 and thread_msgs:
+                    logger.warning(f"[TG-GW] Native multi-turn Live failed ({e}), retrying with text-context fallback...")
+                    hist_header = "### REPLIED THREAD CONTEXT:" if is_reply_mode else "### RECENT TELEGRAM DIALOGUE:"
+                    fb_block = format_dialogue_context_block(
+                        thread_msgs,
+                        header=hist_header,
+                        include_sender=bool(chat_meta.get("is_family")),
+                    )
+                    fb_prompt = f"{system_prompt}\n\n{fb_block}" if fb_block else system_prompt
+                    try:
+                        await _run_tg_live([current_turn], fb_prompt)
+                    except Exception as e2:
+                        await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
+                        logger.error(f"[TG-GW] Gemini Live fallback error for chat_id={chat_id}: {e2}", exc_info=True)
+                        await self._send_tg_text(http_sess, bot_token, chat_id, f"Ошибка обработки запроса: {e2}")
+                        return
+                else:
+                    await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
+                    logger.error(f"[TG-GW] Gemini Live error for chat_id={chat_id}: {e}", exc_info=True)
+                    await self._send_tg_text(http_sess, bot_token, chat_id, f"Ошибка обработки запроса: {e}")
+                    return
 
             await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
 
             reply_text = "".join(output_text_parts).strip()
             user_history_text = (text_in or "".join(input_transcript_parts).strip() or "[Голосовое сообщение]").strip()
+
+            db_singleton.save_dialogue_message(
+                channel="tg",
+                scope_id=chat_id,
+                external_msg_id=int(incoming_msg_id) if incoming_msg_id is not None else None,
+                reply_to_msg_id=reply_parent_id,
+                role="user",
+                sender_name=speaker_name,
+                text=user_history_text,
+            )
 
             if sent_to_same_chat and not reply_text:
                 return
@@ -1081,10 +1237,16 @@ class TelegramBotGateway:
                 reply_text = "Не расслышал запрос, повторите ещё раз."
 
             logger.info(
-                f"[TG-GW] Turn done chat_id={chat_id} tool_executed={turn_state['tool_executed']} "
+                f"[TG-GW] Turn done chat_id={chat_id} reply={is_reply_mode} hist={len(thread_msgs)} tool_executed={turn_state['tool_executed']} "
                 f"| in='{user_history_text[:140]}' | out='{reply_text[:180]}'"
             )
-            self._save_turn(chat_id, user_history_text, reply_text)
+
+            reply_out_id: Optional[int] = (
+                int(incoming_msg_id)
+                if incoming_msg_id is not None and (is_reply_mode or chat_meta.get("is_family"))
+                else None
+            )
+            sent_bot_msg_id: Optional[int] = None
 
             reply_voice = bool(cfg.get("reply_voice_to_voice", True))
             if is_voice and reply_voice and pcm_chunks:
@@ -1094,8 +1256,30 @@ class TelegramBotGateway:
                     pcm_all,
                 )
                 if ogg_out:
-                    sent_ok = await self._send_tg_voice(http_sess, bot_token, chat_id, ogg_out, caption=reply_text)
-                    if sent_ok:
-                        return
+                    sent_bot_msg_id = await self._send_tg_voice(
+                        http_sess,
+                        bot_token,
+                        chat_id,
+                        ogg_out,
+                        caption=reply_text,
+                        reply_to_message_id=reply_out_id,
+                    )
 
-            await self._send_tg_text(http_sess, bot_token, chat_id, reply_text)
+            if sent_bot_msg_id is None:
+                sent_bot_msg_id = await self._send_tg_text(
+                    http_sess,
+                    bot_token,
+                    chat_id,
+                    reply_text,
+                    reply_to_message_id=reply_out_id,
+                )
+
+            db_singleton.save_dialogue_message(
+                channel="tg",
+                scope_id=chat_id,
+                external_msg_id=sent_bot_msg_id,
+                reply_to_msg_id=int(incoming_msg_id) if incoming_msg_id is not None else None,
+                role="model",
+                sender_name="Порфирий",
+                text=reply_text,
+            )

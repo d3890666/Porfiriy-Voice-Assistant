@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from .db import db_singleton
@@ -31,6 +31,78 @@ def resolve_target_player(dev: Optional[Dict[str, Any]], options: Dict[str, Any]
         or options.get("default_media_player")
         or ""
     ).strip()
+
+
+def format_dialogue_context_block(
+    messages: List[Dict[str, Any]],
+    *,
+    header: str = "### PRIOR DIALOGUE CONTEXT:",
+    include_sender: bool = False,
+    max_chars_per_msg: int = 1200,
+) -> str:
+    """Форматирует историю диалога как текстовый fallback-блок для промпта."""
+    if not messages:
+        return ""
+    lines = [
+        header,
+        "Note: Treat this strictly as prior context. If the user's new request is about a completely different topic, answer the new request directly without forcing the old topic.",
+    ]
+    for m in messages:
+        role = "model" if str(m.get("role") or "").lower() in ("model", "assistant") else "user"
+        txt = str(m.get("text") or "").strip()[:max_chars_per_msg]
+        if not txt:
+            continue
+        if role == "model":
+            lines.append(f"- Porfiriy: {txt}")
+        else:
+            sname = str(m.get("sender_name") or "").strip()
+            prefix = sname if (include_sender and sname) else "User"
+            lines.append(f"- {prefix}: {txt}")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+def build_live_history_turns(
+    messages: List[Dict[str, Any]],
+    current_turn: Any,
+    *,
+    include_sender: bool = False,
+    max_chars_per_msg: int = 1200,
+) -> List[Any]:
+    """Собирает нативный список turns для Gemini Live send_client_content с чередованием user/model."""
+    if not messages:
+        return [current_turn]
+    try:
+        from google.genai import types as _types
+    except ImportError:
+        return [current_turn]
+
+    merged: List[tuple[str, str]] = []
+    for m in messages:
+        role = "model" if str(m.get("role") or "").lower() in ("model", "assistant") else "user"
+        txt = str(m.get("text") or "").strip()[:max_chars_per_msg]
+        if not txt:
+            continue
+        if role == "user" and include_sender and m.get("sender_name"):
+            txt = f"[{str(m['sender_name']).strip()}]: {txt}"
+        if merged and merged[-1][0] == role:
+            merged[-1] = (role, merged[-1][1] + "\n" + txt)
+        else:
+            merged.append((role, txt))
+
+    if not merged:
+        return [current_turn]
+
+    if merged[0][0] == "model":
+        merged.insert(0, ("user", "[Контекст предыдущего сообщения]"))
+    if merged[-1][0] == "user":
+        merged.append(("model", "Принято."))
+
+    turns = [
+        _types.Content(role=r, parts=[_types.Part.from_text(text=t)])
+        for r, t in merged
+    ]
+    turns.append(current_turn)
+    return turns
 
 
 async def build_system_prompt(

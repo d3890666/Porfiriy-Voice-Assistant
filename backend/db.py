@@ -267,6 +267,19 @@ class PorfiriyDB:
                         created_at TEXT NOT NULL
                     );
 
+                    CREATE TABLE IF NOT EXISTS dialogue_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        channel TEXT NOT NULL,
+                        scope_id TEXT NOT NULL,
+                        external_msg_id INTEGER,
+                        reply_to_msg_id INTEGER,
+                        role TEXT NOT NULL,
+                        sender_name TEXT DEFAULT '',
+                        text TEXT NOT NULL,
+                        is_ephemeral INTEGER DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    );
+
                     CREATE INDEX IF NOT EXISTS idx_user_channels_user ON user_channels(user_id);
                     CREATE INDEX IF NOT EXISTS idx_provider_accounts_provider ON provider_accounts(provider_id);
                     CREATE INDEX IF NOT EXISTS idx_provider_accounts_owner ON provider_accounts(owner_user_id);
@@ -276,6 +289,8 @@ class PorfiriyDB:
                     CREATE INDEX IF NOT EXISTS idx_audit_ts ON tool_audit_log(ts);
                     CREATE INDEX IF NOT EXISTS idx_job_runs_job_id ON job_runs(job_id, id DESC);
                     CREATE INDEX IF NOT EXISTS idx_rich_results_created ON rich_results(created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_dialogue_scope_created ON dialogue_messages(channel, scope_id, created_at DESC);
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_dialogue_ext_msg ON dialogue_messages(channel, scope_id, external_msg_id) WHERE external_msg_id IS NOT NULL;
                     """
                 )
                 # Миграция существующей таблицы scheduled_jobs (если БД создана в ранней версии)
@@ -2072,6 +2087,177 @@ class PorfiriyDB:
                        OR id NOT IN (SELECT id FROM rich_results ORDER BY id DESC LIMIT ?)
                     """,
                     (cutoff, max(1, int(max_items))),
+                )
+                conn.commit()
+                return int(res.rowcount or 0)
+            finally:
+                conn.close()
+
+    def save_dialogue_message(
+        self,
+        *,
+        channel: str,
+        scope_id: str,
+        role: str,
+        text: str,
+        sender_name: str = "",
+        external_msg_id: Optional[int] = None,
+        reply_to_msg_id: Optional[int] = None,
+        is_ephemeral: bool = False,
+    ) -> Optional[int]:
+        """Сохраняет реплику диалога (Telegram, колонка, часы) в единую таблицу истории."""
+        clean_txt = (text or "").strip()[:3000]
+        if not clean_txt or not channel or not scope_id:
+            return None
+        ch = str(channel).strip()
+        sc = str(scope_id).strip()
+        rl = "model" if str(role).strip().lower() in ("model", "assistant") else "user"
+        sn = (sender_name or "").strip()[:80]
+        eph = 1 if is_ephemeral else 0
+        now = _now_iso()
+        ext_id = int(external_msg_id) if external_msg_id is not None else None
+        rep_id = int(reply_to_msg_id) if reply_to_msg_id is not None else None
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                try:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO dialogue_messages(
+                            channel, scope_id, external_msg_id, reply_to_msg_id,
+                            role, sender_name, text, is_ephemeral, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (ch, sc, ext_id, rep_id, rl, sn, clean_txt, eph, now),
+                    )
+                    conn.commit()
+                    return int(cur.lastrowid) if cur.lastrowid is not None else None
+                except sqlite3.IntegrityError:
+                    if ext_id is not None:
+                        conn.execute(
+                            """
+                            UPDATE dialogue_messages
+                            SET reply_to_msg_id = COALESCE(?, reply_to_msg_id),
+                                role = ?,
+                                sender_name = CASE WHEN ? != '' THEN ? ELSE sender_name END,
+                                text = ?,
+                                is_ephemeral = ?
+                            WHERE channel = ? AND scope_id = ? AND external_msg_id = ?
+                            """,
+                            (rep_id, rl, sn, sn, clean_txt, eph, ch, sc, ext_id),
+                        )
+                        conn.commit()
+                        row = conn.execute(
+                            "SELECT id FROM dialogue_messages WHERE channel = ? AND scope_id = ? AND external_msg_id = ?",
+                            (ch, sc, ext_id),
+                        ).fetchone()
+                        return int(row["id"]) if row else None
+                    return None
+            finally:
+                conn.close()
+
+    def get_reply_thread(
+        self,
+        *,
+        scope_id: str,
+        start_msg_id: int,
+        channel: str = "tg",
+        max_depth: int = 16,
+        ttl_days: int = 14,
+    ) -> List[Dict[str, Any]]:
+        """Восстанавливает ветку переписки по цепочке reply_to_msg_id в хронологическом порядке."""
+        if not scope_id or start_msg_id is None:
+            return []
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(days=max(1, int(ttl_days)))
+        ).isoformat()
+        ch = str(channel).strip()
+        sc = str(scope_id).strip()
+        cur_id: Optional[int] = int(start_msg_id)
+        visited = set()
+        chain: List[Dict[str, Any]] = []
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                while cur_id is not None and len(chain) < max(1, int(max_depth)):
+                    if cur_id in visited:
+                        break
+                    visited.add(cur_id)
+                    row = conn.execute(
+                        """
+                        SELECT id, channel, scope_id, external_msg_id, reply_to_msg_id,
+                               role, sender_name, text, is_ephemeral, created_at
+                        FROM dialogue_messages
+                        WHERE channel = ? AND scope_id = ? AND external_msg_id = ? AND created_at >= ?
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (ch, sc, cur_id, cutoff),
+                    ).fetchone()
+                    if not row:
+                        break
+                    chain.append(dict(row))
+                    nxt = row["reply_to_msg_id"]
+                    cur_id = int(nxt) if nxt is not None else None
+            finally:
+                conn.close()
+
+        chain.reverse()
+        return chain
+
+    def get_recent_dialogue(
+        self,
+        *,
+        channel: str,
+        scope_id: str,
+        limit: int = 6,
+        ttl_seconds: int = 300,
+        include_ephemeral: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Возвращает последние N реплик (скользящее окно с TTL) в хронологическом порядке."""
+        if not channel or not scope_id:
+            return []
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(seconds=max(1, int(ttl_seconds)))
+        ).isoformat()
+        eph_clause = "" if include_ephemeral else "AND is_ephemeral = 0"
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    f"""
+                    SELECT id, channel, scope_id, external_msg_id, reply_to_msg_id,
+                           role, sender_name, text, is_ephemeral, created_at
+                    FROM dialogue_messages
+                    WHERE channel = ? AND scope_id = ? AND created_at >= ? {eph_clause}
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (str(channel).strip(), str(scope_id).strip(), cutoff, max(1, min(32, int(limit)))),
+                ).fetchall()
+            finally:
+                conn.close()
+        return [dict(r) for r in reversed(rows)]
+
+    def cleanup_dialogue_messages(self, *, ttl_days: int = 14, max_rows: int = 5000) -> int:
+        """Удаляет реплики старше ttl_days и ограничивает общий объём таблицы."""
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+            - datetime.timedelta(days=max(1, int(ttl_days)))
+        ).isoformat()
+        with self._lock:
+            conn = self._connect()
+            try:
+                res = conn.execute(
+                    """
+                    DELETE FROM dialogue_messages
+                    WHERE created_at < ?
+                       OR id NOT IN (SELECT id FROM dialogue_messages ORDER BY id DESC LIMIT ?)
+                    """,
+                    (cutoff, max(100, int(max_rows))),
                 )
                 conn.commit()
                 return int(res.rowcount or 0)

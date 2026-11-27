@@ -225,19 +225,35 @@ class TelegramBotPlugin(PorfiriyPlugin):
                 "chat_id": str(chat_id),
             }
 
+        def _record_sent_msg(res: Dict[str, Any]) -> Dict[str, Any]:
+            if db and isinstance(res, dict) and res.get("status") == "ok" and res.get("message_id"):
+                try:
+                    plain_body = re.sub(r"<[^>]+>", "", full_text).strip()
+                    db.save_dialogue_message(
+                        channel="tg",
+                        scope_id=str(chat_id),
+                        external_msg_id=int(res["message_id"]),
+                        role="model",
+                        sender_name="Порфирий",
+                        text=plain_body[:3000],
+                    )
+                except Exception as rec_ex:
+                    logger.debug(f"Failed to record Telegram bot message in dialogue_messages: {rec_ex}")
+            return res
+
         if mode == "direct_bot":
-            return await _send_direct()
+            return _record_sent_msg(await _send_direct())
 
         # В режиме ha_notify пробуем HA; если не сработало, но задан bot_token — аккуратный fallback на прямой Bot API
         ha_res = await _send_ha()
         if ha_res.get("status") == "ok":
-            return ha_res
+            return _record_sent_msg(ha_res)
         if bot_token:
             logger.warning(f"HA notify failed ({ha_res.get('error')}), falling back to direct Telegram Bot API")
             direct_res = await _send_direct()
             if direct_res.get("status") == "ok":
                 direct_res["fallback_from_ha_error"] = ha_res.get("error")
-                return direct_res
+                return _record_sent_msg(direct_res)
         return ha_res
 
     async def execute_tool(self, tool_name: str, args: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:

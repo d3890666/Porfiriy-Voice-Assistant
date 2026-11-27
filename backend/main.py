@@ -30,7 +30,8 @@ from config import (
     refresh_available_models,
 )
 from net_utils import get_local_addon_base_url
-from prompt_builder import build_system_prompt
+from prompt_builder import build_live_history_turns, build_system_prompt, format_dialogue_context_block
+from db import db_singleton
 from tool_executor import ToolExecutor
 
 from ha_api import HomeAssistantAPI
@@ -1230,11 +1231,24 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             await _send_json({"type": "state", "state": "idle"})
             return
 
+        recent_voice_msgs = db_singleton.get_recent_dialogue(
+            channel="station",
+            scope_id=client_mac,
+            limit=6,
+            ttl_seconds=300,
+        )
+        continuity_note = (
+            "\n- Conversation Continuity: Prior turns from the last 5 minutes may appear in history. "
+            "If the user continues that topic, answer seamlessly; if the user switches to a completely unrelated topic, answer the new request directly without forcing old context."
+            if recent_voice_msgs
+            else ""
+        )
         station_ctx = (
             "### HARDWARE & SATELLITE CONTEXT:\n"
             "- Device Type: Yandex Station 2 (Native Local openWakeWord + WebSocket Live Audio Stream).\n"
             "- Acoustic Input: Real-time 16kHz PCM stream directly from Station microphones (after DC-blocker & AEC).\n"
             "- Speech Directive: Output strictly spoken, natural Russian. 1-2 concise spoken sentences."
+            f"{continuity_note}"
         )
         t_start = time.monotonic()
         full_prompt = await build_system_prompt(
@@ -1243,17 +1257,19 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         t_prompt = time.monotonic() - t_start
 
         vad_silence = int(options.get("vad_silence_duration_ms", 600))
-        gemini_client = GeminiProxyClient(
-            api_key=api_key,
-            system_prompt=full_prompt,
-            ha_api=ha_api,
-            voice_name=options.get("voice_name", "Charon"),
-            model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
-            enable_google_search=options.get("enable_google_search", True),
-            vad_silence_duration_ms=vad_silence,
-            response_modalities=["AUDIO"],
-            manual_vad=True,
-        )
+
+        def _make_station_gemini(prompt_str: str) -> GeminiProxyClient:
+            return GeminiProxyClient(
+                api_key=api_key,
+                system_prompt=prompt_str,
+                ha_api=ha_api,
+                voice_name=options.get("voice_name", "Charon"),
+                model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
+                enable_google_search=options.get("enable_google_search", True),
+                vad_silence_duration_ms=vad_silence,
+                response_modalities=["AUDIO"],
+                manual_vad=True,
+            )
 
         pcm_response_chunks = []
         turn_state = {
@@ -1264,18 +1280,53 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             "earcon_played": False,
         }
 
-        async def _run_single_attempt(replay_chunks: Optional[list[bytes]] = None) -> bool:
+        def _persist_station_turn(u_txt: str, b_txt: str, is_eph: bool, suppressed: bool) -> None:
+            if suppressed or "[silence]" in (b_txt or "").lower():
+                return
+            clean_u = (u_txt or "").strip()
+            clean_b = (b_txt or "").strip()
+            if not clean_b and is_eph:
+                clean_b = "[Команда умного дома]"
+            if clean_u:
+                db_singleton.save_dialogue_message(
+                    channel="station",
+                    scope_id=client_mac,
+                    role="user",
+                    text=clean_u,
+                    is_ephemeral=is_eph,
+                )
+            if clean_b:
+                db_singleton.save_dialogue_message(
+                    channel="station",
+                    scope_id=client_mac,
+                    role="model",
+                    sender_name="Порфирий",
+                    text=clean_b,
+                    is_ephemeral=is_eph,
+                )
+
+        async def _run_single_attempt(replay_chunks: Optional[list[bytes]] = None, use_native_turns: bool = True) -> bool:
             """Выполняет сессию Gemini Live (1 ход + до 4 follow-up ходов, если Порфирий задал вопрос)."""
             nonlocal gemini_is_speaking, gemini_responded, utterance_saved, turn_voice_gain, turn_discarded_silent
             attempt_responded = False
 
+            eff_prompt = full_prompt
+            if not use_native_turns and recent_voice_msgs:
+                fb_hist = format_dialogue_context_block(
+                    recent_voice_msgs,
+                    header="### RECENT VOICE CONVERSATION (last 5 min):",
+                )
+                if fb_hist:
+                    eff_prompt = f"{full_prompt}\n\n{fb_hist}"
+
+            gemini_client = _make_station_gemini(eff_prompt)
             t_conn = time.monotonic()
             tag = "[RETRY] " if replay_chunks is not None else ""
             async with gemini_client.connect() as session:
                 q_backlog = len(replay_chunks) if replay_chunks is not None else (audio_queue.qsize() if audio_queue else 0)
                 logger.info(
                     f"[YANDEX-WS] {tag}Gemini connected for {client_mac} "
-                    f"(prompt={t_prompt:.2f}s, connect={time.monotonic() - t_conn:.2f}s, backlog={q_backlog} chunks)"
+                    f"(prompt={t_prompt:.2f}s, connect={time.monotonic() - t_conn:.2f}s, backlog={q_backlog} chunks, hist={len(recent_voice_msgs)})"
                 )
 
                 for turn_idx in range(5):
@@ -1283,6 +1334,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                     turn_should_follow_up = False
                     turn_discarded_silent = False
                     eos_sent_event = asyncio.Event()
+                    turn_input_parts: list[str] = []
                     output_text_parts: list[str] = []
                     quiet_audio_buf: list[bytes] = []
                     quiet_audio_flushed = False
@@ -1337,19 +1389,23 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             )
 
                             wav_turn = pcm16_to_wav(raw_turn_pcm, sample_rate=16000)
+                            cur_content = types.Content(
+                                role="user",
+                                parts=[types.Part.from_bytes(data=wav_turn, mime_type="audio/wav")],
+                            )
+                            turns_payload = (
+                                build_live_history_turns(recent_voice_msgs, cur_content)
+                                if (turn_idx == 0 and use_native_turns and recent_voice_msgs)
+                                else [cur_content]
+                            )
                             await session.send_client_content(
-                                turns=[
-                                    types.Content(
-                                        role="user",
-                                        parts=[types.Part.from_bytes(data=wav_turn, mime_type="audio/wav")],
-                                    )
-                                ],
+                                turns=turns_payload,
                                 turn_complete=True,
                             )
                             eos_sent_event.set()
                             logger.info(
                                 f"[YANDEX-WS] {tag}Sent atomic WAV turn_complete=True "
-                                f"(turn={turn_idx + 1}, {len(wav_turn)} bytes, {dur_s:.2f}s) ({client_mac})"
+                                f"(turn={turn_idx + 1}, {len(wav_turn)} bytes, {dur_s:.2f}s, turns={len(turns_payload)}) ({client_mac})"
                             )
                         except asyncio.CancelledError:
                             pass
@@ -1437,6 +1493,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     if turn_voice_gain <= 0.0:
                                         turn_state["earcon_played"] = True
                                         logger.info(f"[YANDEX-WS] Silent night execution ({earcon_cat}), volume=0")
+                                        _persist_station_turn("".join(turn_input_parts), "", True, quiet_suppressed)
                                         gemini_is_speaking = False
                                         turn_should_follow_up = False
                                         await _send_json({"type": "turn_complete"})
@@ -1451,6 +1508,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                         except Exception:
                                             pass
                                         logger.info(f"[YANDEX-WS] Played earcon {earcon_cat}/{earcon_preset} (vol={turn_voice_gain:.2f}) instead of voice reply")
+                                        _persist_station_turn("".join(turn_input_parts), "", True, quiet_suppressed)
                                         gemini_is_speaking = False
                                         turn_should_follow_up = False
                                         await _send_json({"type": "turn_complete"})
@@ -1462,6 +1520,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                     attempt_responded = True
                                     turn_responded = True
                                     in_txt = sc.input_transcription.text
+                                    turn_input_parts.append(in_txt)
                                     if in_txt.strip():
                                         had_input_speech = True
                                     if active_capture_id and turn_idx == 0:
@@ -1576,6 +1635,13 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                                 if wants_follow_up and not is_turn_done:
                                     continue
 
+                                is_eph = bool(
+                                    turn_state.get("earcon_played")
+                                    or turn_state.get("simple_smarthome_executed")
+                                    or turn_state.get("volume_changed")
+                                )
+                                _persist_station_turn("".join(turn_input_parts), full_reply, is_eph, quiet_suppressed)
+
                                 gemini_is_speaking = False
                                 if wants_follow_up:
                                     turn_should_follow_up = True
@@ -1629,12 +1695,12 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             return attempt_responded
 
         try:
-            ok = await _run_single_attempt(replay_chunks=None)
+            ok = await _run_single_attempt(replay_chunks=None, use_native_turns=True)
             if turn_discarded_silent:
                 await _send_json({"type": "turn_complete"})
             elif not ok and session_active and utterance_chunks:
                 logger.info(f"[YANDEX-WS] Retrying once with {len(utterance_chunks)} buffered chunks for {client_mac}...")
-                ok2 = await _run_single_attempt(replay_chunks=list(utterance_chunks))
+                ok2 = await _run_single_attempt(replay_chunks=list(utterance_chunks), use_native_turns=False)
                 if not ok2:
                     await _send_json({"type": "turn_complete"})
             elif not ok:
@@ -1893,6 +1959,17 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
     last_reply_text = ""
     utterance_chunks: list[bytes] = []
     conversation_history: list[tuple[str, str]] = []
+    try:
+        recent_watch = db_singleton.get_recent_dialogue(channel="watch", scope_id=client_mac, limit=6, ttl_seconds=600)
+        pending_wu = ""
+        for wm in recent_watch:
+            if wm.get("role") == "user":
+                pending_wu = wm.get("text") or ""
+            else:
+                conversation_history.append((pending_wu, wm.get("text") or ""))
+                pending_wu = ""
+    except Exception:
+        pass
 
     device_manager.set_device_state(client_mac, "listening")
     await _send_json({"type": "state", "state": "listening"})
@@ -2076,6 +2153,22 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                                     conversation_history.append((full_input, full_reply))
                                     if len(conversation_history) > 6:
                                         del conversation_history[:-6]
+                                    if full_input:
+                                        db_singleton.save_dialogue_message(
+                                            channel="watch",
+                                            scope_id=client_mac,
+                                            role="user",
+                                            sender_name=(cur_user.get("name") if cur_user else ""),
+                                            text=full_input,
+                                        )
+                                    if full_reply:
+                                        db_singleton.save_dialogue_message(
+                                            channel="watch",
+                                            scope_id=client_mac,
+                                            role="model",
+                                            sender_name="Порфирий",
+                                            text=full_reply,
+                                        )
                                 device_manager.update_device_runtime(client_mac, {
                                     "last_reply_text": full_reply,
                                     "last_reply_at": time.time(),
@@ -2219,6 +2312,9 @@ async def _memory_cleanup_loop():
             rich_del = db_singleton.cleanup_rich_results(ttl_hours=72, max_items=50)
             if rich_del:
                 logger.info(f"[RICH_CACHE] Cleaned up {rich_del} expired rich results")
+            dlg_del = db_singleton.cleanup_dialogue_messages(ttl_days=14, max_rows=5000)
+            if dlg_del:
+                logger.info(f"[DIALOGUE] Cleaned up {dlg_del} old dialogue messages")
         except Exception as e:
             logger.warning(f"[MEMORY] Cleanup loop error: {e}")
         await asyncio.sleep(6 * 3600)
