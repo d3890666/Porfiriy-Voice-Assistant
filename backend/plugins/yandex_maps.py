@@ -173,21 +173,24 @@ class YandexMapsPlugin(PorfiriyPlugin):
         if city and not _query_contains_city(text_q, city):
             text_q = f"{text_q}, {city}"
 
-        params: Dict[str, Any] = {
-            "apikey": api_key,
-            "text": text_q,
-            "types": types_filter,
-            "attrs": "uri",
-            "lang": "ru_RU",
-            "results": str(results),
-        }
+        # Явно кодируем text через quote(safe="") (чтобы запятая кодировалась как %2C и пробел как %20 —
+        # yarl в aiohttp оставляет сырую запятую с '+', из-за чего Geosuggest возвращает пустой results).
+        qs_parts = [
+            f"apikey={quote(api_key, safe='')}",
+            f"text={quote(text_q, safe='')}",
+            f"types={quote(types_filter, safe=',')}",
+            "attrs=uri",
+            "lang=ru_RU",
+            f"results={int(results)}",
+        ]
         if use_default_bias:
-            params["ll"] = default_ll
-            params["spn"] = "0.8,0.8"
+            qs_parts.append(f"ll={quote(default_ll, safe=',.-')}")
+            qs_parts.append("spn=0.8,0.8")
+        req_url = f"{GEOSUGGEST_URL}?{'&'.join(qs_parts)}"
 
         try:
             async with aiohttp.ClientSession() as sess:
-                async with sess.get(GEOSUGGEST_URL, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with sess.get(req_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status != 200:
                         body = await resp.text()
                         logger.warning(f"Geosuggest HTTP {resp.status}: {body[:200]}")
