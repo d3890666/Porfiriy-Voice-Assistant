@@ -216,6 +216,9 @@ def get_options() -> Dict[str, Any]:
     defaults = {
         "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
         "gemini_model": DEFAULT_GEMINI_MODEL,
+        "gemini_fallback_model": "",
+        "normalize_numbers_enabled": True,
+        "ww_server_enabled": True,
         "big_models_enabled": False,
         "big_models_threshold_chars": 4000,
         "big_models_pool": [],

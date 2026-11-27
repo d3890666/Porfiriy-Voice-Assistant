@@ -502,7 +502,8 @@ class WebServer:
             updated_opts = dict(current_opts)
             
             allowed_fields = [
-                "gemini_api_key", "gemini_model", "big_models_enabled", "big_models_threshold_chars", "big_models_pool",
+                "gemini_api_key", "gemini_model", "gemini_fallback_model", "normalize_numbers_enabled",
+                "ww_server_enabled", "big_models_enabled", "big_models_threshold_chars", "big_models_pool",
                 "web_search_model", "serper_api_key",
                 "voice_name", "temperature",
                 "thinking_timeout_s", "enable_google_search", "vad_silence_duration_ms",
@@ -564,7 +565,7 @@ class WebServer:
                                     engine.set_threshold(new_thr)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled", "earcon_volume_enabled", "earcon_smarthome_enabled", "quiet_mode_enabled", "quiet_mode_mute_wake_earcon"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled", "earcon_volume_enabled", "earcon_smarthome_enabled", "quiet_mode_enabled", "quiet_mode_mute_wake_earcon", "normalize_numbers_enabled", "ww_server_enabled"]:
                         updated_opts[field] = bool(val)
                     elif field == "quiet_mode_entities":
                         if isinstance(val, list):

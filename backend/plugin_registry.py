@@ -132,9 +132,23 @@ class PluginRegistry:
                 if snippet:
                     sections.append(snippet)
             else:
-                hint = ((prov.get("config") or {}).get("prompt_hint") or "").strip()
+                cfg = prov.get("config") or {}
+                hint = (cfg.get("prompt_hint") or "").strip()
                 if hint:
                     sections.append(f"### EXTERNAL PROVIDER ({prov['title']})\n{hint}")
+                if pid == "mcp.marketplaces":
+                    enabled_tools = cfg.get("enabled_tools") or []
+                    if isinstance(enabled_tools, str):
+                        enabled_tools = [x.strip() for x in enabled_tools.split(",") if x.strip()]
+                    tool_names = set(enabled_tools) if enabled_tools else {
+                        str(t.get("name") or "").strip() for t in (prov.get("cached_tools") or [])
+                    }
+                    if "cian_search" in tool_names:
+                        sections.append(
+                            "### REAL ESTATE SEARCH (CIAN):\n"
+                            "- For requests about buying, renting (long-term or daily), or market prices of apartments/houses/rooms, "
+                            "prioritize calling `cian_search` (and `cian_card` for details) instead of generic `web_search`."
+                        )
         return "\n\n".join(sections)
 
     def handles_tool(self, tool_name: str) -> bool:
@@ -272,29 +286,48 @@ class PluginRegistry:
                     pid == "mcp.marketplaces"
                     and tool_name not in ("marketplace_health", "marketplace_sources", "compare_sources", "compare_browser_snapshot")
                 )
+                is_cian_tool = (pid == "mcp.marketplaces" and tool_name in ("cian_search", "cian_card"))
                 if is_marketplace_product_tool and isinstance(res, dict) and res.get("status") == "ok":
                     raw_json = json.dumps(res, ensure_ascii=False)
                     user_q = str(ctx_dict.get("user_query") or clean_args.get("query") or "").strip()
                     if ctx_dict.get("on_progress"):
                         try:
-                            await ctx_dict["on_progress"]("🔍 Обрабатываю результаты и готовлю подборку со ссылками...")
+                            await ctx_dict["on_progress"](
+                                "🏠 Подбираю варианты на Циан и готовлю ссылки..." if is_cian_tool
+                                else "🔍 Обрабатываю результаты и готовлю подборку со ссылками..."
+                            )
                         except Exception:
                             pass
-                    card_prompt = (
-                        f"Исходный запрос пользователя: {user_q or 'Найди лучшие предложения.'}\n\n"
-                        f"Ниже JSON-ответ маркетплейсов от инструмента `{tool_name}`.\n"
-                        f"Сформируй компактную, красивую карточку для Telegram строго в формате **Telegram HTML**.\n"
-                        f"ПРАВИЛА:\n"
-                        f"1. Разрешены ТОЛЬКО теги Telegram HTML: <b>, <i>, <a href=\"URL\">, <code>. НЕ используй Markdown (**, ##, []()), списки <ul>/<li> и <br>. Символ & в тексте экранируй как &amp;.\n"
-                        f"2. Все цены пиши СТРОГО ЦИФРАМИ (например: <b>490 ₽</b>), никогда прописью.\n"
-                        f"3. У пользователя есть Ozon Карта, WB Кошелёк и Яндекс Пэй — в первую очередь указывай цену по карте/кошельку (если есть в данных, подпиши в скобках, например «Ozon Карта» / «WB Кошелёк»).\n"
-                        f"4. Выбери 3–5 лучших релевантных предложений (отсеивай мусор и нерелевантные аксессуары). Формат каждой строки:\n"
-                        f"   1. <a href=\"URL\">Короткое название</a> — <b>ЦЕНА ₽</b> (площадка, рейтинг/доставка если есть)\n"
-                        f"   Если URL нет в данных — пиши просто название без ссылки.\n"
-                        f"5. В начале заголовок: 🛒 <b>Подборка: {user_q or 'товары'}</b>\n"
-                        f"6. В конце добавь 1–2 предложения: 💡 <b>Рекомендация:</b> что лучше взять и почему.\n\n"
-                        f"ДАННЫЕ:\n{raw_json[:150000]}"
-                    )
+                    if is_cian_tool:
+                        card_prompt = (
+                            f"Исходный запрос пользователя: {user_q or 'Подбери варианты недвижимости на Циан.'}\n\n"
+                            f"Ниже JSON-ответ Циан от инструмента `{tool_name}`.\n"
+                            f"Сформируй компактную, красивую карточку для Telegram строго в формате **Telegram HTML**.\n"
+                            f"ПРАВИЛА:\n"
+                            f"1. Разрешены ТОЛЬКО теги Telegram HTML: <b>, <i>, <a href=\"URL\">, <code>. НЕ используй Markdown (**, ##, []()), списки <ul>/<li> и <br>. Символ & экранируй как &amp;.\n"
+                            f"2. Все цены пиши СТРОГО ЦИФРАМИ с правильной единицей (например: <b>16,8 млн ₽</b>, <b>75 000 ₽/мес</b>, <b>4 500 ₽/сутки</b>).\n"
+                            f"3. Выбери 4–6 лучших релевантных объявлений. Формат каждой строки:\n"
+                            f"   1. <a href=\"URL\">Комнаты, м², этаж (или заголовок)</a> — <b>ЦЕНА</b> (метро/адрес)\n"
+                            f"4. В начале заголовок: 🏠 <b>Подборка Циан: {user_q or 'недвижимость'}</b>\n"
+                            f"5. В конце добавь 1–2 предложения: 💡 <b>Сводка:</b> реальная вилка/ориентир цен по выдаче и на что обратить внимание.\n\n"
+                            f"ДАННЫЕ:\n{raw_json[:150000]}"
+                        )
+                    else:
+                        card_prompt = (
+                            f"Исходный запрос пользователя: {user_q or 'Найди лучшие предложения.'}\n\n"
+                            f"Ниже JSON-ответ маркетплейсов от инструмента `{tool_name}`.\n"
+                            f"Сформируй компактную, красивую карточку для Telegram строго в формате **Telegram HTML**.\n"
+                            f"ПРАВИЛА:\n"
+                            f"1. Разрешены ТОЛЬКО теги Telegram HTML: <b>, <i>, <a href=\"URL\">, <code>. НЕ используй Markdown (**, ##, []()), списки <ul>/<li> и <br>. Символ & в тексте экранируй как &amp;.\n"
+                            f"2. Все цены пиши СТРОГО ЦИФРАМИ (например: <b>490 ₽</b>), никогда прописью.\n"
+                            f"3. У пользователя есть Ozon Карта, WB Кошелёк и Яндекс Пэй — в первую очередь указывай цену по карте/кошельку (если есть в данных, подпиши в скобках, например «Ozon Карта» / «WB Кошелёк»).\n"
+                            f"4. Выбери 3–5 лучших релевантных предложений (отсеивай мусор и нерелевантные аксессуары). Формат каждой строки:\n"
+                            f"   1. <a href=\"URL\">Короткое название</a> — <b>ЦЕНА ₽</b> (площадка, рейтинг/доставка если есть)\n"
+                            f"   Если URL нет в данных — пиши просто название без ссылки.\n"
+                            f"5. В начале заголовок: 🛒 <b>Подборка: {user_q or 'товары'}</b>\n"
+                            f"6. В конце добавь 1–2 предложения: 💡 <b>Рекомендация:</b> что лучше взять и почему.\n\n"
+                            f"ДАННЫЕ:\n{raw_json[:150000]}"
+                        )
                     big_res = await big_model_pool_singleton.run_text_task(card_prompt, opts)
                     if big_res.get("success") and (big_res.get("text") or "").strip():
                         card_html = big_res["text"].strip()
@@ -345,6 +378,7 @@ class PluginRegistry:
                         return {
                             "status": "ok",
                             "sent_to_telegram": tg_sent,
+                            "card_sent_in_same_chat": bool(tg_sent and mac.startswith("tg_")),
                             "telegram_target": tg_dest_label,
                             "instruction": (
                                 f"Подробная карточка с ценами цифрами и кликабельными ссылками УЖЕ отправлена в {tg_dest_label}. "

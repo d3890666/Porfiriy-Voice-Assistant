@@ -1632,6 +1632,36 @@ function populateModelsDropdown(selectedModel) {
   }
 }
 
+function populateFallbackModelDropdown(selectedModel) {
+  const select = document.getElementById('cfg-fallback-model');
+  if (!select) return;
+  const currentVal = selectedModel !== undefined ? selectedModel : (globalOptions.gemini_fallback_model || '');
+  const models = Array.isArray(availableModels) && availableModels.length > 0 ? [...availableModels] : [
+    { id: 'models/gemini-3.1-flash-live-preview', name: 'Gemini 3.1 Flash Live Preview', is_live: true },
+    { id: 'models/gemini-2.5-flash-native-audio-preview', name: 'Gemini 2.5 Flash Native Audio Preview', is_live: true },
+    { id: 'models/gemini-2.0-flash-exp', name: 'Gemini 2.0 Flash Experimental', is_live: true }
+  ];
+  const liveGroup = models.filter(m => m && m.is_live);
+  let html = `<option value="" ${!currentVal ? 'selected' : ''}>— Не использовать —</option>`;
+  if (liveGroup.length > 0) {
+    html += '<optgroup label="🌟 Live Audio модели">';
+    liveGroup.forEach(m => {
+      html += `<option value="${escapeHtml(m.id)}" ${m.id === currentVal ? 'selected' : ''}>${escapeHtml(m.name || m.id)}</option>`;
+    });
+    html += '</optgroup>';
+  }
+  if (currentVal && !liveGroup.some(m => m && m.id === currentVal)) {
+    html += `<option value="${escapeHtml(currentVal)}" selected>${escapeHtml(currentVal)} (Текущая)</option>`;
+  }
+  select.innerHTML = html;
+}
+
+function toggleAccordionByCheckbox(accId, isEnabled) {
+  const acc = document.getElementById(accId);
+  if (acc) acc.open = !!isEnabled;
+}
+window.toggleAccordionByCheckbox = toggleAccordionByCheckbox;
+
 function handleModelSelectChange(val) {
   const customBox = document.getElementById('custom-model-box');
   const customInput = document.getElementById('cfg-model-custom');
@@ -1663,6 +1693,7 @@ async function refreshModelsList() {
       const select = document.getElementById('cfg-model');
       const currentVal = select ? select.value : globalOptions.gemini_model;
       populateModelsDropdown(currentVal);
+      populateFallbackModelDropdown();
       if (typeof renderBigModelsPool === 'function') renderBigModelsPool();
       const liveCount = availableModels.filter(m => m.is_live).length;
       showToast(`Модели обновлены! Найдено ${availableModels.length} моделей (${liveCount} Live Audio).`);
@@ -1710,6 +1741,7 @@ function populateGlobalSettingsForm() {
   }
 
   populateModelsDropdown(globalOptions.gemini_model || 'models/gemini-3.1-flash-live-preview');
+  populateFallbackModelDropdown(globalOptions.gemini_fallback_model || '');
 
   const bmChk = document.getElementById('cfg-big-models-enabled');
   if (bmChk) bmChk.checked = !!globalOptions.big_models_enabled;
@@ -1720,12 +1752,13 @@ function populateGlobalSettingsForm() {
   renderBigModelsPool();
 
   setVal('cfg-voice', globalOptions.voice_name || 'Charon');
-  setVal('cfg-temperature', globalOptions.temperature !== undefined ? globalOptions.temperature : 0.7);
-  const valTemp = document.getElementById('val-temp');
-  if (valTemp) valTemp.innerText = globalOptions.temperature !== undefined ? globalOptions.temperature : 0.7;
-
-  setVal('cfg-thinking-timeout', globalOptions.thinking_timeout_s !== undefined ? globalOptions.thinking_timeout_s : 7);
+  setVal('cfg-thinking-timeout', globalOptions.thinking_timeout_s !== undefined ? globalOptions.thinking_timeout_s : 5);
   setVal('cfg-vad-silence', globalOptions.vad_silence_duration_ms || 600);
+
+  const normNumChk = document.getElementById('cfg-normalize-numbers');
+  if (normNumChk) {
+    normNumChk.checked = globalOptions.normalize_numbers_enabled !== false;
+  }
 
   const googleSearchChk = document.getElementById('cfg-google-search');
   if (googleSearchChk) {
@@ -1796,6 +1829,7 @@ function populateGlobalSettingsForm() {
   const opEnabled = globalOptions.openai_api_enabled !== false;
   const opCheckbox = document.getElementById('cfg-openai-api-enabled');
   if (opCheckbox) opCheckbox.checked = opEnabled;
+  toggleAccordionByCheckbox('acc-openai-bridge', false);
 
   const opPort = globalOptions.openai_api_port || 8000;
   setVal('cfg-openai-api-port', opPort);
@@ -1810,17 +1844,6 @@ function populateGlobalSettingsForm() {
     } else {
       opKeyInput.placeholder = 'Оставьте пустым для работы без ключа';
       opKeyInput.value = '';
-    }
-  }
-
-  const maKeyInput = document.getElementById('cfg-ma-key');
-  if (maKeyInput) {
-    if (globalOptions.has_ma_api_key) {
-      maKeyInput.placeholder = `Токен задан (${globalOptions.ma_api_key || '••••••••'})`;
-      maKeyInput.value = '';
-    } else {
-      maKeyInput.placeholder = 'Опциональный токен (оставьте пустым если не требуется)';
-      maKeyInput.value = '';
     }
   }
 
@@ -1850,6 +1873,11 @@ function populateGlobalSettingsForm() {
   setVal('cfg-prompt-general', getPromptVal('prompt_general', 'general'));
 
   // Настройки серверного вейкворда (openWakeWord)
+  const wwSrvEnabled = globalOptions.ww_server_enabled !== false;
+  const wwSrvChk = document.getElementById('cfg-ww-server-enabled');
+  if (wwSrvChk) wwSrvChk.checked = wwSrvEnabled;
+  toggleAccordionByCheckbox('acc-ww-server', wwSrvEnabled);
+
   const wwThresh = globalOptions.ww_server_threshold !== undefined ? globalOptions.ww_server_threshold : 0.94;
   setVal('cfg-ww-threshold', wwThresh);
   const valWw = document.getElementById('val-ww-server-threshold');
@@ -2033,13 +2061,15 @@ async function saveGlobalSettings(e) {
 
     const payload = {
       gemini_model: selectedModel,
+      gemini_fallback_model: (document.getElementById('cfg-fallback-model')?.value || '').trim(),
+      normalize_numbers_enabled: document.getElementById('cfg-normalize-numbers')?.checked !== false,
+      ww_server_enabled: document.getElementById('cfg-ww-server-enabled')?.checked !== false,
       big_models_enabled: document.getElementById('cfg-big-models-enabled')?.checked || false,
       big_models_threshold_chars: parseInt(document.getElementById('cfg-big-models-threshold')?.value || 4000, 10),
       big_models_pool: bigModelsPoolState,
       web_search_model: (document.getElementById('cfg-web-search-model')?.value || '').trim(),
       voice_name: document.getElementById('cfg-voice')?.value,
-      temperature: parseFloat(document.getElementById('cfg-temperature')?.value || 0.7),
-      thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 7),
+      thinking_timeout_s: parseInt(document.getElementById('cfg-thinking-timeout')?.value || 5),
       vad_silence_duration_ms: parseInt(document.getElementById('cfg-vad-silence')?.value || 600),
       enable_google_search: document.getElementById('cfg-google-search')?.checked || false,
       enable_barge_in: document.getElementById('cfg-barge-in')?.checked !== false,
@@ -2055,7 +2085,6 @@ async function saveGlobalSettings(e) {
       ww_server_threshold: parseFloat(document.getElementById('cfg-ww-threshold')?.value || 0.94),
       openai_api_enabled: document.getElementById('cfg-openai-api-enabled')?.checked !== false,
       openai_api_port: parseInt(document.getElementById('cfg-openai-api-port')?.value || 8000),
-      default_airplay_player: document.getElementById('cfg-default-airplay-player')?.value || '',
       earcon_volume_enabled: document.getElementById('cfg-earcon-volume-enabled')?.checked !== false,
       earcon_volume_preset: document.getElementById('cfg-earcon-volume-preset')?.value || 'alice_click',
       earcon_smarthome_enabled: document.getElementById('cfg-earcon-smarthome-enabled')?.checked !== false,
@@ -2075,11 +2104,6 @@ async function saveGlobalSettings(e) {
     const newKey = document.getElementById('cfg-api-key')?.value?.trim();
     if (newKey) {
       payload.gemini_api_key = newKey;
-    }
-
-    const newMaKey = document.getElementById('cfg-ma-key')?.value?.trim();
-    if (newMaKey !== undefined && newMaKey !== '') {
-      payload.ma_api_key = newMaKey;
     }
 
     const newSerperKey = document.getElementById('cfg-serper-api-key')?.value?.trim();

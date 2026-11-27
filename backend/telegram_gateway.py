@@ -22,6 +22,7 @@ try:
 except ImportError:
     GeminiProxyClient = None
 from prompt_builder import build_live_history_turns, build_system_prompt, format_dialogue_context_block
+from text_formatter import format_reply_text
 from tg_approvals import approval_manager
 
 logger = logging.getLogger("tg_gateway")
@@ -1093,6 +1094,7 @@ class TelegramBotGateway:
             )
 
             model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
+            fallback_model = str(options.get("gemini_fallback_model") or "").strip()
             voice_name = options.get("voice_name", "Charon")
 
             if is_voice and wav_bytes:
@@ -1121,7 +1123,7 @@ class TelegramBotGateway:
                 if status_msg_id is None:
                     status_msg_id = await self._send_tg_text(http_sess, bot_token, chat_id, progress_text)
 
-            async def _run_tg_live(turns_to_send: List[Any], prompt_txt: str) -> None:
+            async def _run_tg_live(turns_to_send: List[Any], prompt_txt: str, model_override: Optional[str] = None) -> None:
                 nonlocal sent_to_same_chat
                 input_transcript_parts.clear()
                 output_text_parts.clear()
@@ -1130,12 +1132,13 @@ class TelegramBotGateway:
                 for k in turn_state:
                     turn_state[k] = False
 
+                active_model = model_override or model
                 proxy = GeminiProxyClient(
                     api_key=api_key,
                     system_prompt=prompt_txt,
                     ha_api=self.ha_api,
                     voice_name=voice_name,
-                    model=model,
+                    model=active_model,
                     enable_google_search=options.get("enable_google_search", True),
                     response_modalities=["AUDIO"],
                     manual_vad=True,
@@ -1176,7 +1179,7 @@ class TelegramBotGateway:
                                             and (
                                                 (call.name == "yandex_maps_find_place" and res.get("card_sent_in_same_chat") and len(text_in) <= 75)
                                                 or (call.name == "web_search" and res.get("card_sent_in_same_chat"))
-                                                or (call.name == "compare_prices" and res.get("sent_to_telegram"))
+                                                or (call.name in ("compare_prices", "cian_search", "cian_card") and (res.get("card_sent_in_same_chat") or res.get("sent_to_telegram")))
                                             )
                                         ):
                                             sent_to_same_chat = True
@@ -1221,6 +1224,7 @@ class TelegramBotGateway:
             try:
                 await _run_tg_live(payload_turns, system_prompt)
             except Exception as e:
+                retried_ok = False
                 if len(payload_turns) > 1 and thread_msgs:
                     logger.warning(f"[TG-GW] Native multi-turn Live failed ({e}), retrying with text-context fallback...")
                     hist_header = "### REPLIED THREAD CONTEXT:" if is_reply_mode else "### RECENT TELEGRAM DIALOGUE:"
@@ -1232,12 +1236,19 @@ class TelegramBotGateway:
                     fb_prompt = f"{system_prompt}\n\n{fb_block}" if fb_block else system_prompt
                     try:
                         await _run_tg_live([current_turn], fb_prompt)
+                        retried_ok = True
                     except Exception as e2:
-                        await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
-                        logger.error(f"[TG-GW] Gemini Live fallback error for chat_id={chat_id}: {e2}", exc_info=True)
-                        await self._send_tg_text(http_sess, bot_token, chat_id, f"Ошибка обработки запроса: {e2}")
-                        return
-                else:
+                        e = e2
+
+                if not retried_ok and fallback_model and fallback_model != model:
+                    logger.warning(f"[TG-GW] [LIVE-FALLBACK] Switching to fallback Live model: {fallback_model} (primary failed: {e})")
+                    try:
+                        await _run_tg_live(payload_turns, system_prompt, model_override=fallback_model)
+                        retried_ok = True
+                    except Exception as e3:
+                        e = e3
+
+                if not retried_ok:
                     await self._delete_tg_msg(http_sess, bot_token, chat_id, status_msg_id)
                     logger.error(f"[TG-GW] Gemini Live error for chat_id={chat_id}: {e}", exc_info=True)
                     await self._send_tg_text(http_sess, bot_token, chat_id, f"Ошибка обработки запроса: {e}")
@@ -1265,6 +1276,8 @@ class TelegramBotGateway:
                 reply_text = "Готово."
             elif not reply_text:
                 reply_text = "Не расслышал запрос, повторите ещё раз."
+            else:
+                reply_text = await format_reply_text(reply_text, options)
 
             logger.info(
                 f"[TG-GW] Turn done chat_id={chat_id} reply={is_reply_mode} hist={len(thread_msgs)} tool_executed={turn_state['tool_executed']} "

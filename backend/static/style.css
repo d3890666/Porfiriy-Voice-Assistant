@@ -1994,3 +1994,77 @@ body {
     font-size: 16px !important;
   }
 }
+
+/* Collapsible global settings accordion */
+.settings-accordion {
+  margin-top: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(13, 17, 23, 0.45);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+
+.settings-accordion[open] {
+  border-color: rgba(88, 166, 255, 0.35);
+}
+
+.settings-accordion-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 14px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: rgba(255, 255, 255, 0.025);
+  user-select: none;
+}
+
+.settings-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-accordion-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f0f6fc;
+}
+
+.settings-accordion-chevron {
+  display: inline-block;
+  font-size: 12px;
+  color: #8b949e;
+  transition: transform 0.2s ease;
+}
+
+.settings-accordion[open] > .settings-accordion-summary .settings-accordion-chevron {
+  transform: rotate(90deg);
+  color: #58a6ff;
+}
+
+.settings-accordion-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: #8b949e;
+}
+
+.settings-accordion-body {
+  padding: 16px 18px 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.settings-accordion-quiet {
+  background: rgba(99, 102, 241, 0.06);
+  border-color: rgba(99, 102, 241, 0.28);
+}
+
+.settings-accordion-purple {
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.08) 0%, rgba(13, 17, 23, 0.45) 100%);
+  border-color: rgba(139, 92, 246, 0.32);
+}
+

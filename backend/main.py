@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import contextlib
 import json
 import os
 import logging
@@ -31,6 +32,7 @@ from config import (
 )
 from net_utils import get_local_addon_base_url
 from prompt_builder import build_live_history_turns, build_system_prompt, format_dialogue_context_block
+from text_formatter import format_reply_text
 from db import db_singleton
 from tool_executor import ToolExecutor
 
@@ -164,20 +166,37 @@ async def handle_client(websocket):
             pass
         return
 
-    gemini_client = GeminiProxyClient(
-        api_key=api_key,
-        system_prompt=full_prompt,
-        ha_api=ha_api,
-        voice_name=options.get("voice_name", "Zephyr"),
-        model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
-        enable_google_search=options.get("enable_google_search", True),
-        vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600)
+    esp_primary_model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
+    esp_fallback_model = str(options.get("gemini_fallback_model") or "").strip()
+    esp_models = [esp_primary_model] + (
+        [esp_fallback_model] if esp_fallback_model and esp_fallback_model != esp_primary_model else []
     )
-    
-    logger.info(f"Connecting to Gemini Live API using model: {gemini_client.model}")
-    
+    esp_conn_stack = contextlib.AsyncExitStack()
+
     try:
-        async with gemini_client.connect() as session, asyncio.TaskGroup() as tg:
+        session = None
+        await esp_conn_stack.__aenter__()
+        for idx_m, m_id in enumerate(esp_models):
+            gemini_client = GeminiProxyClient(
+                api_key=api_key,
+                system_prompt=full_prompt,
+                ha_api=ha_api,
+                voice_name=options.get("voice_name", "Zephyr"),
+                model=m_id,
+                enable_google_search=options.get("enable_google_search", True),
+                vad_silence_duration_ms=options.get("vad_silence_duration_ms", 600),
+            )
+            logger.info(f"Connecting to Gemini Live API using model: {gemini_client.model}")
+            try:
+                session = await esp_conn_stack.enter_async_context(gemini_client.connect())
+                break
+            except Exception as e_conn:
+                if idx_m + 1 < len(esp_models):
+                    logger.warning(f"[ESP32] [LIVE-FALLBACK] {m_id} connect failed ({e_conn}), switching to {esp_models[idx_m + 1]}")
+                else:
+                    raise
+
+        async with asyncio.TaskGroup() as tg:
             
             session_state = {
                 "is_gemini_speaking": False,
@@ -747,6 +766,10 @@ async def handle_client(websocket):
             pass
         await websocket.close()
     finally:
+        try:
+            await esp_conn_stack.aclose()
+        except Exception:
+            pass
         device_manager.unregister_wake_handler(client_mac, _force_wake_esp)
         device_manager.set_device_offline(client_mac, ws=websocket)
 
@@ -1246,14 +1269,16 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
         t_prompt = time.monotonic() - t_start
 
         vad_silence = int(options.get("vad_silence_duration_ms", 600))
+        primary_model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
+        fallback_model = str(options.get("gemini_fallback_model") or "").strip()
 
-        def _make_station_gemini(prompt_str: str) -> GeminiProxyClient:
+        def _make_station_gemini(prompt_str: str, model_override: Optional[str] = None) -> GeminiProxyClient:
             return GeminiProxyClient(
                 api_key=api_key,
                 system_prompt=prompt_str,
                 ha_api=ha_api,
                 voice_name=options.get("voice_name", "Charon"),
-                model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
+                model=model_override or primary_model,
                 enable_google_search=options.get("enable_google_search", True),
                 vad_silence_duration_ms=vad_silence,
                 response_modalities=["AUDIO"],
@@ -1352,7 +1377,11 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                 except (asyncio.CancelledError, Exception):
                     pass
 
-        async def _run_single_attempt(replay_chunks: Optional[list[bytes]] = None, use_native_turns: bool = True) -> bool:
+        async def _run_single_attempt(
+            replay_chunks: Optional[list[bytes]] = None,
+            use_native_turns: bool = True,
+            model_override: Optional[str] = None,
+        ) -> bool:
             """Выполняет сессию Gemini Live (1 ход + до 4 follow-up ходов, если Порфирий задал вопрос)."""
             nonlocal gemini_is_speaking, gemini_responded, utterance_saved, turn_voice_gain, turn_discarded_silent, thinking_filler_started
             attempt_responded = False
@@ -1366,7 +1395,7 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                 if fb_hist:
                     eff_prompt = f"{full_prompt}\n\n{fb_hist}"
 
-            gemini_client = _make_station_gemini(eff_prompt)
+            gemini_client = _make_station_gemini(eff_prompt, model_override=model_override)
             t_conn = time.monotonic()
             tag = "[RETRY] " if replay_chunks is not None else ""
             async with gemini_client.connect() as session:
@@ -1739,12 +1768,31 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
             return attempt_responded
 
         try:
-            ok = await _run_single_attempt(replay_chunks=None, use_native_turns=True)
+            ok = False
+            try:
+                ok = await _run_single_attempt(replay_chunks=None, use_native_turns=True)
+            except Exception as e_pri:
+                if fallback_model and fallback_model != primary_model and not turn_discarded_silent and session_active:
+                    logger.warning(f"[YANDEX-WS] [LIVE-FALLBACK] Switching to {fallback_model} after primary error: {e_pri}")
+                    ok = await _run_single_attempt(
+                        replay_chunks=list(utterance_chunks) if utterance_chunks else None,
+                        use_native_turns=False,
+                        model_override=fallback_model,
+                    )
+                else:
+                    raise
             if turn_discarded_silent:
                 await _send_json({"type": "turn_complete"})
             elif not ok and session_active and utterance_chunks:
                 logger.info(f"[YANDEX-WS] Retrying once with {len(utterance_chunks)} buffered chunks for {client_mac}...")
-                ok2 = await _run_single_attempt(replay_chunks=list(utterance_chunks), use_native_turns=False)
+                retry_model = fallback_model if (fallback_model and fallback_model != primary_model) else None
+                if retry_model:
+                    logger.info(f"[YANDEX-WS] [LIVE-FALLBACK] Using fallback Live model on retry: {retry_model}")
+                ok2 = await _run_single_attempt(
+                    replay_chunks=list(utterance_chunks),
+                    use_native_turns=False,
+                    model_override=retry_model,
+                )
                 if not ok2:
                     await _send_json({"type": "turn_complete"})
             elif not ok:
@@ -2171,21 +2219,26 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
         )
 
         vad_silence = int(options.get("vad_silence_duration_ms", 600))
-        gemini_client = GeminiProxyClient(
-            api_key=api_key,
-            system_prompt=full_prompt,
-            ha_api=ha_api,
-            voice_name=options.get("voice_name", "Charon"),
-            model=options.get("gemini_model", DEFAULT_GEMINI_MODEL),
-            enable_google_search=options.get("enable_google_search", True),
-            vad_silence_duration_ms=vad_silence,
-            response_modalities=["AUDIO"],
-        )
+        watch_primary_model = options.get("gemini_model", DEFAULT_GEMINI_MODEL)
+        watch_fallback_model = str(options.get("gemini_fallback_model") or "").strip()
+
+        def _make_watch_gemini(model_id: str) -> GeminiProxyClient:
+            return GeminiProxyClient(
+                api_key=api_key,
+                system_prompt=full_prompt,
+                ha_api=ha_api,
+                voice_name=options.get("voice_name", "Charon"),
+                model=model_id,
+                enable_google_search=options.get("enable_google_search", True),
+                vad_silence_duration_ms=vad_silence,
+                response_modalities=["AUDIO"],
+            )
 
         session_active = True
-        logger.info(f"[WATCH-WS] Connecting Gemini Live ({gemini_client.model}) for {client_mac} (user={cur_uid or 'auto'})")
+        logger.info(f"[WATCH-WS] Connecting Gemini Live ({watch_primary_model}) for {client_mac} (user={cur_uid or 'auto'})")
 
-        try:
+        async def _connect_watch_session(model_id: str):
+            gemini_client = _make_watch_gemini(model_id)
             async with gemini_client.connect() as session:
                 gemini_send_lock = asyncio.Lock()
 
@@ -2302,6 +2355,8 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                                 full_input = "".join(input_parts).strip()
                                 if not full_reply and turn_state.get("tool_executed"):
                                     full_reply = "Исполнено."
+                                elif full_reply:
+                                    full_reply = await format_reply_text(full_reply, options)
                                 if utterance_chunks:
                                     device_manager.save_last_utterance(client_mac, b"".join(utterance_chunks))
                                     utterance_chunks.clear()
@@ -2349,6 +2404,15 @@ async def handle_watch_client(websocket, client_mac: str, reg_data: dict):
                     for t in (sender_t, recv_t):
                         if not t.done():
                             t.cancel()
+        try:
+            try:
+                await _connect_watch_session(watch_primary_model)
+            except Exception as e_watch_pri:
+                if watch_fallback_model and watch_fallback_model != watch_primary_model:
+                    logger.warning(f"[WATCH-WS] [LIVE-FALLBACK] Switching to {watch_fallback_model}: {e_watch_pri}")
+                    await _connect_watch_session(watch_fallback_model)
+                else:
+                    raise
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -2497,11 +2561,15 @@ async def main():
     # 1. Инициализация серверного WakeWordEngine (openWakeWord ONNX)
     global ww_engine
     ww_threshold_global = float(options.get("ww_server_threshold", _WW_DEFAULT_THRESHOLD))
-    ww_engine = WakeWordEngine(model_path=_WW_MODEL_PATH, threshold=ww_threshold_global)
-    if ww_engine.is_ready:
-        logger.info(f"[WW] Server-side wake word engine ready (threshold={ww_threshold_global}).")
+    if options.get("ww_server_enabled", True):
+        ww_engine = WakeWordEngine(model_path=_WW_MODEL_PATH, threshold=ww_threshold_global)
+        if ww_engine.is_ready:
+            logger.info(f"[WW] Server-side wake word engine ready (threshold={ww_threshold_global}).")
+        else:
+            logger.warning("[WW] Server-side wake word engine NOT ready. Check porfiriy.onnx and openwakeword install.")
     else:
-        logger.warning("[WW] Server-side wake word engine NOT ready. Check porfiriy.onnx and openwakeword install.")
+        ww_engine = None
+        logger.info("[WW] Server-side wake word engine disabled in settings (saving RAM/CPU).")
 
     # 2. Запуск MQTT Discovery Manager и менеджера тихого режима
     ha_api = ha_api_singleton

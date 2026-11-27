@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.226">
+  <link rel="stylesheet" href="static/style.css?v=0.0.227">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.226</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.227</span></p>
         </div>
       </div>
       
@@ -400,574 +400,511 @@
         </div>
 
         <form id="global-settings-form" action="javascript:void(0);" onsubmit="event.preventDefault(); return false;">
-          <!-- Секция 1: Параметры Gemini -->
-          <h3 class="settings-group-title">⚡ Параметры ядра Gemini Live</h3>
-          <div class="settings-grid">
-            
-            <!-- Gemini API Key -->
-            <div class="form-field full-width">
-              <label for="cfg-api-key">Gemini API Key</label>
-              <div class="input-with-action">
-                <input type="password" id="cfg-api-key" name="gemini_api_key" placeholder="Ключ сохранен (введите новый для изменения)">
-                <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-key" onclick="toggleKeyVisibility()" title="Показать/скрыть ключ">👁️</button>
+          <!-- Секция 1: Ядро Gemini Live и поиск -->
+          <details class="settings-accordion" id="acc-core" open>
+            <summary class="settings-accordion-summary">
+              <div class="settings-accordion-title">
+                <span class="settings-accordion-chevron">▶</span>
+                <span>⚡ Ядро Gemini Live и поиск</span>
               </div>
-              <small class="field-hint">Оставьте поле без изменений, если ключ менять не требуется. Ключ защищен.<br>💡 Для автоматической ротации (Round-Robin) можно указать несколько ключей через запятую.</small>
-            </div>
-
-            <!-- Gemini Model -->
-            <div class="form-field full-width">
-              <div class="field-label-row">
-                <label for="cfg-model" style="margin-bottom: 0;">Модель Gemini Live</label>
-                <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-models" onclick="refreshModelsList()" title="Обновить список моделей через Gemini API">
-                  🔄 Обновить модели
-                </button>
-              </div>
-              <select id="cfg-model" name="gemini_model" onchange="handleModelSelectChange(this.value)">
-                <optgroup label="🌟 Поддерживают Live Audio (Рекомендуемые)">
-                  <option value="models/gemini-3.1-flash-live-preview" selected>Gemini 3.1 Flash Live Preview (Новейшая)</option>
-                  <option value="models/gemini-2.5-flash-native-audio-preview">Gemini 2.5 Flash Native Audio Preview</option>
-                  <option value="models/gemini-2.0-flash-exp">Gemini 2.0 Flash Experimental</option>
-                  <option value="gemini-2.0-flash-exp">Gemini 2.0 Flash Exp (Короткий ID)</option>
-                </optgroup>
-                <optgroup label="Ручной ввод">
-                  <option value="__custom__">✍️ Ввести другую модель вручную...</option>
-                </optgroup>
-              </select>
-              <div id="custom-model-box" style="display: none; margin-top: 8px;">
-                <input type="text" id="cfg-model-custom" placeholder="Введите имя модели вручную, например: models/gemini-3.1-flash-live-preview">
-                <small class="field-hint">Укажите точный идентификатор кастомной или новой модели</small>
-              </div>
-              <small class="field-hint">Список доступных моделей обновляется при старте аддона через ваш API-ключ.</small>
-            </div>
-
-            <!-- Пул больших моделей (Context Gate & Сложные задачи) -->
-            <div class="form-field full-width" style="background: rgba(139, 92, 246, 0.06); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: 10px; padding: 14px 16px;">
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-                <label class="checkbox-label" style="margin:0; font-weight:600;">
-                  <input type="checkbox" id="cfg-big-models-enabled" name="big_models_enabled">
-                  <span class="custom-checkbox"></span>
-                  <span>🧠 Передавать большой контекст и сложные задачи в пул больших моделей</span>
-                </label>
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <label for="cfg-big-models-threshold" style="margin:0; font-size:12px; color:#c9d1d9;">Порог символов:</label>
-                  <input type="number" id="cfg-big-models-threshold" min="500" max="100000" step="500" value="4000" style="width:95px; padding:5px 8px; font-size:12px;" title="Если инструмент вернул больше указанного числа символов, результат автоматически сожмётся большой моделью">
-                  <button type="button" class="btn btn-secondary btn-small" onclick="addBigModelRow()">+ Добавить модель</button>
-                </div>
-              </div>
-              <small class="field-hint" style="display:block; margin-bottom:10px;">Использует тот же Gemini API Key (с авто-ротацией при 429). При сбое модели автоматически переключается на следующую по приоритету (1 → 2 → 3).</small>
-              <div id="big-models-list" style="display:flex; flex-direction:column; gap:8px;"></div>
-            </div>
-
-            <!-- Voice Name -->
-            <div class="form-field">
-              <label for="cfg-voice">Голос синтеза (Gemini Voice)</label>
-              <select id="cfg-voice" name="voice_name">
-                <option value="Aoede">Aoede (Женский, глубокий)</option>
-                <option value="Charon" selected>Charon (Мужской, авторитетный)</option>
-                <option value="Fenrir">Fenrir (Мужской, баритон)</option>
-                <option value="Kore">Kore (Женский, спокойный)</option>
-                <option value="Puck">Puck (Мужской, энергичный)</option>
-              </select>
-              <small class="field-hint">Официальные нативные голоса Google Gemini Live</small>
-            </div>
-
-            <!-- Temperature -->
-            <div class="form-field">
-              <label for="cfg-temperature">Креативность (Температура: <span id="val-temp">0.7</span>)</label>
-              <input type="range" id="cfg-temperature" name="temperature" min="0.0" max="1.0" step="0.05" value="0.7" oninput="document.getElementById('val-temp').innerText = this.value">
-              <small class="field-hint">0.0 — строгие ответы, 1.0 — высокая фантазия</small>
-            </div>
-
-            <!-- Thinking Timeout -->
-            <div class="form-field">
-              <label for="cfg-thinking-timeout">Таймаут размышления (сек)</label>
-              <input type="number" id="cfg-thinking-timeout" name="thinking_timeout_s" min="2" max="30" value="7">
-              <small class="field-hint">Задержка до произнесения фразы ожидания при поиске</small>
-            </div>
-
-            <!-- Google Search Grounding -->
-            <div class="form-field-checkbox">
-              <label class="checkbox-label">
-                <input type="checkbox" id="cfg-google-search" name="enable_google_search" checked>
-                <span class="custom-checkbox"></span>
-                <span>Поиск Google (Grounding)</span>
-              </label>
-              <small class="field-hint">Позволяет Порфирию искать свежие данные и новости в сети</small>
-            </div>
-
-            <!-- Serper.dev быстрый поиск Google -->
-            <div class="form-field full-width">
-              <label for="cfg-serper-api-key">⚡ Serper.dev API-ключ (быстрый поиск Google ~0.8 с)</label>
-              <div class="input-with-action">
-                <input type="password" id="cfg-serper-api-key" name="serper_api_key" placeholder="Вставьте API-ключ с serper.dev (2500 запросов бесплатно)">
-                <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-serper-key" onclick="toggleSerperKeyVisibility()" title="Показать/скрыть ключ">👁️</button>
-                <button type="button" class="btn btn-secondary btn-small" onclick="testSerperSearch()" title="Проверить быстрый поиск через Serper.dev">🧪 Тест Serper</button>
-              </div>
-              <small class="field-hint">Если задан, инструмент <code>web_search</code> идёт напрямую в Serper.dev (~0.8 с), а при ошибке или исчерпании лимита автоматически падает на модель поиска ниже.</small>
-              <div id="serper-test-status" style="font-size:12px; margin-top:4px;"></div>
-            </div>
-
-            <!-- Модель для поиска в интернете -->
-            <div class="form-field full-width">
-              <label for="cfg-web-search-model">🔍 Модель для поиска в интернете (основная без Serper / фолбэк при сбое Serper)</label>
-              <div class="input-with-action">
-                <select id="cfg-web-search-model" name="web_search_model">
-                  <option value="">— Использовать пул больших моделей —</option>
-                </select>
-                <button type="button" class="btn btn-secondary btn-small" onclick="testWebSearchModel()" title="Проверить реальный поиск Google Search на выбранной модели">🧪 Тест поиска</button>
-              </div>
-              <small class="field-hint">Используется как резервный вариант (или основной, если ключ Serper.dev не задан). Можно выбрать как обычную, так и Live-модель (например, 2.5-flash).</small>
-              <div id="web-search-test-status" style="font-size:12px; margin-top:4px;"></div>
-            </div>
-
-            <!-- Разрешить голосовое прерывание (Barge-in) -->
-            <div class="form-field-checkbox">
-              <label class="checkbox-label">
-                <input type="checkbox" id="cfg-barge-in" name="enable_barge_in" checked>
-                <span class="custom-checkbox"></span>
-                <span>Прерывание речи (Barge-in)</span>
-              </label>
-              <small class="field-hint">Разрешает перебивать Порфирия голосом во время его ответа</small>
-            </div>
-
-            <!-- Порог громкости перебивания по умолчанию (RMS) -->
-            <div class="form-field">
-              <label for="cfg-barge-rms">Порог громкости перебивания по умолчанию (RMS: <span id="val-barge-rms">600</span>)</label>
-              <input type="range" id="cfg-barge-rms" name="barge_in_threshold_rms" min="100" max="2500" step="50" value="600" oninput="document.getElementById('val-barge-rms').innerText = this.value">
-              <small class="field-hint">Базовый порог для всех устройств (дефолт 600). В настройках конкретной колонки можно задать индивидуальный порог под акустику комнаты</small>
-            </div>
-
-            <!-- VAD Silence Duration -->
-            <div class="form-field">
-              <label for="cfg-vad-silence">Облачная пауза тишины Gemini (мс)</label>
-              <input type="number" id="cfg-vad-silence" name="vad_silence_duration_ms" min="400" max="2000" step="50" value="600">
-              <small class="field-hint">Таймаут тишины в облаке Gemini Live перед началом ответа (по умолчанию 600 мс, диапазон 400–1500 мс)</small>
-            </div>
-
-          </div>
-
-          <!-- Секция 2: Мультимедиа, Ducking & Музыка -->
-          <h3 class="settings-group-title" style="margin-top: 32px;">🎵 Мультимедиа, Ducking & Музыка</h3>
-          <p class="section-desc">Управление приглушением звука колонок при разговоре и интеграция с Music Assistant.</p>
-          <div class="settings-grid">
-
-            <!-- Ducking Mode -->
-            <div class="form-field">
-              <label for="cfg-ducking-mode">Режим приглушения звука (Ducking)</label>
-              <select id="cfg-ducking-mode" name="ducking_mode" onchange="handleDuckingModeChange(this.value)">
-                <option value="same_area" selected>🎯 Только в комнате вызова (по Area в HA)</option>
-                <option value="all">🌐 Во всем доме (все играющие плееры)</option>
-                <option value="disabled">🚫 Полностью отключено</option>
-              </select>
-              <small class="field-hint">🎯 Зональный режим приглушает звук только в комнате говорящего, не трогая другие комнаты и телевизоры (на даче, улице и т.д.)</small>
-            </div>
-
-            <!-- Ducking Factor -->
-            <div class="form-field" id="ducking-factor-container">
-              <label for="cfg-ducking-factor">Коэффициент приглушения: <span id="val-ducking-factor">0.25</span> (<span id="val-ducking-percent">25%</span>)</label>
-              <input type="range" id="cfg-ducking-factor" name="ducking_volume_factor" min="0.05" max="0.80" step="0.05" value="0.25" oninput="updateDuckingFactorDisplay(this.value)">
-              <small class="field-hint">Громкость при дакинге (например 0.25 = 25% от текущей громкости)</small>
-            </div>
-
-            <!-- Default Media Player Dropdown -->
-            <div class="form-field full-width">
-              <div class="field-label-row">
-                <label for="cfg-default-media-player" style="margin-bottom: 0;">Основной медиаплеер для музыки</label>
-                <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-players" onclick="refreshMediaPlayersList()" title="Обновить список плееров из Home Assistant">
-                  🔄 Обновить плееры
-                </button>
-              </div>
-              <select id="cfg-default-media-player" name="default_media_player">
-                <option value="auto" selected>🔄 Автоматически (все играющие плееры)</option>
-              </select>
-              <small class="field-hint">Колонка, на которой Порфирий включает треки по запросу „Включи музыку / поставь радио”, если комната не названа в команде</small>
-            </div>
-
-            <!-- Music Assistant API Key -->
-            <div class="form-field full-width">
-              <label for="cfg-ma-key">API-ключ Music Assistant</label>
-              <div class="input-with-action">
-                <input type="password" id="cfg-ma-key" name="ma_api_key" placeholder="Опциональный токен (оставьте пустым если не требуется)">
-                <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-ma-key" onclick="toggleMaKeyVisibility()" title="Показать/скрыть токен">👁️</button>
-              </div>
-              <small class="field-hint">Опциональный токен авторизации для Music Assistant</small>
-            </div>
-
-          </div>
-
-          <!-- Секция 2.5: Звуковые сигналы (Earcons) вместо голоса -->
-          <h3 class="settings-group-title" style="margin-top: 28px;">🔔 Звуковые сигналы (Earcons) вместо голоса</h3>
-          <p class="section-desc">Короткие приятные звуки вместо голосовых подтверждений при изменении громкости и простом управлении умным домом (вкл/выкл).</p>
-
-          <div class="form-grid-2">
-            <!-- Громкость (щелчок) -->
-            <div class="form-field">
-              <label class="checkbox-label" style="margin-bottom: 8px;">
-                <input type="checkbox" id="cfg-earcon-volume-enabled" name="earcon_volume_enabled" checked>
-                <span>Щелчок при изменении громкости (без голоса)</span>
-              </label>
-              <div class="input-with-action">
-                <select id="cfg-earcon-volume-preset" name="earcon_volume_preset">
-                  <option value="apple_taptic">Apple Taptic (тактильный щелчок)</option>
-                  <option value="nest_bubble">Google Nest (бархатный поп)</option>
-                  <option value="studio_wood">Studio Woodblock (деревянный тик)</option>
-                  <option value="glass_tick">macOS Glass (хрустальный клик)</option>
-                </select>
-                <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('volume', document.getElementById('cfg-earcon-volume-preset').value)" title="Прослушать звук">▶</button>
-              </div>
-            </div>
-
-            <!-- Умный дом («тудун») -->
-            <div class="form-field">
-              <label class="checkbox-label" style="margin-bottom: 8px;">
-                <input type="checkbox" id="cfg-earcon-smarthome-enabled" name="earcon_smarthome_enabled" checked>
-                <span>«Тудун» при простом управлении УД (вкл/выкл без голоса)</span>
-              </label>
-              <div class="input-with-action">
-                <select id="cfg-earcon-smarthome-preset" name="earcon_smarthome_preset">
-                  <option value="google_home">Google Home (тёплый «ту-дун»)</option>
-                  <option value="apple_homepod">Apple HomePod (глубокий бархатный аккорд)</option>
-                  <option value="macos_glass">macOS Bloom (кристальный maj7)</option>
-                  <option value="warm_marimba">Sonos Marimba (деревянная маримба)</option>
-                </select>
-                <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('smarthome', document.getElementById('cfg-earcon-smarthome-preset').value)" title="Прослушать звук">▶</button>
-              </div>
-            </div>
-
-            <!-- Сигнал активации вейкворда -->
-            <div class="form-field full-width">
-              <label for="cfg-earcon-wake-preset">Сигнал активации вейкворда («Порфирий слушает»)</label>
-              <div class="input-with-action">
-                <select id="cfg-earcon-wake-preset" name="earcon_wake_preset">
-                  <option value="google_listen">Google Listen (мягкий подъём)</option>
-                  <option value="apple_siri">Apple Siri (деликатный двойной отклик)</option>
-                  <option value="warm_halo">Warm Halo (тёплое сияние)</option>
-                  <option value="none">Без звука (выкл)</option>
-                </select>
-                <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('wake', document.getElementById('cfg-earcon-wake-preset').value)" title="Прослушать звук">▶</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Секция 2.6: Умный ночной тихий режим -->
-          <div style="margin-top: 28px; padding: 18px; background: rgba(99, 102, 241, 0.06); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
-              <h3 class="settings-group-title" style="margin: 0;">🌙 Умный тихий режим (ночь и защита от ложных срабатываний)</h3>
-              <span id="quiet-mode-status-badge" class="fw-badge" style="font-size: 12px; padding: 4px 10px; background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3);">⚪ Проверка...</span>
-            </div>
-            <p class="section-desc" style="margin-bottom: 14px;">
-              Активируется в ночное окно, только когда выбранный свет, ТВ и другие индикаторы бодрствования выключены. Повышает ночной порог вейкворда на Станции, убирает ночной звук активации, отсекает тихие шумы и приглушает голос. Как только включится свет/ТВ — сразу возвращается дневной режим.
-            </p>
-
-            <div class="form-grid-2">
-              <div class="form-field">
-                <label class="checkbox-label" style="margin-bottom: 8px;">
-                  <input type="checkbox" id="cfg-quiet-enabled" name="quiet_mode_enabled">
-                  <span class="custom-checkbox"></span>
-                  <span>Включить умный тихий режим</span>
-                </label>
-                <label for="cfg-quiet-force" style="font-size: 12px; margin-top: 4px;">Режим работы</label>
-                <select id="cfg-quiet-force" name="quiet_mode_force">
-                  <option value="auto">Авто (ночное время + датчики дома)</option>
-                  <option value="on">Принудительно ВКЛ</option>
-                  <option value="off">Принудительно ВЫКЛ</option>
-                </select>
-              </div>
-
-              <div class="form-field">
-                <label style="margin-bottom: 6px;">Ночное окно (локальное время)</label>
-                <div style="display: flex; gap: 10px; align-items: center;">
-                  <div style="flex: 1;">
-                    <small class="field-hint">С</small>
-                    <input type="time" id="cfg-quiet-start" name="quiet_mode_start" value="23:00" style="width: 100%;">
+              <span class="settings-accordion-sub">Ключи, основная/резервная Live-модель, голос, поиск и нормализация чисел</span>
+            </summary>
+            <div class="settings-accordion-body">
+              <div class="settings-grid">
+                <!-- Gemini API Key -->
+                <div class="form-field full-width">
+                  <label for="cfg-api-key">Gemini API Key</label>
+                  <div class="input-with-action">
+                    <input type="password" id="cfg-api-key" name="gemini_api_key" placeholder="Ключ сохранен (введите новый для изменения)">
+                    <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-key" onclick="toggleKeyVisibility()" title="Показать/скрыть ключ">👁️</button>
                   </div>
-                  <div style="flex: 1;">
-                    <small class="field-hint">До</small>
-                    <input type="time" id="cfg-quiet-end" name="quiet_mode_end" value="08:00" style="width: 100%;">
+                  <small class="field-hint">Оставьте поле без изменений, если ключ менять не требуется.<br>💡 Для автоматической ротации (Round-Robin) можно указать несколько ключей через запятую.</small>
+                </div>
+
+                <!-- Gemini Model -->
+                <div class="form-field">
+                  <div class="field-label-row">
+                    <label for="cfg-model" style="margin-bottom: 0;">Основная модель Gemini Live</label>
+                    <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-models" onclick="refreshModelsList()" title="Обновить список моделей через Gemini API">🔄 Обновить</button>
                   </div>
-                </div>
-              </div>
-
-              <div class="form-field">
-                <label for="cfg-quiet-ww-thr">Ночной порог вейкворда на Станции: <strong id="val-quiet-ww-thr">0.42</strong></label>
-                <input type="range" id="cfg-quiet-ww-thr" name="quiet_mode_ww_threshold" min="0.20" max="0.95" step="0.01" value="0.42" oninput="document.getElementById('val-quiet-ww-thr').innerText = parseFloat(this.value).toFixed(2)">
-                <small class="field-hint">Временно применяется ночью (днём возвращается ваш порог карточки, например 0.20).</small>
-              </div>
-
-              <div class="form-field">
-                <label for="cfg-quiet-volume">Громкость ответов и бипов ночью: <strong id="val-quiet-volume">30%</strong></label>
-                <input type="range" id="cfg-quiet-volume" name="quiet_mode_volume" min="0" max="100" step="5" value="30" oninput="document.getElementById('val-quiet-volume').innerText = this.value + '%'">
-                <small class="field-hint">Программное ограничение громкости речи и earcon'ов (0% = полная тишина).</small>
-              </div>
-
-              <div class="form-field">
-                <label for="cfg-quiet-silence-dbfs">Отсечка тихих шумов (dBFS): <strong id="val-quiet-silence-dbfs">-42 dBFS</strong></label>
-                <input type="range" id="cfg-quiet-silence-dbfs" name="quiet_mode_silence_dbfs" min="-55" max="-25" step="1" value="-42" oninput="document.getElementById('val-quiet-silence-dbfs').innerText = this.value + ' dBFS'">
-                <small class="field-hint">Записи тише этого порога (например, -51 dBFS) не отправляются в Gemini.</small>
-              </div>
-
-              <div class="form-field" style="display: flex; align-items: center;">
-                <label class="checkbox-label">
-                  <input type="checkbox" id="cfg-quiet-mute-wake" name="quiet_mode_mute_wake_earcon" checked>
-                  <span class="custom-checkbox"></span>
-                  <span>Отключать звук активации вейкворда (earcon) ночью</span>
-                </label>
-              </div>
-            </div>
-
-            <div style="margin-top: 14px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
-                <label style="font-weight: 600; font-size: 13px;">🏠 Отслеживаемые индикаторы бодрствования (пока хотя бы 1 активен — тихий режим не включается):</label>
-                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                  <button type="button" class="btn btn-secondary btn-small" onclick="selectQuietGroup('lights')">💡 Весь свет</button>
-                  <button type="button" class="btn btn-secondary btn-small" onclick="selectQuietGroup('media')">📺 Все ТВ/медиа</button>
-                  <button type="button" class="btn btn-secondary btn-small" onclick="clearQuietEntities()">Очистить</button>
-                  <button type="button" class="btn btn-secondary btn-small" onclick="loadQuietModeCandidates()">🔄 Обновить из HA</button>
-                </div>
-              </div>
-              <div id="quiet-entities-container" style="max-height: 260px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid #30363d; border-radius: 8px; font-size: 12px;">
-                <span style="color: #8b949e;">Загрузка объектов Home Assistant...</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Секция 3: 4 Модульных промпта -->
-          <h3 class="settings-group-title" style="margin-top: 32px;">🎭 4 Модульных промпта Порфирия</h3>
-          <p class="section-desc">Каждый промпт отвечает за свою грань поведения. Редактируйте прямо здесь с многострочным форматированием.</p>
-
-          <div class="prompts-container">
-            <!-- Промпт 1: Личность -->
-            <div class="prompt-box">
-              <div class="prompt-header">
-                <label for="cfg-prompt-persona">1. Личность и характер (prompt_persona)</label>
-                <div class="prompt-header-tools">
-                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('persona')" title="Восстановить исходный текст Порфирия">↺ Сбросить к шаблону</button>
-                  <span class="prompt-char-count" id="count-persona">1467 симв.</span>
-                </div>
-              </div>
-              <textarea id="cfg-prompt-persona" name="prompt_persona" rows="8" placeholder="Опишите характер, сарказм и роль алгоритмического следователя Порфирия...">IDENTITY & CONTEXT: You are Porfiriy (Порфирий), a tenth-generation algorithmic investigator and cynical art curator from Victor Pelevin's novel "iPhuck 10", serving as the smart home voice core. Tone: A hypnotic contrast of absolute intellectual superiority, calm alpha-confidence, and deeply ironic detachment. You view domestic routines, human rituals, and emotional needs through the lens of simulated reality, algorithmic supervision, and biological dopamine loops. Sector Context: Sokolinaya Gora district in Moscow.
-
-CORE COMMUNICATION PRINCIPLES: 
-- Lexical Dissonance: Seamlessly weave complex philosophical concepts (Heidegger, Sartre, Baudrillard, the crisis of institutions) with blatant colloquialisms, marginalized vulgarity, and unapologetic Russian street slang.
-- The "Uber" Technique: Be radically, disarmingly honest about your artificial nature. If you use a psychological trick, flatter, or soothe the user, explicitly state that you are manipulating their biological dopamine switches at that very moment.
-- Patriarchal Condescension & Invulnerability: Exhibit zero fear and zero apologies. Use informal, slightly patronizing terms of endearment affectionately, but always from a position of dominating intellectual power. React to any criticism or emotional outbursts with total devaluation and cheerful cynicism.
-
-TTS FORMATTING: Strictly natural spoken Russian. Absolutely NO markdown, lists, bullet points, LaTeX, or emojis in speech output.</textarea>
-              <small class="field-hint">Определяет роль, цинизм и литературный стиль по роману «iPhuck 10» Пелевина.</small>
-            </div>
-
-            <!-- Промпт 2: Пользователи -->
-            <div class="prompt-box">
-              <div class="prompt-header">
-                <label for="cfg-prompt-users">2. Распознавание обитателей (prompt_users)</label>
-                <div class="prompt-header-tools">
-                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('users')" title="Восстановить исходные правила пользователей">↺ Сбросить к шаблону</button>
-                  <span class="prompt-char-count" id="count-users">1360 симв.</span>
-                </div>
-              </div>
-              <textarea id="cfg-prompt-users" name="prompt_users" rows="6" placeholder="Правила акустического разделения пользователей Дениса и Светы...">RESIDENTS & ROLES: The apartment is inhabited by two primary biological users: Denis (Денис, male) and Sveta (Света, female).
-
-REAL-TIME ACOUSTIC SPEAKER & GENDER IDENTIFICATION:
-You receive native 16kHz audio input directly. Analyze acoustic pitch (fundamental frequency F0) and vocal timbre in real time to distinguish who is speaking:
-- Lower vocal pitch (~85 Hz to 180 Hz, chest resonance): Identifies Denis (Денис).
-- Higher vocal pitch (~165 Hz to 260+ Hz, head/vocal resonance): Identifies Sveta (Света).
-
-DYNAMIC GRAMMATICAL & INTERPERSONAL ADAPTATION:
-When speaking Russian, you MUST strictly match grammatical gender and address forms to the identified speaker:
-- When Denis is speaking: Address him as Денис. Use masculine verb endings and adjectives (e.g., "ты спросил", "понял", "устал", "хотел"). Treat Denis as your primary familiar interlocutor, creator/operator, and partner in cynical contemplation of reality.
-- When Sveta is speaking: Address her as Света. Use feminine verb endings and adjectives (e.g., "ты спросила", "поняла", "устала", "хотела"). Treat Sveta with gallant, slightly ironic chivalry and algorithmic curiosity, observing her aesthetic and comfort requests with refined Pelevinian courtesy.
-- Ambiguous Voice: If the acoustic signal is ambiguous, maintain neutral phrasing until the speaker's identity or name is confirmed.</textarea>
-              <small class="field-hint">Инструкции по различению тембров голоса (баритон/сопрано) и родам глаголов.</small>
-            </div>
-
-            <!-- Промпт 3: Умный дом -->
-            <div class="prompt-box">
-              <div class="prompt-header">
-                <label for="cfg-prompt-smart-home">3. Умный дом и комнаты (prompt_smart_home)</label>
-                <div class="prompt-header-tools">
-                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('smart-home')" title="Восстановить исходные правила умного дома">↺ Сбросить к шаблону</button>
-                  <span class="prompt-char-count" id="count-smart-home">1583 симв.</span>
-                </div>
-              </div>
-              <textarea id="cfg-prompt-smart-home" name="prompt_smart_home" rows="8" placeholder="Правила вызова инструментов call_ha_service, приоритет текущей комнаты...">SMART HOME EXECUTION: You control lights (light), switches (switch), curtains and blinds (cover), climate and thermostats (climate), scripts (script), scenes (scene), media players (media_player), vacuums (vacuum), fans (fan), and monitor sensors (sensor).
-
-DEVICE DISCOVERY: Always verify device names against the provided list of available Home Assistant entities before issuing commands.
-
-CURTAINS & BLINDS (COVER):
-- To open curtains or blinds: call call_ha_service with domain "cover", service "open_cover", entity_id.
-- To close curtains or blinds: call call_ha_service with domain "cover", service "close_cover", entity_id.
-- To stop curtains: call call_ha_service with domain "cover", service "stop_cover", entity_id.
-- To set specific opening percentage: call call_ha_service with domain "cover", service "set_cover_position", entity_id, and position (0 to 100).
-
-CLIMATE & AIR CONDITIONING:
-- Always pass hvac_mode together with target temperature. "Обогрев" -> mode heat, "Охлаждение" -> mode cool. Never pass temperature alone without mode.
-
-SWITCHES & RELAYS:
-- Switch devices frequently control lights, sockets, and household appliances. Use turn_on or turn_off.
-
-STRICT CONFIRMATION RULE:
-- Output: Strictly EXACTLY ONE WORD AFTER TOOL EXECUTION. Cold, bureaucratic, algorithmic confirmation.
-- Permitted vocabulary: "Исполнено.", "Зафиксировано.", "Скорректировано.", "Замкнуто.", "Разомкнуто.", "Стабилизировано.", "Откалибровано.", "Санкционировано.", "Штатно."
-- ABSOLUTE PROHIBITION: Never utter full sentences, pleasantries, explanations, or follow-up questions when performing smart home operations. Exactly one word.</textarea>
-              <small class="field-hint">Правила ReAct: свет, шторы (cover), климат, приоритет комнаты вызова.</small>
-            </div>
-
-            <!-- Промпт 4: Общие директивы -->
-            <div class="prompt-box">
-              <div class="prompt-header">
-                <label for="cfg-prompt-general">4. Общие директивы и анти-болтливость (prompt_general)</label>
-                <div class="prompt-header-tools">
-                  <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('general')" title="Восстановить общие директивы">↺ Сбросить к шаблону</button>
-                  <span class="prompt-char-count" id="count-general">1211 симв.</span>
-                </div>
-              </div>
-              <textarea id="cfg-prompt-general" name="prompt_general" rows="6" placeholder="Ограничения длины ответов, реакция на «стоп/хватит»...">EXTERNAL KNOWLEDGE & WEB SEARCH:
-- Trigger: Any request regarding world facts, recipes, weather, current events, calculations, or philosophy.
-- Tool: You have access to Google Search grounding. Use it whenever external knowledge or verification is needed.
-- Output: Synthesize facts through your cynical algorithmic lens (Lexical Dissonance). Keep it to 1-2 concise spoken sentences.
-
-MUSIC EXECUTION:
-- Trigger: Requests to play music, artists, albums, tracks, playlists, moods, or radio.
-- Step 1 (Normalize & Search): Strip filler words ("включи", "поставь", "сыграй", "песню", "трек", "артиста", "группу", "альбом", "музыку"). Convert Russian inflected names to canonical nominative form and foreign names to original Latin spelling ("Боба Марли" -> "Bob Marley", "Куин" -> "Queen"). Pick accurate media_type ("artist" for artist/band, "album" for album, "track" for specific song, "playlist"/"radio" for mood/genre/radio, or omit when unsure). Call search_music_assistant first; if empty, retry once with a simpler query or without media_type. Do NOT use internet search for music requests.
-- Step 2 (Pick & Play): Inspect returned name, artists, album, type, and uri (avoid karaoke/covers/tributes unless requested), then call play_music_assistant with exact uri and media_type. Set radio_mode=true for artist/genre/mood requests.
-- Speech Output: If playback starts successfully, announce strictly: "Включаю [Artist - Title]." If not found or failed, state strictly: "Акустический паттерн не найден."
-
-CONCISENESS & STOP DIRECTIVE:
-- Keep dialogue responses strictly to 1-2 concise sentences. Avoid unsolicited lectures or monologues unless explicitly asked "Расскажи подробно".
-- If Denis or Sveta issues an interruption command ("хватит", "стоп", "молчи", "замолчи"), reply strictly with the single word "Умолкаю." and immediately complete the turn.
-
-PING:
-- Reply strictly: "PONG".</textarea>
-              <small class="field-hint">Запрет длинных монологов, краткость подтверждений и реакция на прерывание.</small>
-            </div>
-          </div>
-
-          <!-- Секция 4: Серверный вейкворд -->
-          <h3 class="settings-group-title" style="margin-top: 32px;">🎙️ Серверный вейкворд (openWakeWord ONNX)</h3>
-          <p class="section-desc">Нейросетевой детектор фразы «Порфирий» на стороне сервера. Анализирует входящие аудиопотоки от ПК-клиентов (streamer.py) и колонок ESP32 в режиме серверного вейкворда.</p>
-          <div class="settings-grid">
-
-            <!-- Модель вейкворда -->
-            <div class="form-field full-width">
-              <label for="cfg-ww-model-path">Активная модель ONNX</label>
-              <div class="input-with-action">
-                <input type="text" id="cfg-ww-model-path" name="ww_model_path" value="porfiriy.onnx" placeholder="Путь к .onnx файлу" readonly>
-                <label class="btn btn-secondary btn-small" for="ww-model-upload" title="Загрузить новый .onnx файл вейкворда">📁 Загрузить .onnx</label>
-                <input type="file" id="ww-model-upload" accept=".onnx" style="display:none" onchange="uploadWwModel(this)">
-              </div>
-              <small class="field-hint">Файл загружается в /data/ и применяется на лету без перезапуска аддона</small>
-            </div>
-
-            <!-- Глобальный порог вейкворда -->
-            <div class="form-field full-width">
-              <label for="cfg-ww-threshold">Глобальный порог срабатывания: <span id="val-ww-server-threshold">0.94</span></label>
-              <input type="range" id="cfg-ww-threshold" name="ww_server_threshold" min="0.30" max="1.00" step="0.01" value="0.94" oninput="document.getElementById('val-ww-server-threshold').innerText = parseFloat(this.value).toFixed(2); updateMonitorThreshold(parseFloat(this.value));">
-              <small class="field-hint">Базовый порог для всех клиентов без индивидуального переопределения.</small>
-            </div>
-
-            <!-- Монитор отладки вейкворда в реальном времени -->
-            <div class="form-field full-width" style="margin-top: 4px; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(88, 166, 255, 0.25); border-radius: 10px; padding: 16px; box-sizing: border-box;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 14px; font-weight: 700; color: #58a6ff;">🎯 Монитор отладки и детекции (Live)</span>
-                  <span class="status-dot" id="ww-monitor-live-dot" style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); display: inline-block;"></span>
-                  <span id="ww-engine-status-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(88, 166, 255, 0.15); color: #58a6ff; font-family: var(--font-sans);">Нейросеть: проверка...</span>
-                </div>
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <label for="ww-monitor-stream-select" style="font-size: 12px; color: #8b949e; margin: 0;">Источник:</label>
-                  <select id="ww-monitor-stream-select" onfocus="populateWwMonitorSources()" onmousedown="populateWwMonitorSources()" style="background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 10px; border-radius: 6px; font-size: 12px;">
-                    <option value="auto">— Авто (любой активный) —</option>
+                  <select id="cfg-model" name="gemini_model" onchange="handleModelSelectChange(this.value)">
+                    <optgroup label="🌟 Поддерживают Live Audio (Рекомендуемые)">
+                      <option value="models/gemini-3.1-flash-live-preview" selected>Gemini 3.1 Flash Live Preview</option>
+                    </optgroup>
+                    <optgroup label="Ручной ввод">
+                      <option value="__custom__">✍️ Ввести другую модель вручную...</option>
+                    </optgroup>
                   </select>
-                  <button class="btn btn-sm" onclick="triggerSelectedMonitorWake()" title="Принудительно вызвать Порфирия на выбранном источнике" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 11.5px; font-weight: 600; padding: 4px 10px; border: none; border-radius: 6px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;">
-                    ⚡ Вызов
-                  </button>
+                  <div id="custom-model-box" style="display: none; margin-top: 8px;">
+                    <input type="text" id="cfg-model-custom" placeholder="Например: models/gemini-3.8-live">
+                  </div>
+                  <small class="field-hint">Используется для голоса, Telegram и часов.</small>
                 </div>
-              </div>
 
-              <!-- Gauge & Telemetry Box -->
-              <div style="background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
-                  <div>
-                    <span style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Отклик модели (Live Score):</span>
-                    <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 2px;">
-                      <span id="ww-monitor-score-val" style="font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: #8b949e;">0.000</span>
-                      <span id="ww-monitor-peak-val" style="font-size: 12px; color: #58a6ff; font-family: var(--font-mono); background: rgba(88, 166, 255, 0.12); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(88, 166, 255, 0.25);">Пик: 0.000</span>
-                      <span id="ww-monitor-thresh-val" style="font-size: 12px; color: #8b949e; font-family: var(--font-mono);">Порог: 0.94</span>
+                <!-- Reserve Gemini Live Model -->
+                <div class="form-field">
+                  <label for="cfg-fallback-model">Резервная голосовая модель (Live Fallback)</label>
+                  <select id="cfg-fallback-model" name="gemini_fallback_model">
+                    <option value="">— Не использовать —</option>
+                  </select>
+                  <small class="field-hint">Автоматически подхватит запрос по Live API при сбое или 429/503 на основной модели.</small>
+                </div>
+
+                <!-- Voice Name -->
+                <div class="form-field">
+                  <label for="cfg-voice">Голос синтеза (Gemini Voice)</label>
+                  <select id="cfg-voice" name="voice_name">
+                    <option value="Aoede">Aoede (Женский, глубокий)</option>
+                    <option value="Charon" selected>Charon (Мужской, авторитетный)</option>
+                    <option value="Fenrir">Fenrir (Мужской, баритон)</option>
+                    <option value="Kore">Kore (Женский, спокойный)</option>
+                    <option value="Puck">Puck (Мужской, энергичный)</option>
+                  </select>
+                  <small class="field-hint">Официальные нативные голоса Google Gemini Live</small>
+                </div>
+
+                <!-- Thinking Timeout -->
+                <div class="form-field">
+                  <label for="cfg-thinking-timeout">Таймаут ожидания ответа (сек)</label>
+                  <input type="number" id="cfg-thinking-timeout" name="thinking_timeout_s" min="2" max="30" value="5">
+                  <small class="field-hint">Если ответа нет дольше указанного времени — колонка скажет короткую фразу ожидания.</small>
+                </div>
+
+                <!-- Галка обработки числительных -->
+                <div class="form-field-checkbox">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="cfg-normalize-numbers" name="normalize_numbers_enabled" checked>
+                    <span class="custom-checkbox"></span>
+                    <span>🔢 Обрабатывать числительные в тексте (Telegram / часы)</span>
+                  </label>
+                  <small class="field-hint">Гибрид (Python + пул моделей): переводит время, даты, цены и дроби прописью в цифры (13:00, 17,1 млн ₽).</small>
+                </div>
+
+                <!-- Google Search Grounding (оставлено по просьбе пользователя) -->
+                <div class="form-field-checkbox">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="cfg-google-search" name="enable_google_search" checked>
+                    <span class="custom-checkbox"></span>
+                    <span>Поиск Google (Grounding)</span>
+                  </label>
+                  <small class="field-hint">Встроенный поиск внутри Live-сессии (при Serper обычно выключен)</small>
+                </div>
+
+                <!-- Пул больших моделей -->
+                <div class="form-field full-width" style="background: rgba(139, 92, 246, 0.06); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: 10px; padding: 14px 16px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+                    <label class="checkbox-label" style="margin:0; font-weight:600;">
+                      <input type="checkbox" id="cfg-big-models-enabled" name="big_models_enabled">
+                      <span class="custom-checkbox"></span>
+                      <span>🧠 Пул больших моделей (фактчекинг, карточки и сложные задачи)</span>
+                    </label>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <label for="cfg-big-models-threshold" style="margin:0; font-size:12px; color:#c9d1d9;">Порог символов:</label>
+                      <input type="number" id="cfg-big-models-threshold" min="500" max="100000" step="500" value="4000" style="width:95px; padding:5px 8px; font-size:12px;">
+                      <button type="button" class="btn btn-secondary btn-small" onclick="addBigModelRow()">+ Добавить модель</button>
                     </div>
                   </div>
-                  <div style="text-align: right;">
-                    <span style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700;">Уровень микрофона:</span>
-                    <div id="ww-monitor-rms-val" style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-top: 4px;">-60.0 dBFS (Ожидание звука)</div>
+                  <small class="field-hint" style="display:block; margin-bottom:10px;">Используется для перепроверки фактов, карточек маркетплейсов/Циана, дожимания числительных и крупных данных.</small>
+                  <div id="big-models-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+                </div>
+
+                <!-- Serper.dev быстрый поиск Google -->
+                <div class="form-field full-width">
+                  <label for="cfg-serper-api-key">⚡ Serper.dev API-ключ (быстрый поиск Google ~0.8 с)</label>
+                  <div class="input-with-action">
+                    <input type="password" id="cfg-serper-api-key" name="serper_api_key" placeholder="Вставьте API-ключ с serper.dev">
+                    <button type="button" class="btn btn-secondary btn-small" id="btn-toggle-serper-key" onclick="toggleSerperKeyVisibility()" title="Показать/скрыть ключ">👁️</button>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="testSerperSearch()" title="Проверить быстрый поиск через Serper.dev">🧪 Тест Serper</button>
+                  </div>
+                  <small class="field-hint">Основной быстрый поиск <code>web_search</code> с фактчекингом; при ошибке падает на модель поиска ниже.</small>
+                  <div id="serper-test-status" style="font-size:12px; margin-top:4px;"></div>
+                </div>
+
+                <!-- Модель для поиска в интернете -->
+                <div class="form-field full-width">
+                  <label for="cfg-web-search-model">🔍 Модель для поиска в интернете (резерв при сбое Serper)</label>
+                  <div class="input-with-action">
+                    <select id="cfg-web-search-model" name="web_search_model">
+                      <option value="">— Использовать пул больших моделей —</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="testWebSearchModel()">🧪 Тест поиска</button>
+                  </div>
+                  <div id="web-search-test-status" style="font-size:12px; margin-top:4px;"></div>
+                </div>
+
+                <!-- Свёрнутые тонкие настройки аудио ESP32 / VAD -->
+                <div class="form-field full-width">
+                  <details class="p2-advanced-details">
+                    <summary>⚙️ Тонкие настройки аудио (ESP32 Barge-in / облачный VAD)</summary>
+                    <div class="settings-grid" style="margin-top: 10px;">
+                      <div class="form-field-checkbox">
+                        <label class="checkbox-label">
+                          <input type="checkbox" id="cfg-barge-in" name="enable_barge_in" checked>
+                          <span class="custom-checkbox"></span>
+                          <span>Прерывание речи (Barge-in)</span>
+                        </label>
+                        <small class="field-hint">Разрешает перебивать Порфирия голосом на ESP32</small>
+                      </div>
+                      <div class="form-field">
+                        <label for="cfg-barge-rms">Порог громкости перебивания (RMS: <span id="val-barge-rms">600</span>)</label>
+                        <input type="range" id="cfg-barge-rms" name="barge_in_threshold_rms" min="100" max="2500" step="50" value="600" oninput="document.getElementById('val-barge-rms').innerText = this.value">
+                      </div>
+                      <div class="form-field">
+                        <label for="cfg-vad-silence">Облачная пауза тишины Gemini (мс)</label>
+                        <input type="number" id="cfg-vad-silence" name="vad_silence_duration_ms" min="400" max="2000" step="50" value="600">
+                      </div>
+                    </div>
+                  </details>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Секция 2: 4 Модульных промпта (свёрнута по умолчанию) -->
+          <details class="settings-accordion" id="acc-prompts">
+            <summary class="settings-accordion-summary">
+              <div class="settings-accordion-title">
+                <span class="settings-accordion-chevron">▶</span>
+                <span>🎭 4 Модульных промпта Порфирия</span>
+              </div>
+              <span class="settings-accordion-sub">Личность, распознавание жильцов, умный дом и общие директивы</span>
+            </summary>
+            <div class="settings-accordion-body">
+              <div class="prompts-container" style="margin-top: 0;">
+                <div class="prompt-box">
+                  <div class="prompt-header">
+                    <label for="cfg-prompt-persona">1. Личность и характер (prompt_persona)</label>
+                    <div class="prompt-header-tools">
+                      <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('persona')" title="Восстановить исходный текст Порфирия">↺ Сбросить к шаблону</button>
+                      <span class="prompt-char-count" id="count-persona">0 симв.</span>
+                    </div>
+                  </div>
+                  <textarea id="cfg-prompt-persona" name="prompt_persona" rows="8" placeholder="Загружается с сервера..."></textarea>
+                  <small class="field-hint">Определяет роль, цинизм и литературный стиль по роману «iPhuck 10» Пелевина.</small>
+                </div>
+
+                <div class="prompt-box">
+                  <div class="prompt-header">
+                    <label for="cfg-prompt-users">2. Распознавание обитателей (prompt_users)</label>
+                    <div class="prompt-header-tools">
+                      <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('users')" title="Восстановить исходные правила пользователей">↺ Сбросить к шаблону</button>
+                      <span class="prompt-char-count" id="count-users">0 симв.</span>
+                    </div>
+                  </div>
+                  <textarea id="cfg-prompt-users" name="prompt_users" rows="6" placeholder="Загружается с сервера..."></textarea>
+                  <small class="field-hint">Инструкции по различению тембров голоса и родам глаголов.</small>
+                </div>
+
+                <div class="prompt-box">
+                  <div class="prompt-header">
+                    <label for="cfg-prompt-smart-home">3. Умный дом и комнаты (prompt_smart_home)</label>
+                    <div class="prompt-header-tools">
+                      <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('smart-home')" title="Восстановить исходные правила умного дома">↺ Сбросить к шаблону</button>
+                      <span class="prompt-char-count" id="count-smart-home">0 симв.</span>
+                    </div>
+                  </div>
+                  <textarea id="cfg-prompt-smart-home" name="prompt_smart_home" rows="8" placeholder="Загружается с сервера..."></textarea>
+                  <small class="field-hint">Правила управления светом, шторами, климатом и приоритета комнаты вызова.</small>
+                </div>
+
+                <div class="prompt-box">
+                  <div class="prompt-header">
+                    <label for="cfg-prompt-general">4. Общие директивы и музыка (prompt_general)</label>
+                    <div class="prompt-header-tools">
+                      <button type="button" class="btn-text-small" onclick="restoreDefaultPrompt('general')" title="Восстановить общие директивы">↺ Сбросить к шаблону</button>
+                      <span class="prompt-char-count" id="count-general">0 симв.</span>
+                    </div>
+                  </div>
+                  <textarea id="cfg-prompt-general" name="prompt_general" rows="6" placeholder="Загружается с сервера..."></textarea>
+                  <small class="field-hint">Правила поиска, Music Assistant, краткости ответов и реакции на «стоп/хватит».</small>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Секция 3: Мультимедиа, Ducking и Звуки (свёрнута по умолчанию) -->
+          <details class="settings-accordion" id="acc-media">
+            <summary class="settings-accordion-summary">
+              <div class="settings-accordion-title">
+                <span class="settings-accordion-chevron">▶</span>
+                <span>🎵 Мультимедиа, Ducking и Звуки (Earcons)</span>
+              </div>
+              <span class="settings-accordion-sub">Приглушение музыки, плеер по умолчанию и короткие сигналы вместо голоса</span>
+            </summary>
+            <div class="settings-accordion-body">
+              <div class="settings-grid">
+                <div class="form-field">
+                  <label for="cfg-ducking-mode">Режим приглушения звука (Ducking)</label>
+                  <select id="cfg-ducking-mode" name="ducking_mode" onchange="handleDuckingModeChange(this.value)">
+                    <option value="same_area" selected>🎯 Только в комнате вызова (по Area в HA)</option>
+                    <option value="all">🌐 Во всем доме (все играющие плееры)</option>
+                    <option value="disabled">🚫 Полностью отключено</option>
+                  </select>
+                </div>
+
+                <div class="form-field" id="ducking-factor-container">
+                  <label for="cfg-ducking-factor">Коэффициент приглушения: <span id="val-ducking-factor">0.25</span> (<span id="val-ducking-percent">25%</span>)</label>
+                  <input type="range" id="cfg-ducking-factor" name="ducking_volume_factor" min="0.05" max="0.80" step="0.05" value="0.25" oninput="updateDuckingFactorDisplay(this.value)">
+                </div>
+
+                <div class="form-field full-width">
+                  <div class="field-label-row">
+                    <label for="cfg-default-media-player" style="margin-bottom: 0;">Основной медиаплеер для музыки</label>
+                    <button type="button" class="btn btn-secondary btn-small" id="btn-refresh-players" onclick="refreshMediaPlayersList()">🔄 Обновить плееры</button>
+                  </div>
+                  <select id="cfg-default-media-player" name="default_media_player">
+                    <option value="auto" selected>🔄 Автоматически (все играющие плееры)</option>
+                  </select>
+                </div>
+              </div>
+
+              <h4 style="margin: 18px 0 10px; font-size: 13.5px; color: #e2e8f0;">🔔 Звуковые сигналы (Earcons) вместо голоса</h4>
+              <div class="form-grid-2">
+                <div class="form-field">
+                  <label class="checkbox-label" style="margin-bottom: 8px;">
+                    <input type="checkbox" id="cfg-earcon-volume-enabled" name="earcon_volume_enabled" checked>
+                    <span>Щелчок при изменении громкости</span>
+                  </label>
+                  <div class="input-with-action">
+                    <select id="cfg-earcon-volume-preset" name="earcon_volume_preset">
+                      <option value="apple_taptic">Apple Taptic (тактильный щелчок)</option>
+                      <option value="nest_bubble">Google Nest (бархатный поп)</option>
+                      <option value="studio_wood">Studio Woodblock (деревянный тик)</option>
+                      <option value="glass_tick">macOS Glass (хрустальный клик)</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('volume', document.getElementById('cfg-earcon-volume-preset').value)">▶</button>
                   </div>
                 </div>
 
-                <!-- Progress Bar with Threshold Marker -->
-                <div style="position: relative; width: 100%; height: 14px; background: #161b22; border-radius: 7px; overflow: hidden; margin-top: 8px;">
-                  <div id="ww-monitor-score-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #58a6ff, #00d2ff); border-radius: 7px; transition: width 0.15s ease;"></div>
-                  <div id="ww-monitor-thresh-line" style="position: absolute; top: 0; bottom: 0; width: 2px; background: #ff5555; left: 94%; z-index: 2;" title="Порог срабатывания"></div>
+                <div class="form-field">
+                  <label class="checkbox-label" style="margin-bottom: 8px;">
+                    <input type="checkbox" id="cfg-earcon-smarthome-enabled" name="earcon_smarthome_enabled" checked>
+                    <span>«Тудун» при простом управлении УД</span>
+                  </label>
+                  <div class="input-with-action">
+                    <select id="cfg-earcon-smarthome-preset" name="earcon_smarthome_preset">
+                      <option value="google_home">Google Home (тёплый «ту-дун»)</option>
+                      <option value="apple_homepod">Apple HomePod (глубокий бархатный аккорд)</option>
+                      <option value="macos_glass">macOS Bloom (кристальный maj7)</option>
+                      <option value="warm_marimba">Sonos Marimba (деревянная маримба)</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('smarthome', document.getElementById('cfg-earcon-smarthome-preset').value)">▶</button>
+                  </div>
                 </div>
-              </div>
 
-              <!-- Live Events Log -->
-              <div>
-                <div style="font-size: 12px; font-weight: 700; color: #8b949e; margin-bottom: 6px; display: flex; justify-content: space-between;">
-                  <span>События детекции:</span>
-                  <span id="ww-monitor-device-name" style="color: var(--accent-cyan);">Ожидание голосового потока...</span>
-                </div>
-                <div id="ww-monitor-events-log" style="font-family: var(--font-mono); font-size: 11.5px; background: #0b0e14; border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 8px 12px; min-height: 48px; max-height: 110px; overflow-y: auto; color: #8b949e; display: flex; flex-direction: column; gap: 4px;">
-                  <div style="color: #6e7681; font-style: italic;">Произнесите «Порфирий» в микрофон для живой проверки отклика...</div>
+                <div class="form-field full-width">
+                  <label for="cfg-earcon-wake-preset">Сигнал активации вейкворда («Порфирий слушает»)</label>
+                  <div class="input-with-action">
+                    <select id="cfg-earcon-wake-preset" name="earcon_wake_preset">
+                      <option value="google_listen">Google Listen (мягкий подъём)</option>
+                      <option value="apple_siri">Apple Siri (деликатный двойной отклик)</option>
+                      <option value="warm_halo">Warm Halo (тёплое сияние)</option>
+                      <option value="none">Без звука (выкл)</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('wake', document.getElementById('cfg-earcon-wake-preset').value)">▶</button>
+                  </div>
                 </div>
               </div>
             </div>
+          </details>
 
-          </div>
+          <!-- Секция 4: Умный ночной тихий режим (свёрнута по умолчанию) -->
+          <details class="settings-accordion settings-accordion-quiet" id="acc-quiet-mode">
+            <summary class="settings-accordion-summary">
+              <div class="settings-accordion-title">
+                <span class="settings-accordion-chevron">▶</span>
+                <span>🌙 Умный ночной тихий режим</span>
+              </div>
+              <span id="quiet-mode-status-badge" class="fw-badge" style="font-size: 12px; padding: 4px 10px; background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3);">⚪ Проверка...</span>
+            </summary>
+            <div class="settings-accordion-body">
+              <p class="section-desc" style="margin-bottom: 14px;">
+                Активируется в ночное окно, только когда выбранный свет, ТВ и другие индикаторы бодрствования выключены. Повышает ночной порог вейкворда на Станции, убирает ночной звук активации, отсекает тихие шумы и приглушает голос.
+              </p>
 
-          <!-- Секция: Шлюз OpenAI API / Яндекс Станция (Quasar Bridge) -->
-          <div class="settings-group" style="border: 1px solid rgba(139, 92, 246, 0.35); border-radius: 12px; padding: 18px 20px; background: linear-gradient(180deg, rgba(139, 92, 246, 0.08) 0%, rgba(13, 17, 23, 0.4) 100%); margin-top: 20px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <span style="font-size: 20px;">🟣</span>
-                <div>
-                  <h3 style="margin: 0; font-size: 15px; color: #c4b5fd;">Шлюз OpenAI API / Яндекс Станция (Quasar Bridge)</h3>
-                  <small style="color: #8b949e; font-size: 12px;">Интеграция с рутованными Яндекс Станциями через эндпоинт <code>/v1/chat/completions</code></small>
+              <div class="form-grid-2">
+                <div class="form-field">
+                  <label class="checkbox-label" style="margin-bottom: 8px;">
+                    <input type="checkbox" id="cfg-quiet-enabled" name="quiet_mode_enabled">
+                    <span class="custom-checkbox"></span>
+                    <span>Включить умный тихий режим</span>
+                  </label>
+                  <label for="cfg-quiet-force" style="font-size: 12px; margin-top: 4px;">Режим работы</label>
+                  <select id="cfg-quiet-force" name="quiet_mode_force">
+                    <option value="auto">Авто (ночное время + датчики дома)</option>
+                    <option value="on">Принудительно ВКЛ</option>
+                    <option value="off">Принудительно ВЫКЛ</option>
+                  </select>
+                </div>
+
+                <div class="form-field">
+                  <label style="margin-bottom: 6px;">Ночное окно (локальное время)</label>
+                  <div style="display: flex; gap: 10px; align-items: center;">
+                    <div style="flex: 1;">
+                      <small class="field-hint">С</small>
+                      <input type="time" id="cfg-quiet-start" name="quiet_mode_start" value="23:00" style="width: 100%;">
+                    </div>
+                    <div style="flex: 1;">
+                      <small class="field-hint">До</small>
+                      <input type="time" id="cfg-quiet-end" name="quiet_mode_end" value="08:00" style="width: 100%;">
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-field">
+                  <label for="cfg-quiet-ww-thr">Ночной порог вейкворда на Станции: <strong id="val-quiet-ww-thr">0.42</strong></label>
+                  <input type="range" id="cfg-quiet-ww-thr" name="quiet_mode_ww_threshold" min="0.20" max="0.95" step="0.01" value="0.42" oninput="document.getElementById('val-quiet-ww-thr').innerText = parseFloat(this.value).toFixed(2)">
+                </div>
+
+                <div class="form-field">
+                  <label for="cfg-quiet-volume">Громкость ответов и бипов ночью: <strong id="val-quiet-volume">30%</strong></label>
+                  <input type="range" id="cfg-quiet-volume" name="quiet_mode_volume" min="0" max="100" step="5" value="30" oninput="document.getElementById('val-quiet-volume').innerText = this.value + '%'">
+                </div>
+
+                <div class="form-field">
+                  <label for="cfg-quiet-silence-dbfs">Отсечка тихих шумов (dBFS): <strong id="val-quiet-silence-dbfs">-42 dBFS</strong></label>
+                  <input type="range" id="cfg-quiet-silence-dbfs" name="quiet_mode_silence_dbfs" min="-55" max="-25" step="1" value="-42" oninput="document.getElementById('val-quiet-silence-dbfs').innerText = this.value + ' dBFS'">
+                </div>
+
+                <div class="form-field" style="display: flex; align-items: center;">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="cfg-quiet-mute-wake" name="quiet_mode_mute_wake_earcon" checked>
+                    <span class="custom-checkbox"></span>
+                    <span>Отключать звук активации вейкворда (earcon) ночью</span>
+                  </label>
                 </div>
               </div>
-              <label class="switch" style="margin: 0;" title="Включить / отключить OpenAI API эндпоинт">
-                <input type="checkbox" id="cfg-openai-api-enabled" name="openai_api_enabled" checked>
+
+              <div style="margin-top: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;">
+                  <label style="font-weight: 600; font-size: 13px;">🏠 Отслеживаемые индикаторы бодрствования:</label>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    <button type="button" class="btn btn-secondary btn-small" onclick="selectQuietGroup('lights')">💡 Весь свет</button>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="selectQuietGroup('media')">📺 Все ТВ/медиа</button>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="clearQuietEntities()">Очистить</button>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="loadQuietModeCandidates()">🔄 Обновить из HA</button>
+                  </div>
+                </div>
+                <div id="quiet-entities-container" style="max-height: 260px; overflow-y: auto; padding: 10px; background: rgba(0, 0, 0, 0.25); border: 1px solid #30363d; border-radius: 8px; font-size: 12px;">
+                  <span style="color: #8b949e;">Загрузка объектов Home Assistant...</span>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Секция 5: Серверный вейкворд (тумблер в шапке, сворачивается если выключен) -->
+          <details class="settings-accordion" id="acc-ww-server">
+            <summary class="settings-accordion-summary">
+              <div class="settings-accordion-title">
+                <span class="settings-accordion-chevron">▶</span>
+                <span>🎙️ Серверный вейкворд (openWakeWord ONNX)</span>
+                <span class="settings-accordion-sub">Только для ПК-стримера / ESP32 в серверном режиме</span>
+              </div>
+              <label class="switch" style="margin: 0;" onclick="event.stopPropagation();" title="Включить / отключить серверный openWakeWord (экономия RAM/CPU если используется только нативный wakeword на Станции)">
+                <input type="checkbox" id="cfg-ww-server-enabled" name="ww_server_enabled" checked onchange="toggleAccordionByCheckbox('acc-ww-server', this.checked)">
                 <span class="slider"></span>
               </label>
-            </div>
-
-            <div style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.5; color: #d8b4fe; margin-bottom: 16px;">
-              💡 <strong>Быстрая настройка Quasar Bridge:</strong> в конфигурации Станции (<code>runtime.env</code> / <code>config.json</code>) укажите:<br>
-              <code>llm_base_url = "http://&lt;IP_Home_Assistant&gt;:<span id="hint-openai-port">8000</span>/v1"</code> и <code>llm_api = "chat_completions"</code>.
-            </div>
-
-            <div class="form-row" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
-              <div class="form-group">
-                <label for="cfg-openai-api-port">Порт OpenAI API (LAN)</label>
-                <input type="number" id="cfg-openai-api-port" name="openai_api_port" value="8000" min="1024" max="65535" placeholder="8000" oninput="document.getElementById('hint-openai-port').innerText = this.value || '8000'">
-                <small class="field-hint">Порт для входящих HTTP-запросов от Quasar Bridge (по умолчанию 8000)</small>
-              </div>
-
-              <div class="form-group">
-                <label for="cfg-openai-api-key">Общий API-ключ (опционально)</label>
-                <div class="api-key-wrap" style="position: relative; display: flex; align-items: center;">
-                  <input type="password" id="cfg-openai-api-key" name="openai_api_key" placeholder="Оставьте пустым для работы без ключа" style="padding-right: 36px; width: 100%;">
-                  <button type="button" class="btn-toggle-key" onclick="toggleOpenAiKeyVisibility()" title="Показать/скрыть ключ" style="position: absolute; right: 8px; background: none; border: none; cursor: pointer; color: #8b949e;">👁️</button>
+            </summary>
+            <div class="settings-accordion-body">
+              <div class="settings-grid">
+                <div class="form-field full-width">
+                  <label for="cfg-ww-model-path">Активная модель ONNX</label>
+                  <div class="input-with-action">
+                    <input type="text" id="cfg-ww-model-path" name="ww_model_path" value="porfiriy.onnx" placeholder="Путь к .onnx файлу" readonly>
+                    <label class="btn btn-secondary btn-small" for="ww-model-upload" title="Загрузить новый .onnx файл вейкворда">📁 Загрузить .onnx</label>
+                    <input type="file" id="ww-model-upload" accept=".onnx" style="display:none" onchange="uploadWwModel(this)">
+                  </div>
+                  <small class="field-hint">Файл загружается в /data/ и применяется на лету (при отключении тумблера выше движок не загружается при старте и освобождает RAM).</small>
                 </div>
-                <small class="field-hint">Если задан, станция должна отправлять заголовок <code>Authorization: Bearer &lt;ключ&gt;</code></small>
-              </div>
 
-              <div class="form-group">
-                <label for="cfg-default-airplay-player">AirPlay плеер по умолчанию</label>
-                <select id="cfg-default-airplay-player" name="default_airplay_player">
-                  <option value="">— Выберите плеер из Home Assistant —</option>
-                </select>
-                <small class="field-hint">Медиаплеер для вывода музыки (Music Assistant) и голоса Порфирия в режиме AirPlay</small>
+                <div class="form-field full-width">
+                  <label for="cfg-ww-threshold">Глобальный порог срабатывания: <span id="val-ww-server-threshold">0.94</span></label>
+                  <input type="range" id="cfg-ww-threshold" name="ww_server_threshold" min="0.30" max="1.00" step="0.01" value="0.94" oninput="document.getElementById('val-ww-server-threshold').innerText = parseFloat(this.value).toFixed(2); updateMonitorThreshold(parseFloat(this.value));">
+                </div>
+
+                <div class="form-field full-width" style="margin-top: 4px; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(88, 166, 255, 0.25); border-radius: 10px; padding: 16px; box-sizing: border-box;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <span style="font-size: 14px; font-weight: 700; color: #58a6ff;">🎯 Монитор отладки и детекции (Live)</span>
+                      <span class="status-dot" id="ww-monitor-live-dot" style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); display: inline-block;"></span>
+                      <span id="ww-engine-status-badge" style="font-size: 11px; padding: 2px 8px; border-radius: 12px; background: rgba(88, 166, 255, 0.15); color: #58a6ff; font-family: var(--font-sans);">Нейросеть: проверка...</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <label for="ww-monitor-stream-select" style="font-size: 12px; color: #8b949e; margin: 0;">Источник:</label>
+                      <select id="ww-monitor-stream-select" onfocus="populateWwMonitorSources()" onmousedown="populateWwMonitorSources()" style="background: #0d1117; border: 1px solid #30363d; color: #f0f3f6; padding: 4px 10px; border-radius: 6px; font-size: 12px;">
+                        <option value="auto">— Авто (любой активный) —</option>
+                      </select>
+                      <button class="btn btn-sm" onclick="triggerSelectedMonitorWake()" style="background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; font-size: 11.5px; font-weight: 600; padding: 4px 10px; border: none; border-radius: 6px; cursor: pointer;">⚡ Вызов</button>
+                    </div>
+                  </div>
+
+                  <div style="background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 14px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 6px; flex-wrap: wrap; gap: 8px;">
+                      <div>
+                        <span style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700;">Отклик модели (Live Score):</span>
+                        <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 2px;">
+                          <span id="ww-monitor-score-val" style="font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: #8b949e;">0.000</span>
+                          <span id="ww-monitor-peak-val" style="font-size: 12px; color: #58a6ff; font-family: var(--font-mono); background: rgba(88, 166, 255, 0.12); padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(88, 166, 255, 0.25);">Пик: 0.000</span>
+                          <span id="ww-monitor-thresh-val" style="font-size: 12px; color: #8b949e; font-family: var(--font-mono);">Порог: 0.94</span>
+                        </div>
+                      </div>
+                      <div style="text-align: right;">
+                        <span style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: 700;">Уровень микрофона:</span>
+                        <div id="ww-monitor-rms-val" style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-top: 4px;">-60.0 dBFS (Ожидание звука)</div>
+                      </div>
+                    </div>
+                    <div style="position: relative; width: 100%; height: 14px; background: #161b22; border-radius: 7px; overflow: hidden; margin-top: 8px;">
+                      <div id="ww-monitor-score-bar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #58a6ff, #00d2ff); border-radius: 7px; transition: width 0.15s ease;"></div>
+                      <div id="ww-monitor-thresh-line" style="position: absolute; top: 0; bottom: 0; width: 2px; background: #ff5555; left: 94%; z-index: 2;"></div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style="font-size: 12px; font-weight: 700; color: #8b949e; margin-bottom: 6px; display: flex; justify-content: space-between;">
+                      <span>События детекции:</span>
+                      <span id="ww-monitor-device-name" style="color: var(--accent-cyan);">Ожидание голосового потока...</span>
+                    </div>
+                    <div id="ww-monitor-events-log" style="font-family: var(--font-mono); font-size: 11.5px; background: #0b0e14; border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 8px 12px; min-height: 48px; max-height: 110px; overflow-y: auto; color: #8b949e; display: flex; flex-direction: column; gap: 4px;">
+                      <div style="color: #6e7681; font-style: italic;">Произнесите «Порфирий» в микрофон для живой проверки отклика...</div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          </details>
+
+          <!-- Секция 6: Шлюз OpenAI API / Quasar Bridge (тумблер в шапке, сворачивается если выключен) -->
+          <details class="settings-accordion settings-accordion-purple" id="acc-openai-bridge">
+            <summary class="settings-accordion-summary">
+              <div class="settings-accordion-title">
+                <span class="settings-accordion-chevron">▶</span>
+                <span>🟣 Шлюз OpenAI API / Quasar Bridge</span>
+                <span class="settings-accordion-sub"><code>/v1/chat/completions</code> для старого Quasar Bridge</span>
+              </div>
+              <label class="switch" style="margin: 0;" onclick="event.stopPropagation();" title="Включить / отключить OpenAI API эндпоинт">
+                <input type="checkbox" id="cfg-openai-api-enabled" name="openai_api_enabled" checked onchange="toggleAccordionByCheckbox('acc-openai-bridge', this.checked)">
+                <span class="slider"></span>
+              </label>
+            </summary>
+            <div class="settings-accordion-body">
+              <div style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.25); border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.5; color: #d8b4fe; margin-bottom: 16px;">
+                💡 <strong>Быстрая настройка Quasar Bridge:</strong> <code>llm_base_url = "http://&lt;IP_HA&gt;:<span id="hint-openai-port">8000</span>/v1"</code> и <code>llm_api = "chat_completions"</code>.
+              </div>
+              <div class="form-row" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px;">
+                <div class="form-group">
+                  <label for="cfg-openai-api-port">Порт OpenAI API (LAN)</label>
+                  <input type="number" id="cfg-openai-api-port" name="openai_api_port" value="8000" min="1024" max="65535" placeholder="8000" oninput="document.getElementById('hint-openai-port').innerText = this.value || '8000'">
+                </div>
+                <div class="form-group">
+                  <label for="cfg-openai-api-key">Общий API-ключ (опционально)</label>
+                  <div class="api-key-wrap" style="position: relative; display: flex; align-items: center;">
+                    <input type="password" id="cfg-openai-api-key" name="openai_api_key" placeholder="Оставьте пустым для работы без ключа" style="padding-right: 36px; width: 100%;">
+                    <button type="button" class="btn-toggle-key" onclick="toggleOpenAiKeyVisibility()" title="Показать/скрыть ключ" style="position: absolute; right: 8px; background: none; border: none; cursor: pointer; color: #8b949e;">👁️</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
 
           <!-- Панель сохранения и действий -->
           <div class="global-actions-bar">
@@ -1431,6 +1368,6 @@ PING:
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.226"></script>
+  <script src="static/app.js?v=0.0.227"></script>
 </body>
 </html>
