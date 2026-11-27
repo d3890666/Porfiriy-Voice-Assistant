@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Порфирий — Управление парком колонок</title>
-  <link rel="stylesheet" href="static/style.css?v=0.0.227">
+  <link rel="stylesheet" href="static/style.css?v=0.0.228">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,7 +20,7 @@
         </div>
         <div>
           <h1 class="brand-title">ПОРФИРИЙ</h1>
-          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.227</span></p>
+          <p class="brand-subtitle">Голосовой алгоритмический следователь • <span id="app-version">v0.0.228</span></p>
         </div>
       </div>
       
@@ -551,7 +551,7 @@
                       </div>
                       <div class="form-field">
                         <label for="cfg-vad-silence">Облачная пауза тишины Gemini (мс)</label>
-                        <input type="number" id="cfg-vad-silence" name="vad_silence_duration_ms" min="400" max="2000" step="50" value="600">
+                        <input type="number" id="cfg-vad-silence" name="vad_silence_duration_ms" min="400" max="3000" step="100" value="600">
                       </div>
                     </div>
                   </details>
@@ -692,7 +692,7 @@
                   </div>
                 </div>
 
-                <div class="form-field full-width">
+                <div class="form-field">
                   <label for="cfg-earcon-wake-preset">Сигнал активации вейкворда («Порфирий слушает»)</label>
                   <div class="input-with-action">
                     <select id="cfg-earcon-wake-preset" name="earcon_wake_preset">
@@ -702,6 +702,22 @@
                       <option value="none">Без звука (выкл)</option>
                     </select>
                     <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('wake', document.getElementById('cfg-earcon-wake-preset').value)">▶</button>
+                  </div>
+                </div>
+
+                <div class="form-field">
+                  <label class="checkbox-label" style="margin-bottom: 8px;">
+                    <input type="checkbox" id="cfg-earcon-eos-enabled" name="earcon_eos_enabled" checked>
+                    <span>Сигнал конца записи («принял, думаю» + тихий таймаут)</span>
+                  </label>
+                  <div class="input-with-action">
+                    <select id="cfg-earcon-eos-preset" name="earcon_eos_preset">
+                      <option value="google_done">Google Done (мягкий тон вниз ↘)</option>
+                      <option value="apple_drop">Apple Drop (бархатный спуск)</option>
+                      <option value="soft_tuck">Soft Tuck (короткий приглушённый тук)</option>
+                      <option value="none">Без звука (выкл)</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary btn-small" onclick="previewEarcon('eos', document.getElementById('cfg-earcon-eos-preset').value)">▶</button>
                   </div>
                 </div>
               </div>
@@ -1368,6 +1384,6 @@
 
   <div id="toast" class="toast">Успешно обновлено</div>
 
-  <script src="static/app.js?v=0.0.227"></script>
+  <script src="static/app.js?v=0.0.228"></script>
 </body>
 </html>

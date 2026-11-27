@@ -40,6 +40,7 @@ DEFAULT_DEVICE_CONFIG = {
     "audio_output_mode": "stream",   # "stream" (встроенный/в сокет) или "external_player" (HA media_player)
     "response_player": "",           # entity_id плеера HA для вывода звука
     "silence_timeout_ms": 700,
+    "max_utterance_s": 20,
     "listen_timeout_s": 6,
     "silence_threshold_energy": 180,
     "barge_in_threshold_rms": None,

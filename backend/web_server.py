@@ -515,6 +515,7 @@ class WebServer:
                 "openai_api_enabled", "openai_api_port", "openai_api_key", "default_airplay_player",
                 "earcon_volume_enabled", "earcon_volume_preset",
                 "earcon_smarthome_enabled", "earcon_smarthome_preset", "earcon_wake_preset",
+                "earcon_eos_enabled", "earcon_eos_preset",
                 "quiet_mode_enabled", "quiet_mode_start", "quiet_mode_end",
                 "quiet_mode_entities", "quiet_mode_ww_threshold",
                 "quiet_mode_mute_wake_earcon", "quiet_mode_volume",
@@ -565,7 +566,7 @@ class WebServer:
                                     engine.set_threshold(new_thr)
                         except (ValueError, TypeError):
                             pass
-                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled", "earcon_volume_enabled", "earcon_smarthome_enabled", "quiet_mode_enabled", "quiet_mode_mute_wake_earcon", "normalize_numbers_enabled", "ww_server_enabled"]:
+                    elif field in ["enable_google_search", "enable_barge_in", "regenerate_phrases", "openai_api_enabled", "big_models_enabled", "earcon_volume_enabled", "earcon_smarthome_enabled", "earcon_eos_enabled", "quiet_mode_enabled", "quiet_mode_mute_wake_earcon", "normalize_numbers_enabled", "ww_server_enabled"]:
                         updated_opts[field] = bool(val)
                     elif field == "quiet_mode_entities":
                         if isinstance(val, list):

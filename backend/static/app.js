@@ -423,6 +423,40 @@ function renderDevicesGrid() {
               </div>
             </div>
 
+            <!-- Темп речи и паузы VAD на Станции -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap:8px; margin-bottom:8px; font-size:11.5px; color:#cbd5e1; background:rgba(255,255,255,0.02); border:1px solid rgba(148,163,184,0.14); border-radius:8px; padding:8px 10px;">
+              <div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                  <span>⏱️ Пауза конца фразы:</span>
+                  <strong style="font-family:monospace;">${cfg.silence_timeout_ms !== undefined ? cfg.silence_timeout_ms : 1600} мс</strong>
+                </div>
+                <input type="range" min="500" max="3500" step="100" value="${cfg.silence_timeout_ms !== undefined ? cfg.silence_timeout_ms : 1600}" style="width:100%;"
+                  oninput="this.previousElementSibling.lastElementChild.innerText = this.value + ' мс'"
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'silence_timeout_ms', parseInt(this.value, 10))"
+                  title="Сколько секунд тишины ждать после запнувшегося слова перед завершением фразы">
+              </div>
+              <div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                  <span>🗣️ Макс. длина фразы:</span>
+                  <strong style="font-family:monospace;">${cfg.max_utterance_s !== undefined ? cfg.max_utterance_s : 20} с</strong>
+                </div>
+                <input type="range" min="10" max="30" step="1" value="${cfg.max_utterance_s !== undefined ? cfg.max_utterance_s : 20}" style="width:100%;"
+                  oninput="this.previousElementSibling.lastElementChild.innerText = this.value + ' с'"
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'max_utterance_s', parseInt(this.value, 10))"
+                  title="Максимальная длительность одного голосового запроса">
+              </div>
+              <div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                  <span>⏳ Ожидание начала речи:</span>
+                  <strong style="font-family:monospace;">${cfg.listen_timeout_s !== undefined ? cfg.listen_timeout_s : 7} с</strong>
+                </div>
+                <input type="range" min="4" max="15" step="1" value="${cfg.listen_timeout_s !== undefined ? cfg.listen_timeout_s : 7}" style="width:100%;"
+                  oninput="this.previousElementSibling.lastElementChild.innerText = this.value + ' с'"
+                  onchange="updateSingleDeviceConfig('${dev.mac}', 'listen_timeout_s', parseInt(this.value, 10))"
+                  title="Сколько ждать первого слова после «Порфирий»">
+              </div>
+            </div>
+
             <!-- Встроенная мини-отладка openWakeWord прямо в карточке -->
             <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 8px 10px;">
               <div style="display: flex; justify-content: space-between; font-size: 11px; color: #8b949e; margin-bottom: 4px; font-family: monospace;">
@@ -1801,6 +1835,9 @@ function populateGlobalSettingsForm() {
   if (earShChk) earShChk.checked = globalOptions.earcon_smarthome_enabled !== false;
   setVal('cfg-earcon-smarthome-preset', earAlias[globalOptions.earcon_smarthome_preset] || globalOptions.earcon_smarthome_preset || 'google_home');
   setVal('cfg-earcon-wake-preset', earAlias[globalOptions.earcon_wake_preset] || globalOptions.earcon_wake_preset || 'google_listen');
+  const earEosChk = document.getElementById('cfg-earcon-eos-enabled');
+  if (earEosChk) earEosChk.checked = globalOptions.earcon_eos_enabled !== false;
+  setVal('cfg-earcon-eos-preset', globalOptions.earcon_eos_preset || 'google_done');
 
   // Настройки умного тихого режима
   const qEn = document.getElementById('cfg-quiet-enabled');
@@ -2090,6 +2127,8 @@ async function saveGlobalSettings(e) {
       earcon_smarthome_enabled: document.getElementById('cfg-earcon-smarthome-enabled')?.checked !== false,
       earcon_smarthome_preset: document.getElementById('cfg-earcon-smarthome-preset')?.value || 'marimba_tudun',
       earcon_wake_preset: document.getElementById('cfg-earcon-wake-preset')?.value || 'soft_chime',
+      earcon_eos_enabled: document.getElementById('cfg-earcon-eos-enabled')?.checked !== false,
+      earcon_eos_preset: document.getElementById('cfg-earcon-eos-preset')?.value || 'google_done',
       quiet_mode_enabled: document.getElementById('cfg-quiet-enabled')?.checked || false,
       quiet_mode_force: document.getElementById('cfg-quiet-force')?.value || 'auto',
       quiet_mode_start: document.getElementById('cfg-quiet-start')?.value || '23:00',

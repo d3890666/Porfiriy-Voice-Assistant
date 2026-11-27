@@ -141,6 +141,16 @@ EARCON_CATALOG: Dict[str, Dict[str, str]] = {
         "warm_halo": "Warm Halo (тёплое сияние)",
         "none": "Без звука (выкл)",
     },
+    "eos": {
+        "google_done": "Google Done (мягкий тон вниз ↘)",
+        "apple_drop": "Apple Drop (бархатный спуск)",
+        "soft_tuck": "Soft Tuck (короткий приглушённый тук)",
+        "none": "Без звука (выкл)",
+    },
+    "timeout": {
+        "soft_fade": "Soft Fade (тихий выдох сна)",
+        "none": "Без звука (выкл)",
+    },
 }
 
 _LEGACY_PRESET_ALIAS = {
@@ -368,6 +378,40 @@ def _build_earcon_pcm(category: str, preset: str, sample_rate: int = 24000) -> b
         n2 = _synth_rich_tone(493.88, 493.88, 195, sample_rate, amp=0.40, attack_ms=4.0, decay_tau_ms=80.0,
                               partials=p_g, detune_hz=1.1, fm_index=0.25, fm_ratio=2.0)
         return _mix_studio([(0, n1), (70, n2)], 310, sample_rate, reverb_wet=0.26, lpf_alpha=0.64)
+
+    if category == "eos":
+        if preset == "none":
+            return b""
+        if preset == "apple_drop":
+            # Мягкий нисходящий бархатный отклик (F#5 -> D5): «принял, думаю»
+            p_eos = ((1.0, 1.0, 1.0), (2.0, 0.14, 0.35))
+            n1 = _synth_rich_tone(739.99, 730.0, 55, sample_rate, amp=0.30, attack_ms=4.0, decay_tau_ms=22.0,
+                                  partials=p_eos, detune_hz=0.8)
+            n2 = _synth_rich_tone(587.33, 580.0, 90, sample_rate, amp=0.30, attack_ms=4.0, decay_tau_ms=34.0,
+                                  partials=p_eos, detune_hz=0.8)
+            return _mix_studio([(0, n1), (48, n2)], 155, sample_rate, reverb_wet=0.20, lpf_alpha=0.58)
+        if preset == "soft_tuck":
+            # Приглушённый мягкий «тук» вниз
+            p_tuck = ((1.0, 1.0, 1.0), (2.0, 0.12, 0.30))
+            n1 = _synth_rich_tone(520.0, 390.0, 80, sample_rate, amp=0.32, attack_ms=2.5, decay_tau_ms=24.0,
+                                  partials=p_tuck, detune_hz=0.0, mallet_ms=2.0)
+            return _mix_studio([(0, n1)], 105, sample_rate, reverb_wet=0.16, lpf_alpha=0.55)
+        # default: google_done — зеркальный мягкий спуск (E5 -> B4) «фразу принял»
+        p_gd = ((1.0, 1.0, 1.0), (2.0, 0.16, 0.38))
+        n1 = _synth_rich_tone(659.25, 650.0, 65, sample_rate, amp=0.30, attack_ms=4.0, decay_tau_ms=24.0,
+                              partials=p_gd, detune_hz=0.7)
+        n2 = _synth_rich_tone(493.88, 490.0, 100, sample_rate, amp=0.30, attack_ms=4.0, decay_tau_ms=38.0,
+                              partials=p_gd, detune_hz=0.8)
+        return _mix_studio([(0, n1), (52, n2)], 175, sample_rate, reverb_wet=0.22, lpf_alpha=0.58)
+
+    if category == "timeout":
+        if preset == "none":
+            return b""
+        # ultra-soft downward exhale («не услышал, ушёл в сон»)
+        p_to = ((1.0, 1.0, 1.0), (2.0, 0.10, 0.30))
+        n1 = _synth_rich_tone(390.0, 260.0, 110, sample_rate, amp=0.22, attack_ms=10.0, decay_tau_ms=45.0,
+                              partials=p_to, detune_hz=0.5)
+        return _mix_studio([(0, n1)], 140, sample_rate, reverb_wet=0.22, lpf_alpha=0.50)
 
     return b""
 

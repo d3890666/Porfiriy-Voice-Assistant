@@ -57,6 +57,9 @@ PERSISTED_KEYS = (
     "dc_blocker_enabled",
     "aec_enabled",
     "barge_in_enabled",
+    "silence_timeout_ms",
+    "max_utterance_s",
+    "listen_timeout_s",
     "led_brightness",
     "led_mode_idle",
     "led_color_idle",
@@ -747,6 +750,9 @@ async def run_daemon():
         "nm_mode": "idle",
         "pdm_gain": 40,
         "barge_in_enabled": False,
+        "silence_timeout_ms": 1600,
+        "max_utterance_s": 20.0,
+        "listen_timeout_s": 7.0,
         "cooldown_until": 0.0,
         "listen_start": 0.0,
         "last_speech": 0.0,
@@ -770,6 +776,9 @@ async def run_daemon():
         "dc_blocker_enabled": True,
         "aec_enabled": True,
         "barge_in_enabled": False,
+        "silence_timeout_ms": 1600,
+        "max_utterance_s": 20,
+        "listen_timeout_s": 7,
         "led_brightness": 80,
         "led_mode_idle": 0,
         "led_color_idle": "#000000",
@@ -803,6 +812,18 @@ async def run_daemon():
         if "barge_in_enabled" in cfg and cfg["barge_in_enabled"] is not None:
             state["barge_in_enabled"] = bool(cfg["barge_in_enabled"])
             local_cfg["barge_in_enabled"] = state["barge_in_enabled"]
+        if "silence_timeout_ms" in cfg and cfg["silence_timeout_ms"] is not None:
+            sil_ms = max(400, min(4000, int(cfg["silence_timeout_ms"])))
+            state["silence_timeout_ms"] = sil_ms
+            local_cfg["silence_timeout_ms"] = sil_ms
+        if "max_utterance_s" in cfg and cfg["max_utterance_s"] is not None:
+            max_u = max(6.0, min(35.0, float(cfg["max_utterance_s"])))
+            state["max_utterance_s"] = max_u
+            local_cfg["max_utterance_s"] = int(round(max_u))
+        if "listen_timeout_s" in cfg and cfg["listen_timeout_s"] is not None:
+            l_to = max(3.0, min(20.0, float(cfg["listen_timeout_s"])))
+            state["listen_timeout_s"] = l_to
+            local_cfg["listen_timeout_s"] = int(round(l_to))
         if "mic_gain" in cfg and cfg["mic_gain"] is not None:
             dsp.mic_gain = max(0.2, min(20.0, float(cfg["mic_gain"])))
             local_cfg["mic_gain"] = dsp.mic_gain
@@ -881,7 +902,7 @@ async def run_daemon():
                     "ssid": cur_ssid,
                     "device_type": "yandex_station",
                     "name": "Яндекс Станция (Нативный Порфирий)",
-                    "firmware": "stationd-1.6",
+                    "firmware": "stationd-1.7",
                     "config": local_cfg,
                 }))
                 print("[STATIOND] Registered on Porfiriy server. Starting ALSA hw:0,2 capture...", flush=True)
@@ -951,7 +972,8 @@ async def run_daemon():
                                     print(
                                         f"[STATIOND] Config applied & saved: thr={state['ww_threshold']:.2f} "
                                         f"gain={dsp.mic_gain:.1f}x pdm={state['pdm_gain']} "
-                                        f"dc={dsp.dc_blocker_enabled} aec={dsp.aec_enabled}",
+                                        f"dc={dsp.dc_blocker_enabled} aec={dsp.aec_enabled} "
+                                        f"sil={state['silence_timeout_ms']}ms max={state['max_utterance_s']:.0f}s wait={state['listen_timeout_s']:.0f}s",
                                         flush=True,
                                     )
                                 elif mtype == "dump_mic" or mtype == "start_mic_test":
@@ -1141,7 +1163,9 @@ async def run_daemon():
                             await ws.send(pcm_bytes)
                             listen_elapsed = now - state["listen_start"]
                             grace_s = 0.15 if state["is_follow_up"] else 0.35
-                            no_speech_to = state["follow_up_timeout_s"] if state["is_follow_up"] else 4.5
+                            no_speech_to = state["follow_up_timeout_s"] if state["is_follow_up"] else state["listen_timeout_s"]
+                            sil_s = state["silence_timeout_ms"] / 1000.0
+                            max_utt_s = state["max_utterance_s"]
 
                             if vad.ready:
                                 speech_prob = await asyncio.to_thread(vad.process_chunk, pcm_i16)
@@ -1158,7 +1182,7 @@ async def run_daemon():
                                         if speech_prob >= 0.35:
                                             state["last_speech"] = now
 
-                                if state["user_spoke"] and ((now - state["last_speech"] >= 0.75) or (listen_elapsed > 10.0)):
+                                if state["user_spoke"] and ((now - state["last_speech"] >= sil_s) or (listen_elapsed > max_utt_s)):
                                     print(
                                         f"[STATIOND] End of speech [Silero VAD] (elapsed={listen_elapsed:.2f}s, "
                                         f"prob={speech_prob:.2f}, followup={state['is_follow_up']}). Switching to thinking.",
@@ -1192,7 +1216,7 @@ async def run_daemon():
                                         if not state["user_spoke"]:
                                             state["speech_frames"] = 0
 
-                                if state["user_spoke"] and ((now - state["last_speech"] > 1.0) or (listen_elapsed > 10.0)):
+                                if state["user_spoke"] and ((now - state["last_speech"] > sil_s) or (listen_elapsed > max_utt_s)):
                                     print(
                                         f"[STATIOND] End of speech [RMS] (elapsed={listen_elapsed:.2f}s, "
                                         f"thresh={speech_thresh:.0f}). Switching to thinking.",
@@ -1201,7 +1225,7 @@ async def run_daemon():
                                     state["mode"] = "thinking"
                                     led.set_state("thinking")
                                     await ws.send(json.dumps({"type": "end_of_speech"}))
-                                elif not state["user_spoke"] and listen_elapsed > 5.0:
+                                elif not state["user_spoke"] and listen_elapsed > no_speech_to:
                                     print(
                                         f"[STATIOND] No speech [RMS] for {listen_elapsed:.1f}s "
                                         f"(thresh={speech_thresh:.0f}). Returning to idle.",
@@ -1210,6 +1234,7 @@ async def run_daemon():
                                     duck_music(False)
                                     oww.reset()
                                     state["mode"] = "idle"
+                                    state["is_follow_up"] = False
                                     state["cooldown_until"] = now + 0.8
                                     led.set_state("idle")
                                     await ws.send(json.dumps({"type": "listen_timeout"}))

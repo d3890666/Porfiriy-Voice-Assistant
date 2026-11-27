@@ -250,6 +250,8 @@ def get_options() -> Dict[str, Any]:
         "earcon_smarthome_enabled": True,
         "earcon_smarthome_preset": "google_home",
         "earcon_wake_preset": "google_listen",
+        "earcon_eos_enabled": True,
+        "earcon_eos_preset": "google_done",
         "quiet_mode_enabled": False,
         "quiet_mode_start": "23:00",
         "quiet_mode_end": "08:00",

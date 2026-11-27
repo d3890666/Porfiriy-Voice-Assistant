@@ -1919,6 +1919,19 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             _flush_utterance()
                             device_manager.set_device_state(client_mac, "thinking")
                             await _send_json({"type": "state", "state": "thinking"})
+                            try:
+                                opts_eos = get_options()
+                                if opts_eos.get("earcon_eos_enabled", True) and not quiet_mode_singleton.is_active(opts_eos):
+                                    eos_pcm = get_earcon_pcm(
+                                        "eos",
+                                        opts_eos.get("earcon_eos_preset", "google_done"),
+                                        sample_rate=24000,
+                                        volume=0.70,
+                                    )
+                                    if eos_pcm:
+                                        await websocket.send(eos_pcm)
+                            except Exception:
+                                pass
                             logger.info(f"[YANDEX-WS] Received end_of_speech from {client_mac}. Queuing ActivityEnd for Gemini.")
                             audio_queue.put_nowait("__ACTIVITY_END__")
 
@@ -1937,6 +1950,14 @@ async def handle_yandex_station_streamer(websocket, client_mac: str, reg_data: d
                             eos_watchdog_task = asyncio.create_task(_eos_watchdog())
                     elif mtype == "listen_timeout":
                         logger.info(f"[YANDEX-WS] No speech timeout on {client_mac}; aborting pending Gemini session.")
+                        try:
+                            opts_to = get_options()
+                            if opts_to.get("earcon_eos_enabled", True) and not quiet_mode_singleton.is_active(opts_to):
+                                to_pcm = get_earcon_pcm("timeout", "soft_fade", sample_rate=24000, volume=0.55)
+                                if to_pcm:
+                                    await websocket.send(to_pcm)
+                        except Exception:
+                            pass
                         session_active = False
                         _cancel_eos_watchdog()
                         _flush_utterance()
